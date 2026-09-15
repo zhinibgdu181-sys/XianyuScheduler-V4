@@ -366,108 +366,649 @@ public final class TaskExecutor {
     private static boolean enterViaMineCoin(
             String suPath
     ) {
-        diagnostic("[导航] 开始寻找闲鱼币任务列表");
+
+        diagnostic(
+                "[导航] 开始：首页 → 我的 → 闲鱼币 → 赚骰子 → 任务面板"
+        );
 
         if (!ensureFg(suPath)) {
-            diagnostic("[导航] 闲鱼没有在前台，无法导航");
+            diagnostic("[导航] 闲鱼没有在前台");
             return false;
         }
 
-        String xml = dumpUi(suPath);
+        String xml =
+                dumpUi(suPath);
+
         if (xml == null) {
             diagnostic("[导航] UI 获取失败");
             return false;
         }
 
-        // 进入“我的”。如果当前已经在闲鱼币相关页面，允许找不到“我的”继续执行。
-        if (clickTextAnyAllowBottom(suPath, xml, "我的", "我的闲鱼", "个人中心")) {
-            diagnostic("[导航] 已点击“我的”");
-            waitForUiAny(
-                    suPath,
-                    5000L,
-                    "闲鱼币", "闲鱼币中心", "赚闲鱼币", "领闲鱼币"
-            );
-        } else {
-            diagnostic("[导航] 当前 UI 找不到“我的”，继续寻找闲鱼币入口");
-        }
-
-        // 进入闲鱼币中心。不同版本文案不同，所以不再只认一个“闲鱼币”。
-        boolean enteredCoin = false;
-        for (int attempt = 1; attempt <= 5; attempt++) {
-            xml = dumpUi(suPath);
-            if (xml == null) {
-                SystemClock.sleep(700L);
-                continue;
-            }
-
-            if (isTaskPage(xml)) {
-                diagnostic("[导航] 已经处于闲鱼币任务列表");
-                return true;
-            }
-
-            if (clickTextAny(suPath, xml,
-                    "闲鱼币", "闲鱼币中心", "赚闲鱼币", "闲鱼币任务", "领闲鱼币")) {
-                diagnostic("[导航] 点击闲鱼币入口成功，第" + attempt + "次");
-                enteredCoin = true;
-                waitForUiAny(
-                        suPath,
-                        6500L,
-                        "每日任务", "任务中心", "赚币任务", "闲鱼币任务",
-                        "去完成", "领取奖励"
-                );
-                break;
-            }
-
-            if (attempt < 5) SystemClock.sleep(800L);
-        }
-
-        if (!enteredCoin) {
-            diagnostic("❌ 没有找到闲鱼币入口");
-            logVisibleTexts(xml);
-            return false;
-        }
-
-        // 进入闲鱼币后，不再点击“扔骰子寻宝”。
-        // 原逻辑把“扔骰子寻宝”当成任务入口，这很容易进入小游戏而不是任务列表。
-        // 这里优先识别真正的任务列表，再尝试“每日任务/任务中心”等入口。
-        for (int pass = 1; pass <= 10; pass++) {
-            if (!ensureFg(suPath)) return false;
-
-            xml = dumpUi(suPath);
-            if (xml == null) {
-                SystemClock.sleep(900L);
-                continue;
-            }
-
-            if (isTaskPage(xml)) {
-                diagnostic("[导航] 找到闲鱼币任务列表，第" + pass + "轮");
-                return true;
-            }
-
-            if (clickTextAny(suPath, xml,
-                    "每日任务", "任务中心", "赚币任务", "闲鱼币任务")) {
-                diagnostic("[导航] 点击任务列表入口，第" + pass + "轮");
-                waitForTaskPage(suPath, 6000L);
-                continue;
-            }
-
-            // 某些版本任务卡片在首屏下方，先滚动再识别。
-            diagnostic("[导航] 第" + pass + "轮未找到任务入口，向上滚动");
-            if (!swipeUp(suPath)) {
-                SystemClock.sleep(900L);
-            }
-            SystemClock.sleep(1000L);
-        }
-
-        xml = dumpUi(suPath);
-        if (xml != null && isTaskPage(xml)) {
-            diagnostic("[导航] 最终确认已进入任务列表");
+        if (isRealTaskPage(xml)) {
+            diagnostic("[导航] 当前已经在任务面板");
             return true;
         }
 
-        diagnostic("❌ 仍未找到闲鱼币任务列表");
+        if (!isMinePageV43(xml)
+                && !isCoinPageV43(xml)) {
+
+            diagnostic(
+                    "[导航] 当前不是‘我的’页面，准备进入‘我的’"
+            );
+
+            boolean clickedMine =
+                    clickTextAnyAllowBottom(
+                            suPath,
+                            xml,
+                            "我的",
+                            "我的闲鱼",
+                            "个人中心"
+                    );
+
+            if (!clickedMine) {
+
+                diagnostic(
+                        "[导航] XML没有成功点击‘我的’，使用比例坐标"
+                );
+
+                clickedMine =
+                        tapByRatioV43(
+                                suPath,
+                                0.885f,
+                                0.950f,
+                                "首页-我的",
+                                true
+                        );
+            }
+
+            if (!clickedMine) {
+
+                diagnostic(
+                        "❌ 无法点击‘我的’"
+                );
+
+                logVisibleTexts(xml);
+                return false;
+            }
+
+            diagnostic(
+                    "[导航] ✅ 已点击‘我的’"
+            );
+
+            if (!waitMinePageV43(
+                    suPath,
+                    8000L
+            )) {
+
+                diagnostic(
+                        "⚠️ 点击‘我的’后没有立即识别到个人页"
+                );
+            }
+
+            xml =
+                    dumpUi(suPath);
+
+            if (xml == null) {
+                return false;
+            }
+
+        } else if (isMinePageV43(xml)) {
+
+            diagnostic(
+                    "[导航] 当前已经在‘我的’页面"
+            );
+
+        } else {
+
+            diagnostic(
+                    "[导航] 当前已经进入闲鱼币页面"
+            );
+        }
+
+        if (!isCoinPageV43(xml)
+                && !isRealTaskPage(xml)) {
+
+            diagnostic(
+                    "[导航] 开始寻找‘闲鱼币’入口"
+            );
+
+            boolean enteredCoin =
+                    false;
+
+            for (int attempt = 1;
+                 attempt <= 3;
+                 attempt++) {
+
+                if (!ensureFg(suPath)) {
+                    return false;
+                }
+
+                xml =
+                        dumpUi(suPath);
+
+                if (xml == null) {
+                    SystemClock.sleep(500L);
+                    continue;
+                }
+
+                if (isRealTaskPage(xml)) {
+                    return true;
+                }
+
+                if (isCoinPageV43(xml)) {
+                    enteredCoin = true;
+                    break;
+                }
+
+                boolean clickedCoin =
+                        clickTextAny(
+                                suPath,
+                                xml,
+                                "闲鱼币",
+                                "闲鱼币中心",
+                                "赚闲鱼币",
+                                "领闲鱼币"
+                        );
+
+                if (!clickedCoin
+                        && isMinePageV43(xml)) {
+
+                    diagnostic(
+                            "[导航] XML没有点击到闲鱼币，使用比例坐标"
+                    );
+
+                    clickedCoin =
+                            tapByRatioV43(
+                                    suPath,
+                                    0.20f,
+                                    0.79f,
+                                    "我的页-闲鱼币",
+                                    false
+                            );
+                }
+
+                if (clickedCoin) {
+
+                    diagnostic(
+                            "[导航] ✅ 已点击闲鱼币，第"
+                                    + attempt
+                                    + "次"
+                    );
+
+                    enteredCoin =
+                            waitCoinPageV43(
+                                    suPath,
+                                    10000L
+                            );
+
+                    if (enteredCoin) {
+                        break;
+                    }
+                }
+
+                SystemClock.sleep(700L);
+            }
+
+            if (!enteredCoin) {
+
+                xml =
+                        dumpUi(suPath);
+
+                diagnostic(
+                        "❌ 没有进入闲鱼币主页"
+                );
+
+                logVisibleTexts(xml);
+                return false;
+            }
+
+            xml =
+                    dumpUi(suPath);
+
+            if (xml == null) {
+                return false;
+            }
+        }
+
+        if (isRealTaskPage(xml)) {
+            return true;
+        }
+
+        diagnostic(
+                "[导航] 已进入闲鱼币，准备打开‘赚骰子’"
+        );
+
+        for (int attempt = 1;
+             attempt <= 4;
+             attempt++) {
+
+            if (!ensureFg(suPath)) {
+                return false;
+            }
+
+            xml =
+                    dumpUi(suPath);
+
+            if (xml == null) {
+                SystemClock.sleep(500L);
+                continue;
+            }
+
+            if (isRealTaskPage(xml)) {
+
+                diagnostic(
+                        "[导航] ✅ 已进入任务面板"
+                );
+
+                return true;
+            }
+
+            boolean clickedEarn =
+                    clickTextAny(
+                            suPath,
+                            xml,
+                            "赚骰子"
+                    );
+
+            if (!clickedEarn
+                    && isCoinPageV43(xml)) {
+
+                diagnostic(
+                        "[导航] XML没有识别到‘赚骰子’，使用比例坐标"
+                );
+
+                clickedEarn =
+                        tapByRatioV43(
+                                suPath,
+                                0.735f,
+                                0.50f,
+                                "闲鱼币-赚骰子",
+                                false
+                        );
+            }
+
+            if (clickedEarn) {
+
+                diagnostic(
+                        "[导航] 已点击‘赚骰子’，等待任务弹窗"
+                );
+
+                if (waitRealTaskPageV43(
+                        suPath,
+                        8000L
+                )) {
+
+                    diagnostic(
+                            "[导航] ✅ ‘得骰子赚闲鱼币’任务面板打开成功"
+                    );
+
+                    return true;
+                }
+
+                diagnostic(
+                        "[导航] 点击赚骰子后暂时没识别到任务面板"
+                );
+            }
+
+            SystemClock.sleep(700L);
+        }
+
+        xml =
+                dumpUi(suPath);
+
+        if (isRealTaskPage(xml)) {
+            return true;
+        }
+
+        diagnostic(
+                "❌ 无法打开‘得骰子赚闲鱼币’任务面板"
+        );
+
         logVisibleTexts(xml);
         return false;
+    }
+
+    private static boolean isMinePageV43(
+            String xml
+    ) {
+
+        if (xml == null
+                || xml.isEmpty()) {
+            return false;
+        }
+
+        int score = 0;
+
+        if (xml.contains("我的收藏")) score++;
+        if (xml.contains("历史浏览")) score++;
+        if (xml.contains("我的关注")) score++;
+        if (xml.contains("我的交易")) score++;
+        if (xml.contains("我发布的")) score++;
+        if (xml.contains("我卖出的")) score++;
+        if (xml.contains("闲鱼币")) score++;
+
+        return score >= 2;
+    }
+
+    private static boolean isCoinPageV43(
+            String xml
+    ) {
+
+        if (xml == null
+                || xml.isEmpty()) {
+            return false;
+        }
+
+        int score = 0;
+
+        if (xml.contains("扔骰子寻宝")) score += 2;
+        if (xml.contains("赚骰子")) score += 2;
+        if (xml.contains("碎片收集")) score++;
+        if (xml.contains("背包")) score++;
+        if (xml.contains("1分兑换")) score++;
+        if (xml.contains("闲鱼币抵扣")) score++;
+        if (xml.contains("IP兑换")) score++;
+
+        return score >= 2;
+    }
+
+    private static boolean isRealTaskPage(
+            String xml
+    ) {
+
+        if (xml == null
+                || xml.isEmpty()) {
+            return false;
+        }
+
+        boolean hasAction =
+                xml.contains("领取奖励")
+                        || xml.contains("去完成");
+
+        if (!hasAction) {
+            return false;
+        }
+
+        int score = 0;
+
+        if (xml.contains("得骰子赚闲鱼币")) score += 2;
+        if (xml.contains("领取奖励")) score += 2;
+        if (xml.contains("去完成")) score += 2;
+        if (xml.contains("签到")) score++;
+        if (xml.contains("倒计时")) score++;
+        if (xml.contains("看15秒视频")) score++;
+
+        return score >= 2;
+    }
+
+    private static boolean waitMinePageV43(
+            String suPath,
+            long timeout
+    ) {
+
+        long end =
+                SystemClock.elapsedRealtime()
+                        + Math.max(0L, timeout);
+
+        while (SystemClock.elapsedRealtime() < end) {
+
+            if (userAborted) {
+                return false;
+            }
+
+            String xml =
+                    dumpUi(suPath);
+
+            if (xml != null) {
+
+                if (isMinePageV43(xml)
+                        || isCoinPageV43(xml)
+                        || isRealTaskPage(xml)) {
+
+                    return true;
+                }
+            }
+
+            SystemClock.sleep(350L);
+        }
+
+        return false;
+    }
+
+    private static boolean waitCoinPageV43(
+            String suPath,
+            long timeout
+    ) {
+
+        long end =
+                SystemClock.elapsedRealtime()
+                        + Math.max(0L, timeout);
+
+        while (SystemClock.elapsedRealtime() < end) {
+
+            if (userAborted) {
+                return false;
+            }
+
+            String xml =
+                    dumpUi(suPath);
+
+            if (xml != null) {
+
+                if (isCoinPageV43(xml)) {
+
+                    diagnostic(
+                            "[导航] ✅ 已确认闲鱼币主页"
+                    );
+
+                    return true;
+                }
+
+                if (isRealTaskPage(xml)) {
+                    return true;
+                }
+            }
+
+            SystemClock.sleep(350L);
+        }
+
+        return false;
+    }
+
+    private static boolean waitRealTaskPageV43(
+            String suPath,
+            long timeout
+    ) {
+
+        long end =
+                SystemClock.elapsedRealtime()
+                        + Math.max(0L, timeout);
+
+        while (SystemClock.elapsedRealtime() < end) {
+
+            if (userAborted) {
+                return false;
+            }
+
+            String xml =
+                    dumpUi(suPath);
+
+            if (isRealTaskPage(xml)) {
+                return true;
+            }
+
+            SystemClock.sleep(350L);
+        }
+
+        return false;
+    }
+
+    private static boolean tapByRatioV43(
+            String suPath,
+            float xRatio,
+            float yRatio,
+            String name,
+            boolean allowBottom
+    ) {
+
+        int[] screen =
+                getScreenSizeV43(suPath);
+
+        if (screen == null) {
+
+            diagnostic(
+                    "[比例点击] 无法读取屏幕尺寸："
+                            + name
+            );
+
+            return false;
+        }
+
+        int width =
+                screen[0];
+
+        int height =
+                screen[1];
+
+        int x =
+                Math.round(
+                        width * xRatio
+                );
+
+        int y =
+                Math.round(
+                        height * yRatio
+                );
+
+        diagnostic(
+                "[比例点击] "
+                        + name
+                        + " → "
+                        + x
+                        + ","
+                        + y
+                        + " / "
+                        + width
+                        + "x"
+                        + height
+        );
+
+        int gestureZone =
+                Math.max(
+                        60,
+                        Math.round(
+                                height * 0.03f
+                        )
+                );
+
+        if (y > height - gestureZone) {
+
+            if (!allowBottom) {
+
+                diagnostic(
+                        "[比例点击] 位于系统手势区，取消："
+                                + name
+                );
+
+                return false;
+            }
+
+            diagnostic(
+                    "[比例点击] 底部导航允许点击："
+                            + name
+            );
+        }
+
+        if (!ensureFg(suPath)) {
+            return false;
+        }
+
+        RootResult result =
+                rootWithPath(
+                        suPath,
+                        "input tap "
+                                + x
+                                + " "
+                                + y
+                );
+
+        if (result.exitCode != 0) {
+
+            diagnostic(
+                    "[比例点击] 点击失败："
+                            + name
+                            + " exit="
+                            + result.exitCode
+            );
+
+            return false;
+        }
+
+        SystemClock.sleep(800L);
+        return true;
+    }
+
+    private static int[] getScreenSizeV43(
+            String suPath
+    ) {
+
+        RootResult result =
+                rootWithPath(
+                        suPath,
+                        "wm size 2>/dev/null"
+                );
+
+        if (result.exitCode != 0
+                || result.stdout == null) {
+
+            return null;
+        }
+
+        Matcher matcher =
+                Pattern.compile(
+                        "(\\d+)x(\\d+)"
+                ).matcher(
+                        result.stdout
+                );
+
+        int width = 0;
+        int height = 0;
+
+        while (matcher.find()) {
+
+            try {
+
+                width =
+                        Integer.parseInt(
+                                matcher.group(1)
+                        );
+
+                height =
+                        Integer.parseInt(
+                                matcher.group(2)
+                        );
+
+            } catch (Throwable ignored) {
+            }
+        }
+
+        if (width <= 0
+                || height <= 0) {
+
+            return null;
+        }
+
+        if (width > height) {
+
+            int temp = width;
+            width = height;
+            height = temp;
+        }
+
+        return new int[]{
+                width,
+                height
+        };
     }
 
     private static boolean clickTextAny(String suPath, String xml, String... texts) {
@@ -1626,20 +2167,9 @@ public final class TaskExecutor {
             String xml
     ) {
 
-        if (xml == null
-                || xml.isEmpty()) {
-            return false;
-        }
-
-        int score = 0;
-
-        if (xml.contains("去完成")) score++;
-        if (xml.contains("领取奖励")) score++;
-        if (xml.contains("闲鱼币")) score++;
-        if (xml.contains("任务")) score++;
-        if (xml.contains("宝箱")) score++;
-
-        return score >= 2;
+        return isRealTaskPage(
+                xml
+        );
     }
 
     private static boolean clickText(
