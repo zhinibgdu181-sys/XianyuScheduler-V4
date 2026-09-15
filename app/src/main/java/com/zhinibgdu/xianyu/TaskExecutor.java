@@ -22,9 +22,11 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -34,7 +36,7 @@ import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
 /**
- * XianyuTaskExecutor V13
+ * XianyuTaskExecutor V4.6
  *
  * 重点修复：
  * 1. dumpsys 前台解析不再把“未知”误判为模块 App。
@@ -73,9 +75,6 @@ public final class TaskExecutor {
     private static final long ROOT_TIMEOUT_MS =
             8000L;
 
-    private static final int BOTTOM_GESTURE_ZONE =
-            200;
-
     private static final int ROOT_PROBE_ATTEMPTS =
             3;
 
@@ -90,9 +89,28 @@ public final class TaskExecutor {
             );
 
     private static final String[] SKIP_TASK_KEYWORDS = {
-            "发布一件新宝贝",
-            "发布一件优推抵扣宝贝",
-            "添加闲鱼币到桌面"
+            // 有明显副作用或会进入安装流程的任务默认不自动执行。
+            "发布",
+            "添加闲鱼币到桌面",
+            "下载",
+            "安装",
+            "未知任务"
+    };
+
+    private static final String[] INTERNAL_BROWSE_KEYWORDS = {
+            "浏览",
+            "逛一逛",
+            "指定频道",
+            "好物",
+            "福利",
+            "商城",
+            "会场"
+    };
+
+    private static final String[] REPEATABLE_TASK_KEYWORDS = {
+            "视频",
+            "指定频道",
+            "浏览"
     };
 
     private static volatile boolean running =
@@ -151,11 +169,11 @@ public final class TaskExecutor {
         inBounceTask = false;
 
         diagnostic(
-                "========== 闲鱼任务开始 =========="
+                "========== 闲鱼任务开始 · V4.6 =========="
         );
 
         diagnostic(
-                "💡 想中途停止：切到任何其它 App 即可"
+                "💡 想中途停止：切回“闲鱼定时助手”即可"
         );
 
         notifyTask(
@@ -207,7 +225,7 @@ public final class TaskExecutor {
                                 }
                             }
                         },
-                        "XianyuTask-V13"
+                        "XianyuTask-V46"
                 );
 
         worker.start();
@@ -376,24 +394,29 @@ public final class TaskExecutor {
             return false;
         }
 
-        String xml =
-                dumpUi(suPath);
-
+        String xml = recoverNavigationContextV45(suPath);
         if (xml == null) {
-            diagnostic("[导航] UI 获取失败");
+            diagnostic("[导航] 无法恢复到可识别的闲鱼页面");
             return false;
         }
 
-        if (isRealTaskPage(xml)) {
+        ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "导航初始页");
+
+        if (isTaskPageV45(xml, ocr)) {
             diagnostic("[导航] 当前已经在任务面板");
             return true;
         }
 
-        if (!isMinePageV43(xml)
-                && !isCoinPageV43(xml)) {
+        if (!isMinePageV45(xml, ocr)
+                && !isCoinPageV45(xml, ocr)) {
+
+            if (!isHomePageV45(xml, ocr)) {
+                diagnostic("[导航] 当前不是首页/我的/闲鱼币，拒绝盲点底部坐标");
+                return false;
+            }
 
             diagnostic(
-                    "[导航] 当前不是‘我的’页面，准备进入‘我的’"
+                    "[导航] 当前在首页，准备进入‘我的’"
             );
 
             boolean clickedMine =
@@ -406,9 +429,19 @@ public final class TaskExecutor {
                     );
 
             if (!clickedMine) {
+                clickedMine = clickOcrTextAnyV45(
+                        suPath,
+                        ocr,
+                        true,
+                        "我的",
+                        "我的闲鱼",
+                        "个人中心"
+                );
+            }
 
+            if (!clickedMine) {
                 diagnostic(
-                        "[导航] XML没有成功点击‘我的’，使用比例坐标"
+                        "[导航] XML/OCR均未点击到‘我的’，使用首页比例坐标兜底"
                 );
 
                 clickedMine =
@@ -422,255 +455,408 @@ public final class TaskExecutor {
             }
 
             if (!clickedMine) {
-
-                diagnostic(
-                        "❌ 无法点击‘我的’"
-                );
-
+                diagnostic("❌ 无法点击‘我的’");
                 logVisibleTexts(xml);
                 return false;
             }
 
-            diagnostic(
-                    "[导航] ✅ 已点击‘我的’"
-            );
+            diagnostic("[导航] ✅ 已点击‘我的’");
 
-            if (!waitMinePageV43(
-                    suPath,
-                    8000L
-            )) {
-
-                diagnostic(
-                        "⚠️ 点击‘我的’后没有立即识别到个人页"
-                );
+            if (!waitMinePageV45(suPath, 9000L)) {
+                diagnostic("⚠️ 点击‘我的’后仍未识别到个人页");
             }
 
-            xml =
-                    dumpUi(suPath);
+            xml = dumpUi(suPath);
+            ocr = captureOcrV45(suPath, "我的页");
 
-            if (xml == null) {
+            if (xml == null && ocr.isEmpty()) {
                 return false;
             }
 
-        } else if (isMinePageV43(xml)) {
-
-            diagnostic(
-                    "[导航] 当前已经在‘我的’页面"
-            );
-
+        } else if (isMinePageV45(xml, ocr)) {
+            diagnostic("[导航] 当前已经在‘我的’页面");
         } else {
-
-            diagnostic(
-                    "[导航] 当前已经进入闲鱼币页面"
-            );
+            diagnostic("[导航] 当前已经进入闲鱼币页面");
         }
 
-        if (!isCoinPageV43(xml)
-                && !isRealTaskPage(xml)) {
+        if (!isCoinPageV45(xml, ocr)
+                && !isTaskPageV45(xml, ocr)) {
 
-            diagnostic(
-                    "[导航] 开始寻找‘闲鱼币’入口"
-            );
+            if (!isMinePageV45(xml, ocr)) {
+                diagnostic("[导航] 未确认处于‘我的’页，拒绝点击闲鱼币坐标");
+                return false;
+            }
 
-            boolean enteredCoin =
-                    false;
+            diagnostic("[导航] 开始寻找‘闲鱼币’入口");
 
-            for (int attempt = 1;
-                 attempt <= 3;
-                 attempt++) {
+            boolean enteredCoin = false;
 
-                if (!ensureFg(suPath)) {
-                    return false;
-                }
+            for (int attempt = 1; attempt <= 3; attempt++) {
 
-                xml =
-                        dumpUi(suPath);
+                if (!ensureFg(suPath)) return false;
 
-                if (xml == null) {
-                    SystemClock.sleep(500L);
-                    continue;
-                }
+                xml = dumpUi(suPath);
+                ocr = captureOcrV45(suPath, "寻找闲鱼币#" + attempt);
 
-                if (isRealTaskPage(xml)) {
-                    return true;
-                }
-
-                if (isCoinPageV43(xml)) {
+                if (isTaskPageV45(xml, ocr)) return true;
+                if (isCoinPageV45(xml, ocr)) {
                     enteredCoin = true;
                     break;
                 }
 
-                boolean clickedCoin =
-                        clickTextAny(
-                                suPath,
-                                xml,
-                                "闲鱼币",
-                                "闲鱼币中心",
-                                "赚闲鱼币",
-                                "领闲鱼币"
-                        );
+                boolean clickedCoin = false;
 
-                if (!clickedCoin
-                        && isMinePageV43(xml)) {
-
-                    diagnostic(
-                            "[导航] XML没有点击到闲鱼币，使用比例坐标"
+                if (xml != null) {
+                    clickedCoin = clickTextAny(
+                            suPath,
+                            xml,
+                            "闲鱼币",
+                            "闲鱼币中心",
+                            "赚闲鱼币",
+                            "领闲鱼币"
                     );
+                }
 
-                    clickedCoin =
-                            tapByRatioV43(
-                                    suPath,
-                                    0.20f,
-                                    0.79f,
-                                    "我的页-闲鱼币",
-                                    false
-                            );
+                if (!clickedCoin) {
+                    clickedCoin = clickOcrTextAnyV45(
+                            suPath,
+                            ocr,
+                            false,
+                            "闲鱼币",
+                            "闲鱼币中心",
+                            "赚闲鱼币",
+                            "领闲鱼币"
+                    );
+                }
+
+                if (!clickedCoin && isMinePageV45(xml, ocr)) {
+                    diagnostic("[导航] XML/OCR未点击到闲鱼币，使用个人页比例坐标");
+                    clickedCoin = tapByRatioV43(
+                            suPath,
+                            0.20f,
+                            0.79f,
+                            "我的页-闲鱼币",
+                            false
+                    );
                 }
 
                 if (clickedCoin) {
-
-                    diagnostic(
-                            "[导航] ✅ 已点击闲鱼币，第"
-                                    + attempt
-                                    + "次"
-                    );
-
-                    enteredCoin =
-                            waitCoinPageV43(
-                                    suPath,
-                                    10000L
-                            );
-
-                    if (enteredCoin) {
-                        break;
-                    }
+                    diagnostic("[导航] ✅ 已点击闲鱼币，第" + attempt + "次");
+                    enteredCoin = waitCoinPageV45(suPath, 12000L);
+                    if (enteredCoin) break;
                 }
 
                 SystemClock.sleep(700L);
             }
 
             if (!enteredCoin) {
-
-                xml =
-                        dumpUi(suPath);
-
-                diagnostic(
-                        "❌ 没有进入闲鱼币主页"
-                );
-
-                logVisibleTexts(xml);
+                xml = dumpUi(suPath);
+                ocr = captureOcrV45(suPath, "闲鱼币失败页");
+                diagnostic("❌ 没有进入闲鱼币主页");
+                if (!ocr.isEmpty()) {
+                    diagnostic("[OCR文本] " + trimForLog(ocr.fullText, 1500));
+                } else {
+                    logVisibleTexts(xml);
+                }
                 return false;
             }
 
-            xml =
-                    dumpUi(suPath);
-
-            if (xml == null) {
-                return false;
-            }
+            xml = dumpUi(suPath);
+            ocr = captureOcrV45(suPath, "闲鱼币主页");
         }
 
-        if (isRealTaskPage(xml)) {
-            return true;
+        if (isTaskPageV45(xml, ocr)) return true;
+
+        if (!isCoinPageV45(xml, ocr)) {
+            diagnostic("[导航] 未确认闲鱼币主页，拒绝盲点‘赚骰子’");
+            return false;
         }
 
-        diagnostic(
-                "[导航] 已进入闲鱼币，准备打开‘赚骰子’"
-        );
+        diagnostic("[导航] 已进入闲鱼币，准备打开‘赚骰子’");
 
-        for (int attempt = 1;
-             attempt <= 4;
-             attempt++) {
+        for (int attempt = 1; attempt <= 3; attempt++) {
 
-            if (!ensureFg(suPath)) {
-                return false;
-            }
+            if (!ensureFg(suPath)) return false;
 
-            xml =
-                    dumpUi(suPath);
+            xml = dumpUi(suPath);
+            ocr = captureOcrV45(suPath, "赚骰子#" + attempt);
 
-            if (xml == null) {
-                SystemClock.sleep(500L);
-                continue;
-            }
-
-            if (isRealTaskPage(xml)) {
-
-                diagnostic(
-                        "[导航] ✅ 已进入任务面板"
-                );
-
+            if (isTaskPageV45(xml, ocr)) {
+                diagnostic("[导航] ✅ 已进入任务面板");
                 return true;
             }
 
-            boolean clickedEarn =
-                    clickTextAny(
-                            suPath,
-                            xml,
-                            "赚骰子"
-                    );
+            boolean clickedEarn = false;
+            if (xml != null) {
+                clickedEarn = clickTextAny(suPath, xml, "赚骰子");
+            }
 
             if (!clickedEarn) {
-
-                /*
-                 * 闲鱼币主页是 UC WebView。进入页面后，UIAutomator 有时只会暴露：
-                 * [WVUCWebView] 首页 领 ×1
-                 * 因此这里不能再用 isCoinPageV43(xml) 作为比例点击的前置条件。
-                 * 前面已经确认成功进入闲鱼币主页，XML 找不到“赚骰子”时直接使用比例坐标兜底。
-                 */
-                diagnostic(
-                        "[导航] XML没有识别到‘赚骰子’，直接使用比例坐标兜底"
+                clickedEarn = clickOcrTextAnyV45(
+                        suPath,
+                        ocr,
+                        false,
+                        "赚骰子"
                 );
+            }
 
-                clickedEarn =
-                        tapByRatioV43(
-                                suPath,
-                                0.735f,
-                                0.485f,
-                                "闲鱼币-赚骰子",
-                                false
-                        );
+            if (!clickedEarn) {
+                diagnostic("[导航] XML/OCR未识别到‘赚骰子’，使用已确认闲鱼币页的比例坐标兜底");
+                clickedEarn = tapByRatioV43(
+                        suPath,
+                        0.735f,
+                        0.495f,
+                        "闲鱼币-赚骰子",
+                        false
+                );
             }
 
             if (clickedEarn) {
+                diagnostic("[导航] 已点击‘赚骰子’，等待任务弹窗");
 
-                diagnostic(
-                        "[导航] 已点击‘赚骰子’，等待任务弹窗"
-                );
-
-                if (waitRealTaskPageV43(
-                        suPath,
-                        8000L
-                )) {
-
-                    diagnostic(
-                            "[导航] ✅ ‘得骰子赚闲鱼币’任务面板打开成功"
-                    );
-
+                if (waitTaskPageV45(suPath, 9000L)) {
+                    diagnostic("[导航] ✅ ‘得骰子赚闲鱼币’任务面板打开成功");
                     return true;
                 }
 
-                diagnostic(
-                        "[导航] 点击赚骰子后暂时没识别到任务面板"
-                );
+                diagnostic("[导航] 点击赚骰子后暂时没识别到任务面板");
             }
 
-            SystemClock.sleep(700L);
+            SystemClock.sleep(800L);
         }
 
-        xml =
-                dumpUi(suPath);
+        ScreenOcr.Snapshot finalOcr = captureOcrV45(suPath, "任务面板失败页");
+        diagnostic("❌ 无法打开‘得骰子赚闲鱼币’任务面板");
+        if (!finalOcr.isEmpty()) {
+            diagnostic("[OCR文本] " + trimForLog(finalOcr.fullText, 1500));
+        }
+        return false;
+    }
 
-        if (isRealTaskPage(xml)) {
-            return true;
+    /**
+     * 在执行坐标兜底前先把闲鱼恢复到一个已知页面。
+     * 这用于修复“红果免费短剧应用详情”之类的闲鱼内嵌页面被误当成首页，
+     * 然后盲点右下角坐标的问题。
+     */
+    private static String recoverNavigationContextV45(String suPath) {
+
+        for (int i = 0; i < 5; i++) {
+            if (!ensureFg(suPath)) return null;
+
+            String xml = dumpUi(suPath);
+            ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "页面恢复#" + (i + 1));
+
+            if (isTaskPageV45(xml, ocr)
+                    || isCoinPageV45(xml, ocr)
+                    || isMinePageV45(xml, ocr)
+                    || isHomePageV45(xml, ocr)) {
+                return xml == null ? "" : xml;
+            }
+
+            String text = combinedTextV45(xml, ocr);
+            diagnostic("[导航恢复] 未知闲鱼子页面，返回上一层："
+                    + trimForLog(text, 300));
+
+            rootWithPath(suPath, "input keyevent KEYCODE_BACK");
+            SystemClock.sleep(900L);
         }
 
-        diagnostic(
-                "❌ 无法打开‘得骰子赚闲鱼币’任务面板"
+        diagnostic("[导航恢复] 连续返回仍无法识别，重启闲鱼到主页面");
+        rootWithPath(
+                suPath,
+                "am force-stop " + TARGET_PACKAGE
+                        + "; sleep 1; am start -n " + TARGET_MAIN_ACTIVITY
         );
 
-        logVisibleTexts(xml);
+        if (!waitFg(suPath, 15000L)) return null;
+        SystemClock.sleep(1800L);
+
+        String xml = dumpUi(suPath);
+        ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "重启后的闲鱼");
+
+        if (isTaskPageV45(xml, ocr)
+                || isCoinPageV45(xml, ocr)
+                || isMinePageV45(xml, ocr)
+                || isHomePageV45(xml, ocr)) {
+            return xml == null ? "" : xml;
+        }
+
+        diagnostic("[导航恢复] 重启后仍无法识别闲鱼主页面");
+        return null;
+    }
+
+    private static ScreenOcr.Snapshot captureOcrV45(
+            String suPath,
+            String reason
+    ) {
+        ScreenOcr.Snapshot snapshot = ScreenOcr.capture(lastContext, suPath);
+        if (snapshot != null && !snapshot.isEmpty()) {
+            diagnostic("[OCR] " + reason + "："
+                    + trimForLog(snapshot.fullText, 500));
+            return snapshot;
+        }
+        return ScreenOcr.Snapshot.empty();
+    }
+
+    private static String combinedTextV45(
+            String xml,
+            ScreenOcr.Snapshot ocr
+    ) {
+        StringBuilder sb = new StringBuilder();
+        if (xml != null) sb.append(xml);
+        if (ocr != null && !ocr.fullText.isEmpty()) {
+            sb.append('\n').append(ocr.fullText);
+        }
+        return sb.toString();
+    }
+
+    private static boolean isHomePageV45(
+            String xml,
+            ScreenOcr.Snapshot ocr
+    ) {
+        String text = combinedTextV45(xml, ocr);
+        if (text.isEmpty()) return false;
+        if (text.contains("应用详情") && text.contains("立即下载")) return false;
+        if (text.contains("得骰子赚闲鱼币")) return false;
+        return text.contains("首页")
+                && (text.contains("我的")
+                || text.contains("消息")
+                || text.contains("同城")
+                || text.contains("卖闲置")
+                || text.contains("领 ×1")
+                || text.contains("领×1"));
+    }
+
+    private static boolean isMinePageV45(
+            String xml,
+            ScreenOcr.Snapshot ocr
+    ) {
+        if (isMinePageV43(xml)) return true;
+        String text = combinedTextV45(null, ocr);
+        int score = 0;
+        if (text.contains("我的收藏")) score++;
+        if (text.contains("历史浏览")) score++;
+        if (text.contains("我的关注")) score++;
+        if (text.contains("我的交易")) score++;
+        if (text.contains("我发布的")) score++;
+        if (text.contains("我卖出的")) score++;
+        if (text.contains("闲鱼币")) score++;
+        return score >= 2;
+    }
+
+    private static boolean isCoinPageV45(
+            String xml,
+            ScreenOcr.Snapshot ocr
+    ) {
+        if (isCoinPageV43(xml)) return true;
+        String text = combinedTextV45(null, ocr);
+        int score = 0;
+        if (text.contains("扔骰子寻宝")) score += 2;
+        if (text.contains("赚骰子")) score += 2;
+        if (text.contains("碎片收集")) score++;
+        if (text.contains("背包")) score++;
+        if (text.contains("1分兑换")) score++;
+        if (text.contains("闲鱼币抵扣")) score++;
+        if (text.contains("IP兑换")) score++;
+        return score >= 2;
+    }
+
+    private static boolean isTaskPageV45(
+            String xml,
+            ScreenOcr.Snapshot ocr
+    ) {
+        if (isRealTaskPage(xml)) return true;
+        String text = combinedTextV45(null, ocr);
+        if (text.isEmpty()) return false;
+
+        boolean hasAction = text.contains("去完成")
+                || text.contains("领取奖励")
+                || text.contains("签到");
+        if (!hasAction) return false;
+
+        int score = 0;
+        if (text.contains("得骰子赚闲鱼币")) score += 2;
+        if (text.contains("去完成")) score += 2;
+        if (text.contains("领取奖励")) score += 2;
+        if (text.contains("签到")) score++;
+        if (text.contains("收益+10%") || text.contains("收益 +10%")) score++;
+        if (text.contains("看视频") || text.contains("倒计时")) score++;
+        return score >= 2;
+    }
+
+    private static boolean waitMinePageV45(String suPath, long timeout) {
+        long end = SystemClock.elapsedRealtime() + Math.max(0L, timeout);
+        while (SystemClock.elapsedRealtime() < end) {
+            if (userAborted) return false;
+            String xml = dumpUi(suPath);
+            ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "等待我的页");
+            if (isMinePageV45(xml, ocr)
+                    || isCoinPageV45(xml, ocr)
+                    || isTaskPageV45(xml, ocr)) {
+                return true;
+            }
+            SystemClock.sleep(500L);
+        }
         return false;
+    }
+
+    private static boolean waitCoinPageV45(String suPath, long timeout) {
+        long end = SystemClock.elapsedRealtime() + Math.max(0L, timeout);
+        while (SystemClock.elapsedRealtime() < end) {
+            if (userAborted) return false;
+            String xml = dumpUi(suPath);
+            ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "等待闲鱼币页");
+            if (isCoinPageV45(xml, ocr)) {
+                diagnostic("[导航] ✅ 已确认闲鱼币主页");
+                return true;
+            }
+            if (isTaskPageV45(xml, ocr)) return true;
+            SystemClock.sleep(500L);
+        }
+        return false;
+    }
+
+    private static boolean waitTaskPageV45(String suPath, long timeout) {
+        long end = SystemClock.elapsedRealtime() + Math.max(0L, timeout);
+        while (SystemClock.elapsedRealtime() < end) {
+            if (userAborted) return false;
+            String xml = dumpUi(suPath);
+            ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "等待任务面板");
+            if (isTaskPageV45(xml, ocr)) return true;
+            SystemClock.sleep(500L);
+        }
+        return false;
+    }
+
+    private static boolean clickOcrTextAnyV45(
+            String suPath,
+            ScreenOcr.Snapshot snapshot,
+            boolean allowBottom,
+            String... tokens
+    ) {
+        if (snapshot == null || snapshot.isEmpty()) return false;
+        ScreenOcr.Item item = snapshot.findBest(tokens);
+        if (item == null) return false;
+
+        int x = item.centerX();
+        int y = item.centerY();
+        int height = snapshot.height;
+
+        if (height > 0) {
+            int gestureZone = Math.max(60, Math.round(height * 0.03f));
+            if (y > height - gestureZone && !allowBottom) {
+                diagnostic("[OCR点击] 位于系统手势区，取消：" + item.text);
+                return false;
+            }
+        }
+
+        if (!ensureFg(suPath)) return false;
+
+        diagnostic("[OCR点击] " + item.text + " → " + x + "," + y);
+        RootResult result = rootWithPath(suPath, "input tap " + x + " " + y);
+        if (result.exitCode != 0) return false;
+        SystemClock.sleep(900L);
+        return true;
     }
 
     private static boolean isMinePageV43(
@@ -1075,6 +1261,8 @@ public final class TaskExecutor {
         int completed = 0;
         Set<String> executed =
                 new HashSet<>();
+        Map<String, Integer> attemptsByTask =
+                new HashMap<>();
 
         int consecutiveFail = 0;
 
@@ -1110,10 +1298,16 @@ public final class TaskExecutor {
 
             consecutiveFail = 0;
 
+            ScreenOcr.Snapshot taskOcr = ScreenOcr.Snapshot.empty();
+
             if (!isTaskPage(xml)) {
+                taskOcr = captureOcrV45(suPath, "扫描任务页");
+            }
+
+            if (!isTaskPageV45(xml, taskOcr)) {
 
                 diagnostic(
-                        "[任务页] 当前 UI 不像任务页，重新进入"
+                        "[任务页] XML/OCR 都不像任务页，安全恢复后重新进入"
                 );
 
                 if (!enterViaMineCoin(suPath)) {
@@ -1125,6 +1319,13 @@ public final class TaskExecutor {
 
             List<TaskCandidate> candidates =
                     findTaskCandidates(xml);
+
+            if (candidates.isEmpty()) {
+                if (taskOcr.isEmpty()) {
+                    taskOcr = captureOcrV45(suPath, "任务候选OCR");
+                }
+                candidates = findTaskCandidatesOcrV45(taskOcr);
+            }
 
             diagnostic(
                     "候选任务="
@@ -1141,31 +1342,42 @@ public final class TaskExecutor {
             }
 
             TaskCandidate target = null;
+            int targetPriority = Integer.MAX_VALUE;
 
             for (TaskCandidate c : candidates) {
 
                 if (c == null
-                        || c.actionNode == null) {
-                    continue;
-                }
-
-                if (executed.contains(c.key())) {
+                        || c.bounds().isEmpty()) {
                     continue;
                 }
 
                 if (shouldSkip(c.name)) {
-
-                    diagnostic(
-                            "[跳过] "
-                                    + c.name
-                    );
-
+                    diagnostic("[跳过] " + c.name);
                     executed.add(c.key());
                     continue;
                 }
 
-                target = c;
-                break;
+                String attemptKey = normalizeTaskAttemptKeyV46(c.name);
+                int attempts = attemptsByTask.getOrDefault(attemptKey, 0);
+                int maxAttempts = maxAttemptsForTaskV46(c.name, c.isClaimReward);
+
+                if (attempts >= maxAttempts) {
+                    diagnostic("[跳过] 已达到本轮尝试上限 "
+                            + attempts + "/" + maxAttempts + "：" + c.name);
+                    continue;
+                }
+
+                // 非重复型任务仍利用旧 key 去重，避免滚动后再次点同一个任务。
+                if (!isRepeatableTaskV46(c.name)
+                        && executed.contains(c.key())) {
+                    continue;
+                }
+
+                int priority = taskPriorityV46(c);
+                if (priority < targetPriority) {
+                    target = c;
+                    targetPriority = priority;
+                }
             }
 
             if (target == null) {
@@ -1177,6 +1389,12 @@ public final class TaskExecutor {
                 continue;
             }
 
+            String targetAttemptKey = normalizeTaskAttemptKeyV46(target.name);
+            attemptsByTask.put(
+                    targetAttemptKey,
+                    attemptsByTask.getOrDefault(targetAttemptKey, 0) + 1
+            );
+
             executed.add(
                     target.key()
             );
@@ -1186,15 +1404,16 @@ public final class TaskExecutor {
                             + target.name
                             + " / claim="
                             + target.isClaimReward
+                            + " / priority="
+                            + targetPriority
+                            + " / attempt="
+                            + attemptsByTask.get(targetAttemptKey)
             );
 
             if (!clickBounds(
                     suPath,
                     xml,
-                    getAttr(
-                            target.actionNode,
-                            "bounds"
-                    )
+                    target.bounds()
             )) {
                 continue;
             }
@@ -1247,6 +1466,45 @@ public final class TaskExecutor {
         }
 
         return completed;
+    }
+
+    private static int taskPriorityV46(TaskCandidate candidate) {
+        if (candidate == null) return 99;
+        if (candidate.isClaimReward) return 0;
+
+        String name = candidate.name == null ? "" : candidate.name;
+        if (containsAny(name, "视频", "倒计时", "通过首页访问闲鱼币")) {
+            return 1;
+        }
+        if (containsAny(name, INTERNAL_BROWSE_KEYWORDS)) {
+            return 2;
+        }
+        if (isBounceTask(name)) {
+            return 3;
+        }
+        return 2;
+    }
+
+    private static boolean isRepeatableTaskV46(String name) {
+        return name != null && containsAny(name, REPEATABLE_TASK_KEYWORDS);
+    }
+
+    private static int maxAttemptsForTaskV46(String name, boolean claim) {
+        if (claim) return 1;
+        if (name == null) return 1;
+        if (containsAny(name, "指定频道")) return 10;
+        if (containsAny(name, "视频")) return 4;
+        if (containsAny(name, "浏览")) return 3;
+        return 1;
+    }
+
+    private static String normalizeTaskAttemptKeyV46(String name) {
+        if (name == null) return "未知任务";
+        return name
+                .replaceAll("\\(\\d+/\\d+\\)", "")
+                .replaceAll("\\d+/\\d+", "")
+                .replaceAll("\\s+", "")
+                .trim();
     }
 
     private static boolean shouldSkip(
@@ -1368,6 +1626,96 @@ public final class TaskExecutor {
         return result;
     }
 
+    private static List<TaskCandidate> findTaskCandidatesOcrV45(
+            ScreenOcr.Snapshot snapshot
+    ) {
+        List<TaskCandidate> result = new ArrayList<>();
+        if (snapshot == null || snapshot.isEmpty()) return result;
+
+        for (ScreenOcr.Item action : snapshot.items) {
+            if (action == null || action.text == null) continue;
+            String actionText = action.text.trim();
+
+            boolean isComplete = actionText.contains("去完成");
+            boolean isClaim = actionText.contains("领取奖励");
+            boolean isSign = "签到".equals(actionText) || actionText.endsWith("签到");
+
+            if (!isComplete && !isClaim && !isSign) continue;
+
+            String name;
+            if (isSign) {
+                name = "每日签到";
+            } else {
+                ScreenOcr.Item title = findNearestTaskTitleOcrV45(snapshot, action);
+                name = title == null ? "未知任务" : normalizeTaskName(title.text);
+            }
+
+            if (name.isEmpty()) name = "未知任务";
+
+            result.add(new TaskCandidate(
+                    name,
+                    action.boundsString(),
+                    isClaim || isSign
+            ));
+
+            diagnostic("[OCR任务匹配] action=" + actionText
+                    + " -> title=" + name
+                    + " bounds=" + action.boundsString());
+        }
+
+        return result;
+    }
+
+    private static ScreenOcr.Item findNearestTaskTitleOcrV45(
+            ScreenOcr.Snapshot snapshot,
+            ScreenOcr.Item action
+    ) {
+        if (snapshot == null || action == null) return null;
+
+        ScreenOcr.Item best = null;
+        double bestScore = Double.MAX_VALUE;
+        int actionCx = action.centerX();
+        int actionCy = action.centerY();
+
+        for (ScreenOcr.Item item : snapshot.items) {
+            if (item == null || item == action) continue;
+            String text = normalizeTaskName(item.text);
+            if (text.isEmpty()) continue;
+
+            if (containsAny(
+                    text,
+                    "去完成", "领取奖励", "高额奖励", "收益+10%",
+                    "收益 +10%", "签到", "得骰子赚闲鱼币",
+                    "闲鱼币", "骰子"
+            )) {
+                continue;
+            }
+
+            if (text.matches("^[+\\-0-9.%/() 次币元]+$")) continue;
+
+            int cx = item.centerX();
+            int cy = item.centerY();
+            int dy = Math.abs(cy - actionCy);
+            int dx = Math.abs(cx - actionCx);
+
+            if (dy > 190) continue;
+            if (cx >= actionCx - 60) continue;
+
+            double score = dy * 5.0 + dx * 0.05;
+
+            // 中文任务标题通常比奖励数字更长。
+            if (text.length() < 4) score += 260.0;
+            if (text.length() >= 6) score -= 80.0;
+
+            if (score < bestScore) {
+                bestScore = score;
+                best = item;
+            }
+        }
+
+        return best;
+    }
+
     private static Node findNearestTaskName(
             NodeList nodes,
             int actionIndex
@@ -1466,130 +1814,136 @@ public final class TaskExecutor {
             String taskName
     ) {
 
-        diagnostic(
-                "[执行] "
-                        + taskName
+        diagnostic("[执行] " + taskName);
+
+        boolean isVideo = containsAny(
+                taskName,
+                "视频",
+                "观看",
+                "看15秒"
         );
 
-        boolean isVideo =
-                containsAny(
-                        taskName,
-                        "视频",
-                        "观看",
-                        "看15秒"
-                );
+        boolean isSearch = containsAny(
+                taskName,
+                "搜一搜",
+                "搜索",
+                "搜商品"
+        );
 
-        boolean isSearch =
-                containsAny(
-                        taskName,
-                        "搜一搜",
-                        "搜索",
-                        "搜商品"
-                );
-
-        boolean isBounce =
-                isBounceTask(taskName);
+        boolean isBounce = isBounceTask(taskName);
+        boolean isInternalBrowse = !isBounce
+                && containsAny(taskName, INTERNAL_BROWSE_KEYWORDS);
 
         if (isVideo) {
-
             return executeVideoTaskPolling(
                     suPath,
                     taskName
             );
         }
 
-        long waitMs =
-                isSearch
-                        ? 8000L
-                        : isBounce
-                        ? 18000L
-                        : 12000L;
+        long waitMs = isSearch
+                ? 9000L
+                : isBounce
+                ? 18000L
+                : isInternalBrowse
+                ? 16000L
+                : 12000L;
 
         if (isBounce) {
             inBounceTask = true;
+            diagnostic("[执行] 允许预期外部 App 跳转：" + taskName);
         }
 
         try {
-
             long slept = 0L;
+            long nextBrowseSwipe = 4500L;
 
             while (slept < waitMs) {
-
                 if (userAborted) return false;
 
                 SystemClock.sleep(1000L);
                 slept += 1000L;
+
+                if (isInternalBrowse && slept >= nextBrowseSwipe) {
+                    String fg = getFg(suPath, false);
+                    if (TARGET_PACKAGE.equals(fg)) {
+                        rootWithPath(
+                                suPath,
+                                "input swipe 720 2250 720 1050 550"
+                        );
+                        diagnostic("[执行] 内部浏览滑动，elapsed=" + slept + "ms");
+                    }
+                    nextBrowseSwipe += 4500L;
+                }
             }
 
             if (userAborted) return false;
 
-            String fg =
-                    getFg(
-                            suPath,
-                            false
-                    );
-
-            diagnostic(
-                    "[执行] 前台="
-                            + printableFg(fg)
-            );
+            String fg = getFg(suPath, false);
+            diagnostic("[执行] 前台=" + printableFg(fg));
 
             if (!TARGET_PACKAGE.equals(fg)) {
-
+                diagnostic("[执行] 任务结束后返回闲鱼");
                 rootWithPath(
                         suPath,
-                        "am start -n "
-                                + TARGET_MAIN_ACTIVITY
+                        "am start -n " + TARGET_MAIN_ACTIVITY
                 );
-
                 SystemClock.sleep(2500L);
             }
 
             if (isSearch) {
-
-                rootWithPath(
-                        suPath,
-                        "input keyevent 4"
-                );
-
+                rootWithPath(suPath, "input keyevent 4");
                 SystemClock.sleep(1200L);
             }
 
-            String xml =
-                    dumpUi(suPath);
-
-            if (xml == null) {
-                return true;
+            String xml = dumpUi(suPath);
+            ScreenOcr.Snapshot ocr = ScreenOcr.Snapshot.empty();
+            if (xml == null || !containsAny(
+                    xml,
+                    "开心收下", "领取奖励", "立即领取", "收下",
+                    "已完成", "任务完成", "完成任务", "已领取"
+            )) {
+                ocr = captureOcrV45(suPath, "任务完成确认");
             }
 
-            for (String t :
-                    new String[]{
-                            "开心收下",
-                            "领取奖励",
-                            "立即领取",
-                            "领取",
-                            "收下",
-                            "我知道了"
-                    }) {
+            String combined = combinedTextV45(xml, ocr);
 
-                if (clickText(
-                        suPath,
-                        xml,
-                        t
-                )) {
-
+            for (String t : new String[]{
+                    "开心收下",
+                    "领取奖励",
+                    "立即领取",
+                    "领取",
+                    "收下",
+                    "我知道了"
+            }) {
+                boolean clicked = false;
+                if (xml != null) {
+                    clicked = clickText(suPath, xml, t);
+                }
+                if (!clicked && !ocr.isEmpty()) {
+                    clicked = clickOcrTextAnyV45(suPath, ocr, false, t);
+                }
+                if (clicked) {
                     SystemClock.sleep(1200L);
                     return true;
                 }
             }
 
-            return xml.contains("已完成")
-                    || xml.contains("任务完成")
-                    || xml.contains("完成任务")
-                    || xml.contains("已领取");
+            if (containsAny(
+                    combined,
+                    "已完成",
+                    "任务完成",
+                    "完成任务",
+                    "已领取"
+            )) {
+                return true;
+            }
+
+            // 很多 WebView 任务只在返回任务面板后更新进度。
+            // 这里不凭空宣称完成，但如果任务已经正常返回闲鱼，则允许下一轮重新扫描验证。
+            return TARGET_PACKAGE.equals(getFg(suPath, false));
 
         } finally {
-
             if (isBounce) {
                 inBounceTask = false;
             }
@@ -2047,14 +2401,47 @@ public final class TaskExecutor {
             return true;
         }
 
-        userAborted = true;
+        if (isTransientForegroundV46(fg)) {
+            diagnostic("⚠️ 检测到系统/桌面瞬时前台，短暂重试：" + fg);
+            for (int i = 0; i < 4; i++) {
+                SystemClock.sleep(350L);
+                String retry = getFg(suPath, false);
+                if (TARGET_PACKAGE.equals(retry)) return true;
+                if (MODULE_PACKAGE.equals(retry)) {
+                    userAborted = true;
+                    diagnostic("🛑 重试确认用户切回模块 App");
+                    return false;
+                }
+                if (!isTransientForegroundV46(retry)
+                        && retry != null
+                        && !retry.isEmpty()) {
+                    fg = retry;
+                    break;
+                }
+            }
+        }
 
+        // V4.6：停止手势统一为“切回闲鱼定时助手”。
+        // 其它 App 可能是任务要求的跳转，或者系统短暂切换；不再直接把整个任务标记为用户中止。
         diagnostic(
-                "🛑 检测到其它 App 前台："
+                "⚠️ 当前不是闲鱼前台，不判定为用户中止："
                         + fg
         );
 
         return false;
+    }
+
+    private static boolean isTransientForegroundV46(String pkg) {
+        if (pkg == null || pkg.isEmpty()) return true;
+        return containsAny(
+                pkg,
+                "launcher",
+                "systemui",
+                "permissioncontroller",
+                "packageinstaller",
+                "resolver",
+                "chooser"
+        );
     }
 
     private static String dumpUi(
@@ -2112,7 +2499,7 @@ public final class TaskExecutor {
                         + "rm -f "
                         + file
                         + " 2>/dev/null; "
-                        + "uiautomator dump "
+                        + "uiautomator dump --compressed "
                         + file
                         + " >/dev/null 2>&1; "
                         + "if [ -s "
@@ -2297,9 +2684,13 @@ public final class TaskExecutor {
         int height =
                 getScreenHeight(suPath);
 
+        int gestureZone = height > 0
+                ? Math.max(60, Math.round(height * 0.03f))
+                : 0;
+
         if (height > 0
                 && y > height
-                - BOTTOM_GESTURE_ZONE) {
+                - gestureZone) {
 
             if (!allowBottomGestureZone) {
                 diagnostic(
@@ -3035,6 +3426,7 @@ public final class TaskExecutor {
 
         final String name;
         final Node actionNode;
+        final String actionBounds;
         final boolean isClaimReward;
 
         TaskCandidate(
@@ -3042,27 +3434,33 @@ public final class TaskExecutor {
                 Node actionNode,
                 boolean isClaimReward
         ) {
+            this.name = name == null ? "未知任务" : name;
+            this.actionNode = actionNode;
+            this.actionBounds = actionNode == null
+                    ? ""
+                    : getAttr(actionNode, "bounds");
+            this.isClaimReward = isClaimReward;
+        }
 
-            this.name =
-                    name == null
-                            ? "未知任务"
-                            : name;
+        TaskCandidate(
+                String name,
+                String actionBounds,
+                boolean isClaimReward
+        ) {
+            this.name = name == null ? "未知任务" : name;
+            this.actionNode = null;
+            this.actionBounds = actionBounds == null ? "" : actionBounds;
+            this.isClaimReward = isClaimReward;
+        }
 
-            this.actionNode =
-                    actionNode;
-
-            this.isClaimReward =
-                    isClaimReward;
+        String bounds() {
+            return actionBounds == null ? "" : actionBounds;
         }
 
         String key() {
-
             return name
                     + "|"
-                    + getAttr(
-                    actionNode,
-                    "bounds"
-            )
+                    + bounds()
                     + "|"
                     + isClaimReward;
         }
