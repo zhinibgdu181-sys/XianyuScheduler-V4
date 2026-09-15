@@ -610,18 +610,23 @@ public final class TaskExecutor {
                             "赚骰子"
                     );
 
-            if (!clickedEarn
-                    && isCoinPageV43(xml)) {
+            if (!clickedEarn) {
 
+                /*
+                 * 闲鱼币主页是 UC WebView。进入页面后，UIAutomator 有时只会暴露：
+                 * [WVUCWebView] 首页 领 ×1
+                 * 因此这里不能再用 isCoinPageV43(xml) 作为比例点击的前置条件。
+                 * 前面已经确认成功进入闲鱼币主页，XML 找不到“赚骰子”时直接使用比例坐标兜底。
+                 */
                 diagnostic(
-                        "[导航] XML没有识别到‘赚骰子’，使用比例坐标"
+                        "[导航] XML没有识别到‘赚骰子’，直接使用比例坐标兜底"
                 );
 
                 clickedEarn =
                         tapByRatioV43(
                                 suPath,
                                 0.735f,
-                                0.50f,
+                                0.485f,
                                 "闲鱼币-赚骰子",
                                 false
                         );
