@@ -1,0 +1,43 @@
+plugins {
+    id("com.android.application")
+}
+
+android {
+    namespace = "com.zhinibgdu.xianyu"
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = "com.zhinibgdu.xianyu"
+        minSdk = 26
+        targetSdk = 35
+
+        versionCode = 4
+        versionName = "4.0.0"
+    }
+
+    buildTypes {
+        debug {
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
+
+        release {
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+}
+
+dependencies {
+}
