@@ -10,55 +10,65 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.widget.Button;
-import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 public class MainActivity extends Activity {
     private static final int ALARM_REQUEST_CODE = 2001;
+    private static final int MAX_LOG_LINES = 120;
 
-    private TextView statusText;
+    private TextView scheduleStatusText;
+    private TextView runtimeStatusText;
+    private TextView statusDetailText;
+    private TextView logText;
+    private ScrollView logScroll;
+
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable runningRefresh = new Runnable() {
+        @Override
+        public void run() {
+            showStatus(false);
+            if (TaskExecutor.isRunning()) {
+                handler.postDelayed(this, 1500L);
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(40, 40, 40, 40);
+        scheduleStatusText = findViewById(R.id.schedule_status_text);
+        runtimeStatusText = findViewById(R.id.runtime_status_text);
+        statusDetailText = findViewById(R.id.status_detail_text);
+        logText = findViewById(R.id.log_text);
+        logScroll = findViewById(R.id.log_scroll);
 
-        statusText = new TextView(this);
-        statusText.setTextSize(16);
-        root.addView(statusText);
+        Button schedule = findViewById(R.id.schedule_button);
+        Button cancel = findViewById(R.id.cancel_button);
+        Button test = findViewById(R.id.test_button);
+        Button log = findViewById(R.id.log_button);
 
-        Button schedule = new Button(this);
-        schedule.setText("设置每日 09:00 自动任务");
         schedule.setOnClickListener(v -> scheduleDailyTask());
-        root.addView(schedule);
-
-        Button cancel = new Button(this);
-        cancel.setText("取消每日自动任务");
         cancel.setOnClickListener(v -> cancelDailyTask());
-        root.addView(cancel);
-
-        Button test = new Button(this);
-        test.setText("立即测试任务");
         test.setOnClickListener(v -> triggerXianyuTask());
-        root.addView(test);
+        log.setOnClickListener(v -> showStatus(true));
 
-        Button log = new Button(this);
-        log.setText("查看最近状态");
-        log.setOnClickListener(v -> showStatus());
-        root.addView(log);
-
-        setContentView(root);
         refreshSummary();
+        showStatus(false);
 
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
@@ -67,13 +77,30 @@ public class MainActivity extends Activity {
         }
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        refreshSummary();
+        showStatus(false);
+    }
+
+    @Override
+    protected void onDestroy() {
+        handler.removeCallbacks(runningRefresh);
+        super.onDestroy();
+    }
+
     private void triggerXianyuTask() {
-        statusText.setText("正在启动前台任务服务…\nTaskExecutor 会自行验证 Root、打开闲鱼并进入任务页。");
+        statusDetailText.setText("正在启动任务服务，随后会检查 Root、打开闲鱼并进入任务页。\n运行期间请保持手机解锁。");
+        setRuntimeState(true);
         try {
             TaskForegroundService.start(getApplicationContext());
             Toast.makeText(this, "任务已启动", Toast.LENGTH_SHORT).show();
+            handler.removeCallbacks(runningRefresh);
+            handler.postDelayed(runningRefresh, 800L);
         } catch (Throwable t) {
-            statusText.setText("启动任务失败：" + t);
+            setRuntimeState(false);
+            statusDetailText.setText("启动任务失败：" + t.getClass().getSimpleName() + "：" + t.getMessage());
             Toast.makeText(this, "启动任务失败", Toast.LENGTH_LONG).show();
         }
     }
@@ -148,8 +175,7 @@ public class MainActivity extends Activity {
         AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
         if (Build.VERSION.SDK_INT >= 31 && am != null && !am.canScheduleExactAlarms()) {
             requestExactAlarmPermission();
-            statusText.setText("请先允许“闹钟和提醒/精确闹钟”权限，然后再次点击设置。\n"
-                    + "这是每日定时触发所必需的系统权限。");
+            statusDetailText.setText("请先允许“闹钟和提醒/精确闹钟”权限，然后再次点击设置。\n这是每日定时触发所必需的系统权限。");
             return;
         }
 
@@ -161,12 +187,13 @@ public class MainActivity extends Activity {
         );
 
         if (ok) {
-            statusText.setText("已设置每日 09:00 自动任务\n"
+            refreshSummary();
+            statusDetailText.setText("定时设置成功 · "
                     + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
                     .format(new Date()));
             Toast.makeText(this, "每日 09:00 已设置", Toast.LENGTH_SHORT).show();
         } else {
-            statusText.setText("设置失败：系统未允许精确闹钟或 AlarmManager 不可用。");
+            statusDetailText.setText("设置失败：系统未允许精确闹钟，或 AlarmManager 当前不可用。");
         }
     }
 
@@ -200,42 +227,73 @@ public class MainActivity extends Activity {
             }
         }
         AppConfig.setScheduleEnabled(this, false);
-        statusText.setText("每日自动任务已取消。\n立即测试功能仍可单独使用。");
+        refreshSummary();
+        statusDetailText.setText("每日自动任务已取消。立即测试功能仍可单独使用。");
         Toast.makeText(this, "已取消每日任务", Toast.LENGTH_SHORT).show();
     }
 
     private void refreshSummary() {
         boolean enabled = AppConfig.isScheduleEnabled(this);
-        statusText.setText(
-                "闲鱼自动任务\n\n"
-                        + "架构：精确闹钟 → 前台服务 → Root/UIAutomator\n"
-                        + "每日任务：" + (enabled
-                        ? String.format(Locale.US, "已启用 %02d:%02d",
-                        AppConfig.getHour(this), AppConfig.getMinute(this))
-                        : "未启用")
-                        + "\n\n"
-                        + "本版本不再依赖 LSPosed/Xposed 触发。"
-        );
+        if (enabled) {
+            scheduleStatusText.setText(String.format(
+                    Locale.US,
+                    "每日任务：已启用 %02d:%02d",
+                    AppConfig.getHour(this),
+                    AppConfig.getMinute(this)
+            ));
+        } else {
+            scheduleStatusText.setText("每日任务：未启用");
+        }
+        setRuntimeState(TaskExecutor.isRunning());
     }
 
-    private void showStatus() {
+    private void setRuntimeState(boolean running) {
+        if (running) {
+            runtimeStatusText.setText("运行中");
+            runtimeStatusText.setTextColor(0xFF1D4ED8);
+            runtimeStatusText.setBackgroundResource(R.drawable.bg_status_running);
+        } else {
+            runtimeStatusText.setText("空闲");
+            runtimeStatusText.setTextColor(0xFF166534);
+            runtimeStatusText.setBackgroundResource(R.drawable.bg_status_idle);
+        }
+    }
+
+    private void showStatus(boolean userRequested) {
         boolean running = TaskExecutor.isRunning();
+        setRuntimeState(running);
+
         java.io.File dir = getExternalFilesDir(null);
         java.io.File file = dir == null ? null : new java.io.File(dir, "xianyu_log.txt");
 
-        String log = "";
-        if (file != null && file.exists()) {
-            try {
-                log = new String(
-                        java.nio.file.Files.readAllBytes(file.toPath()),
-                        java.nio.charset.StandardCharsets.UTF_8
-                );
-            } catch (Throwable t) {
-                log = "读取日志失败：" + t;
-            }
+        String log = readRecentLog(file);
+        logText.setText(log);
+
+        if (running) {
+            statusDetailText.setText("任务正在执行 · 日志会自动刷新。\n想中途停止：切到任意其它 App 即可。");
+        } else if (userRequested) {
+            statusDetailText.setText("日志已刷新 · "
+                    + new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date()));
         }
 
-        if (log.trim().isEmpty()) log = "暂无日志。";
-        statusText.setText("运行中：" + running + "\n\n" + log);
+        logScroll.post(() -> logScroll.fullScroll(ScrollView.FOCUS_DOWN));
+    }
+
+    private String readRecentLog(java.io.File file) {
+        if (file == null || !file.exists()) return "暂无日志。";
+        try {
+            List<String> lines = Files.readAllLines(file.toPath(), StandardCharsets.UTF_8);
+            if (lines.isEmpty()) return "暂无日志。";
+
+            int start = Math.max(0, lines.size() - MAX_LOG_LINES);
+            StringBuilder sb = new StringBuilder();
+            for (int i = start; i < lines.size(); i++) {
+                if (i > start) sb.append('\n');
+                sb.append(lines.get(i));
+            }
+            return sb.toString();
+        } catch (Throwable t) {
+            return "读取日志失败：" + t;
+        }
     }
 }
