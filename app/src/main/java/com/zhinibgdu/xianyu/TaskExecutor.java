@@ -76,6 +76,9 @@ public final class TaskExecutor {
     private static final int BOTTOM_GESTURE_ZONE =
             200;
 
+    private static final int ROOT_PROBE_ATTEMPTS =
+            3;
+
     private static final Pattern COMPONENT_PATTERN =
             Pattern.compile(
                     "(?:\\bu0\\s+)?([A-Za-z0-9_.$]+)/(?:[A-Za-z0-9_.$]+)"
@@ -241,7 +244,7 @@ public final class TaskExecutor {
     ) {
 
         String suPath =
-                findSuPath();
+                findSuPathWithRetry();
 
         if (suPath == null) {
 
@@ -377,7 +380,7 @@ public final class TaskExecutor {
         }
 
         // 进入“我的”。如果当前已经在闲鱼币相关页面，允许找不到“我的”继续执行。
-        if (clickTextAny(suPath, xml, "我的", "我的闲鱼", "个人中心")) {
+        if (clickTextAnyAllowBottom(suPath, xml, "我的", "我的闲鱼", "个人中心")) {
             diagnostic("[导航] 已点击“我的”");
             waitForUiAny(
                     suPath,
@@ -470,7 +473,22 @@ public final class TaskExecutor {
     private static boolean clickTextAny(String suPath, String xml, String... texts) {
         if (texts == null) return false;
         for (String text : texts) {
-            if (text != null && !text.isEmpty() && clickText(suPath, xml, text)) {
+            if (text != null && !text.isEmpty() && clickText(suPath, xml, text, false)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Bottom navigation labels (especially "我的") legitimately live very close to
+     * the gesture area.  Treating every node in the last 200 px as unsafe made the
+     * navigator find "我的" and then deliberately refuse to tap it.
+     */
+    private static boolean clickTextAnyAllowBottom(String suPath, String xml, String... texts) {
+        if (texts == null) return false;
+        for (String text : texts) {
+            if (text != null && !text.isEmpty() && clickText(suPath, xml, text, true)) {
                 return true;
             }
         }
@@ -1627,7 +1645,8 @@ public final class TaskExecutor {
     private static boolean clickText(
             String suPath,
             String xml,
-            String text
+            String text,
+            boolean allowBottomGestureZone
     ) {
 
         if (text == null
@@ -1686,7 +1705,8 @@ public final class TaskExecutor {
                 return clickBounds(
                         suPath,
                         xml,
-                        bounds
+                        bounds,
+                        allowBottomGestureZone
                 );
             }
 
@@ -1706,6 +1726,15 @@ public final class TaskExecutor {
             String xml,
             String bounds
     ) {
+        return clickBounds(suPath, xml, bounds, false);
+    }
+
+    private static boolean clickBounds(
+            String suPath,
+            String xml,
+            String bounds,
+            boolean allowBottomGestureZone
+    ) {
 
         int[] center =
                 parseCenter(bounds);
@@ -1724,11 +1753,19 @@ public final class TaskExecutor {
                 && y > height
                 - BOTTOM_GESTURE_ZONE) {
 
-            diagnostic(
-                    "[点击] 位于底部手势区域，取消"
-            );
+            if (!allowBottomGestureZone) {
+                diagnostic(
+                        "[点击] 位于底部手势区域，取消"
+                );
+                return false;
+            }
 
-            return false;
+            diagnostic(
+                    "[点击] 底部导航项，允许点击：y="
+                            + y
+                            + "/"
+                            + height
+            );
         }
 
         if (x < 1
@@ -1968,6 +2005,27 @@ public final class TaskExecutor {
         }
 
         return false;
+    }
+
+    private static String findSuPathWithRetry() {
+        for (int attempt = 1; attempt <= ROOT_PROBE_ATTEMPTS; attempt++) {
+            String path = findSuPath();
+            if (path != null) {
+                return path;
+            }
+
+            if (attempt < ROOT_PROBE_ATTEMPTS) {
+                diagnostic(
+                        "⚠️ Root 暂不可用，"
+                                + (attempt + 1)
+                                + "/"
+                                + ROOT_PROBE_ATTEMPTS
+                                + " 次检测即将重试"
+                );
+                SystemClock.sleep(650L);
+            }
+        }
+        return null;
     }
 
     private static String findSuPath() {
