@@ -2175,6 +2175,19 @@ public final class TaskExecutor {
     private static boolean clickText(
             String suPath,
             String xml,
+            String text
+    ) {
+        return clickText(
+                suPath,
+                xml,
+                text,
+                false
+        );
+    }
+
+    private static boolean clickText(
+            String suPath,
+            String xml,
             String text,
             boolean allowBottomGestureZone
     ) {
