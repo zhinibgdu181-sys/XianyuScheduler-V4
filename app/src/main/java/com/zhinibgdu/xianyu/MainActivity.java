@@ -69,6 +69,7 @@ public class MainActivity extends Activity {
     private TextView navAutomationText;
     private TextView navLogsText;
     private int selectedBottomTab = 0;
+    private String selectedRecordDate;
 
     private LinearLayout rootPermissionCard;
     private LinearLayout alarmPermissionCard;
