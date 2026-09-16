@@ -78,13 +78,13 @@ final class FruitGameSolver {
 
         String firstText = normalize(firstOcr == null ? "" : firstOcr.fullText);
         if (!looksLikeFruitGame(firstText)) {
-            host.log("[游戏V4.22] 当前页面不是水果配对游戏，停止视觉求解");
+            host.log("[游戏V4.23] 当前页面不是水果配对游戏，停止视觉求解");
             return Result.NOT_FRUIT_GAME;
         }
 
         int remaining = parseRemaining(firstText);
         int progress = parsePercent(firstText);
-        host.log("[游戏V4.22] ✅ 识别水果游戏"
+        host.log("[游戏V4.23] ✅ 识别水果游戏"
                 + (remaining >= 0 ? " / 剩余=" + remaining : "")
                 + (progress >= 0 ? " / 进度=" + progress + "%" : ""));
 
@@ -99,7 +99,7 @@ final class FruitGameSolver {
             GameFrame frame = captureFrame(context, suPath, host);
             if (frame == null) {
                 consecutiveCaptureFail++;
-                host.log("[游戏V4.22] 截图失败 " + consecutiveCaptureFail + "/3");
+                host.log("[游戏V4.23] 截图失败 " + consecutiveCaptureFail + "/3");
                 if (consecutiveCaptureFail >= 3) return Result.SAFE_STOP;
                 if (!host.sleep(250L, 420L)) return Result.ABORTED;
                 continue;
@@ -109,7 +109,7 @@ final class FruitGameSolver {
             List<FruitObject> objects = detectFruitObjects(frame);
             PairChoice pair = chooseBestPair(objects);
 
-            host.log("[游戏V4.22] 当前检测水果=" + objects.size()
+            host.log("[游戏V4.23] 当前检测水果=" + objects.size()
                     + (pair == null ? " / 无高置信对子" :
                     " / 最佳对子=" + format(pair.score)
                             + " rgb=" + format(pair.rgbSimilarity)
@@ -123,14 +123,14 @@ final class FruitGameSolver {
                 if (host.aborted()) return Result.ABORTED;
                 String text = normalize(checkpoint == null ? "" : checkpoint.fullText);
                 if (isRoundCompleted(text)) {
-                    host.log("[游戏V4.22] ✅ 已检测到一关完成状态");
+                    host.log("[游戏V4.23] ✅ 已检测到一关完成状态");
                     return Result.COMPLETED;
                 }
 
                 // V4.22 hard rule from real-device feedback: never touch game
                 // function controls such as shuffle/eliminate/unlock/use. Only
                 // fruit sprites themselves may be tapped by the solver.
-                host.log("[游戏V4.22] 无高置信对子；禁止点击打乱/消除/解锁/使用等功能按钮，安全停止");
+                host.log("[游戏V4.23] 无高置信对子；禁止点击打乱/消除/解锁/使用等功能按钮，安全停止");
                 return Result.SAFE_STOP;
             }
 
@@ -140,7 +140,7 @@ final class FruitGameSolver {
             int by = mapY(frame, pair.b.centerY);
             safeRecycle(frame.bitmap);
 
-            host.log("[游戏V4.22] 配对点击 A=(" + ax + "," + ay + ")"
+            host.log("[游戏V4.23] 配对点击 A=(" + ax + "," + ay + ")"
                     + " B=(" + bx + "," + by + ") / score=" + format(pair.score));
 
             // First fruit occupies at most one tray slot.
@@ -152,7 +152,7 @@ final class FruitGameSolver {
             // If B cannot be clicked we stop immediately: this avoids filling a
             // third slot after an incomplete pair.
             if (!host.tap(bx, by, "水果游戏-配对B")) {
-                host.log("[游戏V4.22] 第二个水果点击失败；为保护3槽坑位立即停止");
+                host.log("[游戏V4.23] 第二个水果点击失败；为保护3槽坑位立即停止");
                 return host.aborted() ? Result.ABORTED : Result.SAFE_STOP;
             }
             pairActions++;
@@ -168,22 +168,22 @@ final class FruitGameSolver {
 
                 int nowRemaining = parseRemaining(text);
                 int nowProgress = parsePercent(text);
-                host.log("[游戏V4.22] 进度检查 pair=" + pairActions
+                host.log("[游戏V4.23] 进度检查 pair=" + pairActions
                         + (nowRemaining >= 0 ? " / 剩余=" + nowRemaining : "")
                         + (nowProgress >= 0 ? " / " + nowProgress + "%" : ""));
 
                 if (isRoundCompleted(text)) {
-                    host.log("[游戏V4.22] ✅ 第1关完成");
+                    host.log("[游戏V4.23] ✅ 第1关完成");
                     return Result.COMPLETED;
                 }
 
                 // If we unexpectedly left the fruit game, do not continue tapping.
                 if (!text.isEmpty() && !looksLikeFruitGame(text)) {
                     if (looksLikeTaskPanel(text)) {
-                        host.log("[游戏V4.22] 已自动返回任务面板，按完成流程交给外层验证");
+                        host.log("[游戏V4.23] 已自动返回任务面板，按完成流程交给外层验证");
                         return Result.COMPLETED;
                     }
-                    host.log("[游戏V4.22] 页面已离开水果游戏，停止继续点击");
+                    host.log("[游戏V4.23] 页面已离开水果游戏，停止继续点击");
                     return Result.SAFE_STOP;
                 }
 
@@ -193,7 +193,7 @@ final class FruitGameSolver {
         }
 
         if (host.aborted()) return Result.ABORTED;
-        host.log("[游戏V4.22] 达到本轮安全上限，停止自动点击");
+        host.log("[游戏V4.23] 达到本轮安全上限，停止自动点击");
         return Result.SAFE_STOP;
     }
 
@@ -207,8 +207,10 @@ final class FruitGameSolver {
 
     static boolean looksLikeMahjongPairGame(String text) {
         String t = normalize(text);
+        if (t.isEmpty()) return false;
         return t.contains("点击麻将对")
-                || (t.contains("麻将对") && t.contains("水平相邻"));
+                || (t.contains("麻将对")
+                    && (t.contains("水平相邻") || t.contains("相邻") || t.contains("试试点击")));
     }
 
     private static boolean isRoundCompleted(String text) {

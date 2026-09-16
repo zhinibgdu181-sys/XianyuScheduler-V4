@@ -71,9 +71,14 @@ final class MahjongGameSolver {
 
     static boolean looksLikeMahjongPairGame(String text) {
         String t = normalize(text);
+        if (t.isEmpty()) return false;
+
+        // V4.23: "点点消不停" by itself is only the game-card title shown on
+        // COIN_HOME, not proof that the board is open. Require real in-game
+        // tutorial/board wording so the coin homepage cannot be misclassified.
         return t.contains("点击麻将对")
-                || (t.contains("麻将对") && (t.contains("水平相邻") || t.contains("相邻")))
-                || t.contains("点点消不停");
+                || (t.contains("麻将对")
+                    && (t.contains("水平相邻") || t.contains("相邻") || t.contains("试试点击")));
     }
 
     static Result solveOneRound(Context context, String suPath, Host host) {
@@ -90,14 +95,14 @@ final class MahjongGameSolver {
         if (host.aborted()) return Result.ABORTED;
         if (board == null || board.tileCount < 2) {
             if (!looksLikeMahjongPairGame(firstText)) {
-                host.log("[麻将V4.19] 当前页面不像麻将对子游戏，停止");
+                host.log("[麻将V4.23] 当前页面不像麻将对子游戏，停止");
                 return Result.NOT_MAHJONG_GAME;
             }
-            host.log("[麻将V4.19] OCR识别到麻将教程，但视觉棋盘暂未定位");
+            host.log("[麻将V4.23] OCR识别到麻将教程，但视觉棋盘暂未定位");
             return Result.SAFE_STOP;
         }
 
-        host.log("[麻将V4.19] ✅ 棋盘定位成功 / 牌数=" + board.tileCount
+        host.log("[麻将V4.23] ✅ 棋盘定位成功 / 牌数=" + board.tileCount
                 + " / board=" + board.left + "," + board.top
                 + "-" + board.right + "," + board.bottom);
 
@@ -116,12 +121,12 @@ final class MahjongGameSolver {
                 ScreenOcr.Snapshot doneOcr = host.ocr("麻将游戏V4.19/清盘确认");
                 String doneText = normalize(doneOcr == null ? "" : doneOcr.fullText);
                 if (isCompletedText(doneText) || looksLikeTaskPanel(doneText)) {
-                    host.log("[麻将V4.19] ✅ 棋盘清空/已进入下一阶段");
+                    host.log("[麻将V4.23] ✅ 棋盘清空/已进入下一阶段");
                     return Result.COMPLETED;
                 }
                 BoardFrame confirm = captureBoard(context, suPath, host);
                 if (confirm == null || confirm.tileCount <= 1) {
-                    host.log("[麻将V4.19] ✅ 剩余牌数<=1，按本关完成处理");
+                    host.log("[麻将V4.23] ✅ 剩余牌数<=1，按本关完成处理");
                     return Result.COMPLETED;
                 }
                 board = confirm;
@@ -129,13 +134,13 @@ final class MahjongGameSolver {
 
             List<MatchPair> matches = findMatches(board);
             if (matches.isEmpty()) {
-                host.log("[麻将V4.19] 没有高置信度重复牌，安全停止，不乱滑");
+                host.log("[麻将V4.23] 没有高置信度重复牌，安全停止，不乱滑");
                 return Result.SAFE_STOP;
             }
 
             Action action = chooseAction(board, matches, failedMoves);
             if (action == null) {
-                host.log("[麻将V4.19] 当前重复牌没有安全移动方案，安全停止");
+                host.log("[麻将V4.23] 当前重复牌没有安全移动方案，安全停止");
                 return Result.SAFE_STOP;
             }
 
@@ -148,7 +153,7 @@ final class MahjongGameSolver {
                 int ay = board.mapY(action.a.centerY);
                 int bx = board.mapX(action.b.centerX);
                 int by = board.mapY(action.b.centerY);
-                host.log("[麻将V4.19] 相邻对子 MAD=" + format(action.mad)
+                host.log("[麻将V4.23] 相邻对子 MAD=" + format(action.mad)
                         + " / A=(" + action.a.row + "," + action.a.col + ")"
                         + " B=(" + action.b.row + "," + action.b.col + ")");
                 issued = host.tap(ax, ay, "点击相邻麻将A");
@@ -164,7 +169,7 @@ final class MahjongGameSolver {
                         Math.abs(action.source.row - action.destRow)
                                 + Math.abs(action.source.col - action.destCol));
                 int duration = Math.min(520, 230 + cells * 55);
-                host.log("[麻将V4.19] "
+                host.log("[麻将V4.23] "
                         + (action.kind == ActionKind.AXIS_SWIPE ? "直线路径" : "自由拖动")
                         + " MAD=" + format(action.mad)
                         + " / source=(" + action.source.row + "," + action.source.col + ")"
@@ -184,32 +189,32 @@ final class MahjongGameSolver {
                 ScreenOcr.Snapshot ocr = host.ocr("麻将游戏V4.19/动作后页面");
                 String text = normalize(ocr == null ? "" : ocr.fullText);
                 if (isCompletedText(text) || looksLikeTaskPanel(text)) {
-                    host.log("[麻将V4.19] ✅ 动作后离开棋盘并检测到完成/任务面板");
+                    host.log("[麻将V4.23] ✅ 动作后离开棋盘并检测到完成/任务面板");
                     return Result.COMPLETED;
                 }
-                host.log("[麻将V4.19] 动作后无法定位棋盘，安全停止");
+                host.log("[麻将V4.23] 动作后无法定位棋盘，安全停止");
                 return Result.SAFE_STOP;
             }
 
             int delta = beforeCount - after.tileCount;
             String afterSignature = after.signature();
             if (delta >= 2) {
-                host.log("[麻将V4.19] ✅ 消除成功 / 牌数 " + beforeCount + " -> " + after.tileCount);
+                host.log("[麻将V4.23] ✅ 消除成功 / 牌数 " + beforeCount + " -> " + after.tileCount);
                 stagnant = 0;
                 failedMoves.clear();
                 board = after;
             } else if (!beforeSignature.equals(afterSignature)) {
                 // The tile moved but did not disappear yet. Re-plan from the new
                 // board instead of repeating the same swipe blindly.
-                host.log("[麻将V4.19] 棋盘发生移动但暂未消除，重新规划下一步");
+                host.log("[麻将V4.23] 棋盘发生移动但暂未消除，重新规划下一步");
                 stagnant = 0;
                 board = after;
             } else {
                 stagnant++;
                 failedMoves.add(action.key());
-                host.log("[麻将V4.19] ⚠️ 动作无变化，加入本轮黑名单 / stagnant=" + stagnant);
+                host.log("[麻将V4.23] ⚠️ 动作无变化，加入本轮黑名单 / stagnant=" + stagnant);
                 if (stagnant >= 4) {
-                    host.log("[麻将V4.19] 连续4次动作无变化，安全停止");
+                    host.log("[麻将V4.23] 连续4次动作无变化，安全停止");
                     return Result.SAFE_STOP;
                 }
                 board = after;
@@ -219,7 +224,7 @@ final class MahjongGameSolver {
                 ScreenOcr.Snapshot ocr = host.ocr("麻将游戏V4.19/阶段确认");
                 String text = normalize(ocr == null ? "" : ocr.fullText);
                 if (isCompletedText(text) || looksLikeTaskPanel(text)) {
-                    host.log("[麻将V4.19] ✅ OCR确认本关完成");
+                    host.log("[麻将V4.23] ✅ OCR确认本关完成");
                     return Result.COMPLETED;
                 }
                 firstText = text;
@@ -227,7 +232,7 @@ final class MahjongGameSolver {
         }
 
         if (host.aborted()) return Result.ABORTED;
-        host.log("[麻将V4.19] 达到安全动作/时间上限，停止");
+        host.log("[麻将V4.23] 达到安全动作/时间上限，停止");
         return Result.SAFE_STOP;
     }
 
@@ -377,7 +382,7 @@ final class MahjongGameSolver {
             if (board == null || board.tileCount < 2) return null;
             return board;
         } catch (Throwable t) {
-            host.log("[麻将V4.19] 截图/棋盘解析异常：" + t.getClass().getSimpleName());
+            host.log("[麻将V4.23] 截图/棋盘解析异常：" + t.getClass().getSimpleName());
             return null;
         } finally {
             safeDelete(file);

@@ -15,16 +15,21 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.widget.Button;
+import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends Activity {
     private static final int ALARM_REQUEST_CODE = 2001;
@@ -36,6 +41,19 @@ public class MainActivity extends Activity {
     private TextView learningStatusText;
     private TextView logText;
     private ScrollView logScroll;
+
+    // V4.24 permission dashboard. ROOT is display-only because KernelSU must
+    // grant it explicitly; exact-alarm uses Android's system special-access page.
+    private LinearLayout rootPermissionCard;
+    private LinearLayout alarmPermissionCard;
+    private TextView rootPermissionIcon;
+    private TextView rootPermissionStatusText;
+    private TextView rootPermissionHintText;
+    private TextView alarmPermissionStatusText;
+    private TextView alarmPermissionHintText;
+    private Switch alarmPermissionSwitch;
+    private boolean updatingAlarmSwitch;
+    private volatile boolean rootCheckInFlight;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable runningRefresh = new Runnable() {
@@ -60,6 +78,15 @@ public class MainActivity extends Activity {
         logText = findViewById(R.id.log_text);
         logScroll = findViewById(R.id.log_scroll);
 
+        rootPermissionCard = findViewById(R.id.root_permission_card);
+        alarmPermissionCard = findViewById(R.id.alarm_permission_card);
+        rootPermissionIcon = findViewById(R.id.root_permission_icon);
+        rootPermissionStatusText = findViewById(R.id.root_permission_status_text);
+        rootPermissionHintText = findViewById(R.id.root_permission_hint_text);
+        alarmPermissionStatusText = findViewById(R.id.alarm_permission_status_text);
+        alarmPermissionHintText = findViewById(R.id.alarm_permission_hint_text);
+        alarmPermissionSwitch = findViewById(R.id.alarm_permission_switch);
+
         Button schedule = findViewById(R.id.schedule_button);
         Button cancel = findViewById(R.id.cancel_button);
         Button test = findViewById(R.id.test_button);
@@ -76,7 +103,21 @@ public class MainActivity extends Activity {
         log.setOnClickListener(v -> showStatus(true));
         clearLog.setOnClickListener(v -> confirmClearLog());
 
+        rootPermissionCard.setOnClickListener(v -> {
+            statusDetailText.setText(
+                    "正在重新检测 ROOT 权限。若显示未授权，请打开 KernelSU → 超级用户，"
+                            + "给“闲鱼定时助手”开启权限后再返回。"
+            );
+            refreshRootPermissionAsync(true);
+        });
+
+        alarmPermissionSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (updatingAlarmSwitch) return;
+            handleAlarmPermissionToggle(isChecked);
+        });
+
         refreshSummary();
+        refreshPermissionDashboard();
         showStatus(false);
 
         if (Build.VERSION.SDK_INT >= 33
@@ -90,6 +131,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         refreshSummary();
+        refreshPermissionDashboard();
         showStatus(false);
     }
 
@@ -97,6 +139,186 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         handler.removeCallbacks(runningRefresh);
         super.onDestroy();
+    }
+
+    private void refreshPermissionDashboard() {
+        refreshAlarmPermissionCard();
+        refreshRootPermissionAsync(false);
+    }
+
+    private boolean hasExactAlarmPermission() {
+        if (Build.VERSION.SDK_INT < 31) return true;
+        AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+        return am != null && am.canScheduleExactAlarms();
+    }
+
+    private void refreshAlarmPermissionCard() {
+        boolean granted = hasExactAlarmPermission();
+
+        alarmPermissionCard.setBackgroundResource(
+                granted ? R.drawable.bg_permission_granted : R.drawable.bg_permission_denied
+        );
+        alarmPermissionStatusText.setText(granted ? "已开启" : "未开启");
+        alarmPermissionStatusText.setTextColor(granted ? 0xFF166534 : 0xFF4B5563);
+
+        if (Build.VERSION.SDK_INT < 31) {
+            alarmPermissionHintText.setText("当前 Android 版本无需单独授权");
+        } else if (granted) {
+            alarmPermissionHintText.setText("精确闹钟可用 · 每日定时可正常触发");
+        } else {
+            alarmPermissionHintText.setText("打开开关后在系统页面允许“闹钟和提醒”");
+        }
+
+        updatingAlarmSwitch = true;
+        alarmPermissionSwitch.setChecked(granted);
+        alarmPermissionSwitch.setEnabled(Build.VERSION.SDK_INT >= 31);
+        updatingAlarmSwitch = false;
+    }
+
+    private void handleAlarmPermissionToggle(boolean requestedEnabled) {
+        if (Build.VERSION.SDK_INT < 31) {
+            refreshAlarmPermissionCard();
+            return;
+        }
+
+        boolean actual = hasExactAlarmPermission();
+        if (requestedEnabled == actual) {
+            refreshAlarmPermissionCard();
+            return;
+        }
+
+        if (requestedEnabled) {
+            statusDetailText.setText(
+                    "请在接下来的系统页面允许“闲鱼定时助手”的闹钟和提醒权限。\n"
+                            + "返回本应用后，开关会自动变成绿色开启状态。"
+            );
+        } else {
+            statusDetailText.setText(
+                    "Android 不允许应用直接撤销自己的精确闹钟特殊权限。\n"
+                            + "请在接下来的系统页面关闭，返回后开关会自动同步。"
+            );
+        }
+
+        requestExactAlarmPermission();
+    }
+
+    private void refreshRootPermissionAsync(boolean userRequested) {
+        if (rootCheckInFlight) return;
+        rootCheckInFlight = true;
+
+        rootPermissionCard.setBackgroundResource(R.drawable.bg_permission_denied);
+        rootPermissionIcon.setText("…");
+        rootPermissionIcon.setTextColor(0xFF6B7280);
+        rootPermissionStatusText.setText("检查中");
+        rootPermissionStatusText.setTextColor(0xFF4B5563);
+        rootPermissionHintText.setText("正在确认 KernelSU 授权状态");
+
+        new Thread(() -> {
+            RootPermissionResult result = probeRootPermission();
+            runOnUiThread(() -> {
+                rootCheckInFlight = false;
+                applyRootPermissionResult(result);
+                if (userRequested) {
+                    Toast.makeText(
+                            this,
+                            result.granted ? "ROOT 权限已授权" : "ROOT 未授权，请在 KernelSU 中开启",
+                            Toast.LENGTH_SHORT
+                    ).show();
+                }
+            });
+        }, "root-permission-check").start();
+    }
+
+    private void applyRootPermissionResult(RootPermissionResult result) {
+        if (result.granted) {
+            rootPermissionCard.setBackgroundResource(R.drawable.bg_permission_granted);
+            rootPermissionIcon.setText("✓");
+            rootPermissionIcon.setTextColor(0xFF16A34A);
+            rootPermissionStatusText.setText("已授权");
+            rootPermissionStatusText.setTextColor(0xFF166534);
+            rootPermissionHintText.setText(
+                    (result.suPath == null ? "ROOT 可用" : result.suPath)
+                            + " · uid=0\n点卡片可重新检测"
+            );
+        } else {
+            rootPermissionCard.setBackgroundResource(R.drawable.bg_permission_denied);
+            rootPermissionIcon.setText("—");
+            rootPermissionIcon.setTextColor(0xFF6B7280);
+            rootPermissionStatusText.setText("未授权");
+            rootPermissionStatusText.setTextColor(0xFF4B5563);
+            rootPermissionHintText.setText(
+                    result.suDetected
+                            ? "已检测到 su · 请在 KernelSU → 超级用户中授权\n授权后返回本应用"
+                            : "未检测到可用 su / ROOT 环境\n点卡片可重新检测"
+            );
+        }
+    }
+
+    private RootPermissionResult probeRootPermission() {
+        String[] paths = {
+                "/system/bin/su",
+                "/system/xbin/su",
+                "/sbin/su",
+                "/data/adb/ksu/bin/su",
+                "/data/adb/magisk/su",
+                "su"
+        };
+
+        boolean suDetected = false;
+        for (String path : paths) {
+            Process process = null;
+            try {
+                process = new ProcessBuilder(path, "-c", "id")
+                        .redirectErrorStream(true)
+                        .start();
+                suDetected = true;
+
+                boolean finished = process.waitFor(1600L, TimeUnit.MILLISECONDS);
+                if (!finished) {
+                    process.destroy();
+                    return new RootPermissionResult(false, true, path);
+                }
+
+                StringBuilder output = new StringBuilder();
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        if (output.length() > 0) output.append('\n');
+                        output.append(line);
+                    }
+                }
+
+                if (process.exitValue() == 0 && output.toString().contains("uid=0")) {
+                    return new RootPermissionResult(true, true, path);
+                }
+
+                // An executable su was found but this app did not receive uid=0.
+                // Do not invoke several other su paths: KernelSU authorization is
+                // explicit and repeated probes only create noise/delay.
+                return new RootPermissionResult(false, true, path);
+            } catch (Throwable ignored) {
+                // Try the next known su path. The UI intentionally stays quiet here.
+            } finally {
+                if (process != null) {
+                    try { process.destroy(); } catch (Throwable ignored) { }
+                }
+            }
+        }
+
+        return new RootPermissionResult(false, suDetected, null);
+    }
+
+    private static final class RootPermissionResult {
+        final boolean granted;
+        final boolean suDetected;
+        final String suPath;
+
+        RootPermissionResult(boolean granted, boolean suDetected, String suPath) {
+            this.granted = granted;
+            this.suDetected = suDetected;
+            this.suPath = suPath;
+        }
     }
 
     private void confirmClearLog() {
