@@ -45,6 +45,7 @@ public class MainActivity extends Activity {
     private TextView todayDateText;
     private TextView todaySummaryText;
     private TextView todayCompletedText;
+    private TextView dataPathText;
     private TextView logText;
     private ScrollView logScroll;
 
@@ -104,6 +105,7 @@ public class MainActivity extends Activity {
         todayDateText = findViewById(R.id.today_date_text);
         todaySummaryText = findViewById(R.id.today_summary_text);
         todayCompletedText = findViewById(R.id.today_completed_text);
+        dataPathText = findViewById(R.id.data_path_text);
         logText = findViewById(R.id.log_text);
         logScroll = findViewById(R.id.log_scroll);
 
@@ -143,16 +145,18 @@ public class MainActivity extends Activity {
         Button log = findViewById(R.id.log_button);
         Button clearLog = findViewById(R.id.clear_log_button);
         Button todayRefresh = findViewById(R.id.today_refresh_button);
+        Button showPath = findViewById(R.id.show_path_button);
 
         schedule.setOnClickListener(v -> scheduleDailyTask());
         cancel.setOnClickListener(v -> cancelDailyTask());
         test.setOnClickListener(v -> triggerXianyuTask());
         learning.setOnClickListener(v -> triggerLearningMode());
         stop.setOnClickListener(v -> stopCurrentRun());
-        learningStop.setOnClickListener(v -> stopCurrentRun());
+        learningStop.setOnClickListener(v -> stopLearningMode());
         log.setOnClickListener(v -> showStatus(true));
         clearLog.setOnClickListener(v -> confirmClearLog());
         todayRefresh.setOnClickListener(v -> refreshTodayCompleted());
+        showPath.setOnClickListener(v -> showDataPaths());
 
         navHome.setOnClickListener(v -> selectBottomTab(0));
         navToday.setOnClickListener(v -> selectBottomTab(1));
@@ -166,6 +170,12 @@ public class MainActivity extends Activity {
                             + "给“闲鱼定时助手”开启权限后再返回。"
             );
             refreshRootPermissionAsync(true);
+        });
+
+
+        alarmPermissionCard.setOnClickListener(v -> {
+            setStatusMessage("正在打开系统“闹钟和提醒”权限页面；返回后会自动刷新状态。");
+            requestExactAlarmPermission();
         });
 
         alarmPermissionSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
@@ -247,23 +257,24 @@ public class MainActivity extends Activity {
     }
 
     private void refreshTodayCompleted() {
-        if (todayDateText == null || todaySummaryText == null || todayCompletedText == null) return;
-        String date = new SimpleDateFormat("yyyy年MM月dd日", Locale.getDefault()).format(new Date());
+        String date = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
         todayDateText.setText(date);
-
-        List<String> entries = TaskStatusReceiver.getTodayCompletedTasks(getApplicationContext());
-        todaySummaryText.setText("今天已验证完成 " + entries.size() + " 个任务");
-        if (entries.isEmpty()) {
-            todayCompletedText.setText("今天还没有已验证完成的任务。");
-            return;
+        List<String> tasks = TaskStatusReceiver.getCompletedTasksForDate(this, date);
+        int coins = TaskStatusReceiver.getCoinsForDate(this, date);
+        todaySummaryText.setText("今日完成 " + tasks.size() + " 个任务 · 闲鱼币 +" + coins);
+        if (tasks.isEmpty()) {
+            todayCompletedText.setText("今天还没有已验证完成的任务。\n\n记录会按日期自动保存在本机。" );
+        } else {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < tasks.size(); i++) {
+                if (i > 0) sb.append('\n');
+                sb.append(i + 1).append(". ").append(tasks.get(i));
+            }
+            if (coins == 0) {
+                sb.append("\n\n闲鱼币：当前没有可被程序明确确认的奖励数值，因此不猜测、不虚报。");
+            }
+            todayCompletedText.setText(sb.toString());
         }
-
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < entries.size(); i++) {
-            if (i > 0) sb.append('\n');
-            sb.append("✓ ").append(entries.get(i));
-        }
-        todayCompletedText.setText(sb.toString());
     }
 
     private void refreshPermissionDashboard() {
@@ -442,6 +453,22 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void showDataPaths() {
+        java.io.File external = getExternalFilesDir(null);
+        String logPath = external == null ? "不可用" : new java.io.File(external, "xianyu_log.txt").getAbsolutePath();
+        String text = "运行日志：\n" + logPath
+                + "\n\n任务记录：\n/data/data/" + getPackageName()
+                + "/shared_prefs/xianyu_records_v427.xml"
+                + "\n\n真人学习库：\n/data/data/" + getPackageName()
+                + "/shared_prefs/xianyu_learning_v413.xml";
+        dataPathText.setText(text);
+        new AlertDialog.Builder(this)
+                .setTitle("数据保存路径")
+                .setMessage(text + "\n\n/data/data 路径需要 Root 权限查看。")
+                .setPositiveButton("知道了", null)
+                .show();
+    }
+
     private void confirmClearLog() {
         new AlertDialog.Builder(this)
                 .setTitle("清空日志")
@@ -484,6 +511,17 @@ public class MainActivity extends Activity {
                     + "：" + t.getMessage());
             Toast.makeText(this, "启动学习模式失败", Toast.LENGTH_LONG).show();
         }
+    }
+
+    private void stopLearningMode() {
+        if (!TaskExecutor.isRunning() || !TaskExecutor.isLearningMode()) {
+            Toast.makeText(this, "当前没有正在进行的真人学习", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        TaskExecutor.requestStop("用户点击“结束学习”");
+        setStatusMessage("正在结束真人学习并保存去重后的学习案例……");
+        handler.removeCallbacks(runningRefresh);
+        handler.postDelayed(runningRefresh, 500L);
     }
 
     private void stopCurrentRun() {

@@ -25,9 +25,11 @@ public final class TaskStatusReceiver {
     private static final String LOG_FILE_NAME = "xianyu_log.txt";
     private static final int MAX_LOG_BYTES = 2 * 1024 * 1024;
 
-    private static final String TODAY_PREFS = "xianyu_today_v426";
+    private static final String TODAY_PREFS = "xianyu_records_v427";
     private static final String KEY_DATE = "date";
     private static final String KEY_ENTRIES = "entries";
+    private static final String KEY_HISTORY_PREFIX = "day_";
+    private static final String KEY_COINS_PREFIX = "coins_";
 
     private TaskStatusReceiver() {
     }
@@ -85,21 +87,18 @@ public final class TaskStatusReceiver {
     }
 
     public static synchronized List<String> getTodayCompletedTasks(Context context) {
-        ArrayList<String> out = new ArrayList<>();
-        if (context == null) return out;
-        try {
-            Context app = context.getApplicationContext();
-            SharedPreferences p = app.getSharedPreferences(TODAY_PREFS, Context.MODE_PRIVATE);
-            String today = dayKey();
-            if (!today.equals(p.getString(KEY_DATE, ""))) {
-                p.edit().putString(KEY_DATE, today).putString(KEY_ENTRIES, "").apply();
-                return out;
-            }
+        return getCompletedTasksForDate(context, dayKey());
+    }
 
-            String raw = p.getString(KEY_ENTRIES, "");
+    public static synchronized List<String> getCompletedTasksForDate(Context context, String date) {
+        ArrayList<String> out = new ArrayList<>();
+        if (context == null || date == null) return out;
+        try {
+            SharedPreferences p = context.getApplicationContext()
+                    .getSharedPreferences(TODAY_PREFS, Context.MODE_PRIVATE);
+            String raw = p.getString(KEY_HISTORY_PREFIX + date, "");
             if (raw == null || raw.trim().isEmpty()) return out;
-            String[] lines = raw.split("\\n");
-            for (String line : lines) {
+            for (String line : raw.split("\n")) {
                 if (line != null && !line.trim().isEmpty()) out.add(line.trim());
             }
         } catch (Throwable ignored) {
@@ -107,12 +106,20 @@ public final class TaskStatusReceiver {
         return out;
     }
 
+    public static synchronized int getCoinsForDate(Context context, String date) {
+        if (context == null || date == null) return 0;
+        try {
+            return context.getApplicationContext().getSharedPreferences(TODAY_PREFS, Context.MODE_PRIVATE)
+                    .getInt(KEY_COINS_PREFIX + date, 0);
+        } catch (Throwable ignored) { return 0; }
+    }
+
     private static void recordTodaySuccess(Context app, String task) {
         try {
             SharedPreferences p = app.getSharedPreferences(TODAY_PREFS, Context.MODE_PRIVATE);
             String today = dayKey();
             String storedDate = p.getString(KEY_DATE, "");
-            String raw = today.equals(storedDate) ? p.getString(KEY_ENTRIES, "") : "";
+            String raw = p.getString(KEY_HISTORY_PREFIX + today, "");
 
             // Keep insertion order while de-duplicating by task title. A task is
             // shown once even if a reward row is re-verified later in the day.
@@ -140,6 +147,7 @@ public final class TaskStatusReceiver {
             p.edit()
                     .putString(KEY_DATE, today)
                     .putString(KEY_ENTRIES, sb.toString())
+                    .putString(KEY_HISTORY_PREFIX + today, sb.toString())
                     .apply();
         } catch (Throwable ignored) {
         }
