@@ -1,31 +1,31 @@
-# V4 校验记录
+# V4.5 验证说明
 
-## 已完成的静态校验
+本版针对 1440×3120 真机日志和闲鱼截图做了以下修复：
 
-- `AndroidManifest.xml`、`strings.xml`、`activity_main.xml` 均通过 XML 解析。
-- 对所有 Java 源文件执行 `javac` 语法解析；由于当前环境没有 Android SDK，Android 类型会产生预期的“package android does not exist”错误，但未发现 Java 语法错误、非法转义、括号/分号错误或项目内方法参数不匹配错误。
-- 已清除源码中的旧 `TRIGGER_TASK`、`cfg`、`MainModule`、libxposed/Xposed 运行时依赖。
-- `TaskExecutor.run(...)` 只有 `TaskForegroundService` 一个生产入口。
-- 定时和立即测试均统一走前台 Service。
+- 新增“清空日志”按钮，并带二次确认。
+- 导航前先识别当前闲鱼页面；若落在“应用详情/立即下载”等内嵌子页面，会先返回，连续无法恢复时才重启闲鱼。
+- 不再在未知页面盲点右下角“我的”坐标。
+- UC WebView 文本无法被 UIAutomator 获取时，使用 ML Kit 中文 OCR 识别截图中的“我的 / 闲鱼币 / 赚骰子 / 去完成 / 领取奖励 / 签到”。
+- 任务候选支持 OCR 行匹配；“发布”类和“未知任务”默认跳过，避免误操作。
+- 底部手势保护区改为屏幕高度约 3%，不再固定 200 px。
+- UIAutomator 使用 `--compressed`，减少 XML dump 开销。
+- 中途停止提示改为“切回闲鱼定时助手即可”，因为部分合法任务会跳转到其它 App。
 
-## 当前环境无法完成的项目
+## 真机验证顺序
 
-当前执行环境没有 Android SDK；原始 ZIP 同时缺少：
+1. 手机保持解锁，KernelSU 已授权闲鱼定时助手。
+2. 打开助手，点“清空”删除旧日志。
+3. 点“立即测试任务”，不要切回助手，除非需要主动停止。
+4. 观察是否依次出现：
+   - `已点击‘我的’`
+   - `已确认闲鱼币主页`
+   - `任务面板打开成功`
+   - `[OCR任务匹配] ...`
+5. 如失败，把从 `[导航]` 或 `[OCR]` 开始到失败处的日志发回。
 
-```text
-gradle/wrapper/gradle-wrapper.jar
-gradle/wrapper/gradle-wrapper.properties
-```
+## 构建说明
 
-因此无法在这里完成 Android APK 的真实 Gradle 编译。仓库现有 GitHub Actions 已使用系统 Gradle 9.3.1，可以在具备 Android SDK 的 CI 中执行 `gradle assembleDebug`。
+V4.5 新增官方 ML Kit 中文文字识别依赖：
+`com.google.mlkit:text-recognition-chinese:16.0.1`
 
-## 真机建议测试顺序
-
-1. 安装 APK，授予 Root。
-2. 允许“闹钟和提醒/精确闹钟”。
-3. 点击“立即测试任务”。
-4. 查看日志是否出现：前台服务启动、Root 验证、闲鱼进入前台、导航、候选任务、任务匹配评分。
-5. 手动把执行时间临时改到未来几分钟（开发测试时）验证 AlarmReceiver 链路；正式再恢复 09:00。
-6. 测试屏幕关闭但未安全锁屏的情况。
-7. 测试安全锁屏：应明确记录“设备锁屏，无法执行 UI 自动化”，而不是误判为其它 App 并继续乱点。
-8. 重启设备后确认已启用的每日闹钟会恢复；未启用时不应自动创建闹钟。
+因此 APK 会比之前版本更大，这是为了让 WebView 页面在 UIAutomator 无文本时仍能识别任务。

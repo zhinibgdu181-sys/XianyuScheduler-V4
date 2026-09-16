@@ -3,6 +3,7 @@ package com.zhinibgdu.xianyu;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlarmManager;
+import android.app.AlertDialog;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
@@ -32,6 +33,7 @@ public class MainActivity extends Activity {
     private TextView scheduleStatusText;
     private TextView runtimeStatusText;
     private TextView statusDetailText;
+    private TextView learningStatusText;
     private TextView logText;
     private ScrollView logScroll;
 
@@ -54,18 +56,25 @@ public class MainActivity extends Activity {
         scheduleStatusText = findViewById(R.id.schedule_status_text);
         runtimeStatusText = findViewById(R.id.runtime_status_text);
         statusDetailText = findViewById(R.id.status_detail_text);
+        learningStatusText = findViewById(R.id.learning_status_text);
         logText = findViewById(R.id.log_text);
         logScroll = findViewById(R.id.log_scroll);
 
         Button schedule = findViewById(R.id.schedule_button);
         Button cancel = findViewById(R.id.cancel_button);
         Button test = findViewById(R.id.test_button);
+        Button learning = findViewById(R.id.learning_button);
+        Button stop = findViewById(R.id.stop_button);
         Button log = findViewById(R.id.log_button);
+        Button clearLog = findViewById(R.id.clear_log_button);
 
         schedule.setOnClickListener(v -> scheduleDailyTask());
         cancel.setOnClickListener(v -> cancelDailyTask());
         test.setOnClickListener(v -> triggerXianyuTask());
+        learning.setOnClickListener(v -> triggerLearningMode());
+        stop.setOnClickListener(v -> stopCurrentRun());
         log.setOnClickListener(v -> showStatus(true));
+        clearLog.setOnClickListener(v -> confirmClearLog());
 
         refreshSummary();
         showStatus(false);
@@ -88,6 +97,66 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         handler.removeCallbacks(runningRefresh);
         super.onDestroy();
+    }
+
+    private void confirmClearLog() {
+        new AlertDialog.Builder(this)
+                .setTitle("清空日志")
+                .setMessage("确认删除当前全部运行日志？\n不会影响定时设置和任务配置。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("清空", (dialog, which) -> {
+                    boolean ok = TaskStatusReceiver.clearLog(getApplicationContext());
+                    logText.setText("暂无日志。");
+                    statusDetailText.setText(ok ? "日志已清空。" : "清空日志失败，请稍后重试。");
+                    Toast.makeText(
+                            this,
+                            ok ? "日志已清空" : "清空失败",
+                            Toast.LENGTH_SHORT
+                    ).show();
+                })
+                .show();
+    }
+
+    private void triggerLearningMode() {
+        if (TaskExecutor.isRunning()) {
+            statusDetailText.setText("当前已有运行实例，请先停止当前任务。");
+            Toast.makeText(this, "已有任务正在运行", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        statusDetailText.setText(
+                "真人示范学习即将开始。\n"
+                        + "启动后请手动离开本助手并正常操作闲鱼/广告/外部 App；"
+                        + "程序只记录，不会主动点击或滑动。\n"
+                        + "示范完成后切回本助手，学习会自动结束并保存。"
+        );
+
+        try {
+            TaskForegroundService.startLearning(getApplicationContext());
+            Toast.makeText(this, "学习模式已启动，请开始真人示范", Toast.LENGTH_LONG).show();
+            handler.removeCallbacks(runningRefresh);
+            handler.postDelayed(runningRefresh, 800L);
+        } catch (Throwable t) {
+            statusDetailText.setText("启动学习模式失败：" + t.getClass().getSimpleName()
+                    + "：" + t.getMessage());
+            Toast.makeText(this, "启动学习模式失败", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void stopCurrentRun() {
+        if (!TaskExecutor.isRunning()) {
+            Toast.makeText(this, "当前没有运行任务", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        TaskExecutor.requestStop("用户点击“停止当前运行”");
+        statusDetailText.setText(
+                TaskExecutor.isLearningMode()
+                        ? "正在结束学习模式并保存记录……"
+                        : "已请求停止自动任务，后续主动 UI 操作将被立即拦截。"
+        );
+        handler.removeCallbacks(runningRefresh);
+        handler.postDelayed(runningRefresh, 500L);
     }
 
     private void triggerXianyuTask() {
@@ -244,12 +313,14 @@ public class MainActivity extends Activity {
         } else {
             scheduleStatusText.setText("每日任务：未启用");
         }
+        int learned = TaskExecutor.getLearningCaseCount(this);
+        learningStatusText.setText("学习库：已保存 " + learned + " 个唯一案例");
         setRuntimeState(TaskExecutor.isRunning());
     }
 
     private void setRuntimeState(boolean running) {
         if (running) {
-            runtimeStatusText.setText("运行中");
+            runtimeStatusText.setText(TaskExecutor.isLearningMode() ? "学习中" : "运行中");
             runtimeStatusText.setTextColor(0xFF1D4ED8);
             runtimeStatusText.setBackgroundResource(R.drawable.bg_status_running);
         } else {
@@ -268,9 +339,19 @@ public class MainActivity extends Activity {
 
         String log = readRecentLog(file);
         logText.setText(log);
+        learningStatusText.setText(
+                "学习库：已保存 " + TaskExecutor.getLearningCaseCount(this) + " 个唯一案例");
 
         if (running) {
-            statusDetailText.setText("任务正在执行 · 日志会自动刷新。\n想中途停止：切到任意其它 App 即可。");
+            if (TaskExecutor.isLearningMode()) {
+                statusDetailText.setText(
+                        "真人示范学习正在记录。\n"
+                                + "程序不会主动点击/滑动；示范结束后切回本助手即可自动保存。");
+            } else {
+                statusDetailText.setText(
+                        "任务正在执行 · 日志会自动刷新。\n"
+                                + "切回本助手或点击“停止当前运行”都会立即停止主动操作。");
+            }
         } else if (userRequested) {
             statusDetailText.setText("日志已刷新 · "
                     + new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date()));

@@ -14,18 +14,30 @@ import android.os.PowerManager;
 import android.util.Log;
 
 /**
- * Owns the process lifetime while TaskExecutor is controlling Xianyu.
- * AlarmReceiver is intentionally kept short: it only schedules the next alarm
- * and starts this foreground service.
+ * Owns the process lifetime while TaskExecutor is controlling Xianyu or
+ * recording a V4.12 human demonstration.
  */
 public class TaskForegroundService extends Service {
     private static final String TAG = "XianyuTaskService";
     private static final String CHANNEL_ID = "xianyu_scheduler";
     private static final int NOTIFICATION_ID = 18009;
+    private static final String EXTRA_MODE = "run_mode";
+    private static final String MODE_AUTO = "auto";
+    private static final String MODE_LEARNING = "learning";
+
     private PowerManager.WakeLock wakeLock;
 
     public static void start(Context context) {
+        startWithMode(context, MODE_AUTO);
+    }
+
+    public static void startLearning(Context context) {
+        startWithMode(context, MODE_LEARNING);
+    }
+
+    private static void startWithMode(Context context, String mode) {
         Intent intent = new Intent(context, TaskForegroundService.class);
+        intent.putExtra(EXTRA_MODE, mode);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(intent);
         } else {
@@ -38,7 +50,7 @@ public class TaskForegroundService extends Service {
         super.onCreate();
         createChannel();
         acquireWakeLock();
-        Notification notification = buildNotification("正在准备自动任务");
+        Notification notification = buildNotification("正在准备");
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(
                     NOTIFICATION_ID,
@@ -52,32 +64,44 @@ public class TaskForegroundService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        TaskStatusReceiver.writeLog(this, "INFO", "调度", "前台服务收到任务请求");
+        String mode = intent == null
+                ? MODE_AUTO
+                : intent.getStringExtra(EXTRA_MODE);
+        boolean learning = MODE_LEARNING.equals(mode);
+
+        TaskStatusReceiver.writeLog(
+                this,
+                "INFO",
+                "调度",
+                learning ? "前台服务收到真人示范学习请求" : "前台服务收到自动任务请求"
+        );
 
         if (TaskExecutor.isRunning()) {
-            // A duplicate alarm/test request must not stop the service that owns
-            // the currently running executor. Wait for the current run to finish.
-            new Thread(() -> {
-                while (TaskExecutor.isRunning()) {
-                    try {
-                        Thread.sleep(1000L);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                }
-                stopForegroundCompat();
-                stopSelf();
-            }, "XianyuService-WaitExisting").start();
+            TaskStatusReceiver.writeLog(
+                    this,
+                    "INFO",
+                    "调度",
+                    "已有运行实例，忽略重复启动请求"
+            );
             return START_NOT_STICKY;
         }
 
-        TaskExecutor.run(getApplicationContext(), () -> {
+        Runnable complete = () -> {
             TaskStatusReceiver.writeLog(
-                    getApplicationContext(), "INFO", "调度", "任务执行器已结束，停止前台服务");
+                    getApplicationContext(),
+                    "INFO",
+                    "调度",
+                    learning ? "学习记录器已结束，停止前台服务" : "任务执行器已结束，停止前台服务"
+            );
             stopForegroundCompat();
             stopSelf();
-        });
+        };
+
+        if (learning) {
+            TaskExecutor.runLearning(getApplicationContext(), complete);
+        } else {
+            TaskExecutor.run(getApplicationContext(), complete);
+        }
 
         return START_NOT_STICKY;
     }
@@ -106,7 +130,6 @@ public class TaskForegroundService extends Service {
                     PowerManager.PARTIAL_WAKE_LOCK,
                     "XianyuScheduler:TaskWakeLock"
             );
-            // Hard timeout protects against a service/executor bug leaking the lock.
             wakeLock.acquire(30L * 60L * 1000L);
         } catch (Throwable t) {
             Log.e(TAG, "获取 WakeLock 失败", t);
@@ -123,7 +146,7 @@ public class TaskForegroundService extends Service {
                     "闲鱼自动任务运行状态",
                     NotificationManager.IMPORTANCE_LOW
             );
-            channel.setDescription("保持定时自动任务在后台执行");
+            channel.setDescription("保持自动任务或真人示范学习在后台运行");
             manager.createNotificationChannel(channel);
         } catch (Throwable t) {
             Log.e(TAG, "创建通知渠道失败", t);

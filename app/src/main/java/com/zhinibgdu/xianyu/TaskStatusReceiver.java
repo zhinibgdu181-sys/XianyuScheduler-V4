@@ -54,6 +54,20 @@ public final class TaskStatusReceiver {
         writeLog(context, "INFO", "系统日志", message);
     }
 
+    public static synchronized boolean clearLog(Context context) {
+        try {
+            if (context == null) return false;
+            Context app = context.getApplicationContext();
+            File dir = app.getExternalFilesDir(null);
+            if (dir == null) return false;
+            File file = new File(dir, LOG_FILE_NAME);
+            if (!file.exists()) return true;
+            return file.delete();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     private static void trimIfNeeded(File file) {
         try {
             if (!file.exists() || file.length() <= MAX_LOG_BYTES) return;

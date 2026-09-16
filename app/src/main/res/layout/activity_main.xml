@@ -89,6 +89,16 @@
                 android:text="精确闹钟 → 前台服务 → Root/UIAutomator"
                 android:textColor="#6B7280"
                 android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/learning_status_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="学习库：已保存 0 个唯一案例"
+                android:textColor="#7C3AED"
+                android:textSize="12sp"
+                android:textStyle="bold" />
         </LinearLayout>
 
         <TextView
@@ -110,6 +120,39 @@
             android:textColor="#FFFFFF"
             android:textSize="16sp"
             android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/learning_button"
+                android:layout_width="0dp"
+                android:layout_height="52dp"
+                android:layout_weight="1"
+                android:backgroundTint="#7C3AED"
+                android:text="开始学习模式"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <Space
+                android:layout_width="8dp"
+                android:layout_height="1dp" />
+
+            <Button
+                android:id="@+id/stop_button"
+                android:layout_width="0dp"
+                android:layout_height="52dp"
+                android:layout_weight="1"
+                android:backgroundTint="#F59E0B"
+                android:text="停止当前运行"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -157,6 +200,22 @@
                 android:textColor="#374151"
                 android:textSize="14sp"
                 android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/clear_log_button"
+                android:layout_width="wrap_content"
+                android:layout_height="42dp"
+                android:minWidth="0dp"
+                android:paddingStart="13dp"
+                android:paddingEnd="13dp"
+                android:backgroundTint="#FEECEC"
+                android:text="清空"
+                android:textColor="#B42318"
+                android:textSize="13sp" />
+
+            <Space
+                android:layout_width="8dp"
+                android:layout_height="1dp" />
 
             <Button
                 android:id="@+id/log_button"
