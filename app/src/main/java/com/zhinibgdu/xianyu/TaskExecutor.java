@@ -41,7 +41,7 @@ import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
 /**
- * XianyuTaskExecutor V4.16
+ * XianyuTaskExecutor V4.19
  *
  * 重点修复：
  * 1. dumpsys 前台解析不再把“未知”误判为模块 App。
@@ -59,11 +59,13 @@ import javax.xml.parsers.DocumentBuilderFactory;
  * 11. V4.12：自动模式人工接管后进入硬停止态，所有后续 UI 变更 Root 命令都会被统一拦截。
  * 12. V4.13：修复真人示范触摸生命周期和持续时间采集；按 getevent 事件时间计算 DOWN→UP，
  *     新触摸不再继承上一手势坐标；增加语义去重、页面/外部 App 归一化和无关系统动作过滤。
- * 13. V4.15：自适应节奏。减少重复 OCR/固定等待；验证页复用最近任务面板快照；
+ * 13. V4.15：自适应节奏。减少重复 OCR/固定等待；验证页复用最近任务面板快照。
  * 14. V4.16：任务面板立即连贯执行。返回/识别到 TASK_PANEL 后复用该帧直接挑选
- * 15. V4.17：修复“赚骰子/1分兑换”OCR粘连误点；导航OCR优先；UIAutomator快速超时；人工接管即时中断。
  *     下一个“签到/领取奖励/去完成”，不再为了上一任务的进度变化额外停留。
- *     简单跳转任务缩短等待，浏览/视频保留必要时长；任务间使用小范围动态间隔。
+ * 15. V4.17：修复“赚骰子/1分兑换”OCR粘连误点；导航OCR优先；UIAutomator快速超时；人工接管即时中断。
+ * 16. V4.18：加入小游戏页面分类；“消了还想消”启用水果视觉配对求解器；麻将对子页先识别并纳入学习库。
+ * 17. V4.19：“点点消不停”启用麻将视觉求解器：识别6x6棋盘/同牌，优先处理相邻对子，
+ *     再滑动同牌靠近；每一步截图验证，失败动作进入本轮黑名单，不盲滑。
  */
 public final class TaskExecutor {
 
@@ -302,7 +304,7 @@ public final class TaskExecutor {
         diagnostic(
                 learning
                         ? "========== 真人示范学习开始 · V4.13 =========="
-                        : "========== 闲鱼任务开始 · V4.16 =========="
+                        : "========== 闲鱼任务开始 · V4.19 =========="
         );
 
         if (learning) {
@@ -1032,6 +1034,8 @@ public final class TaskExecutor {
         if (!fg.isEmpty() && !TARGET_PACKAGE.equals(fg)) return "EXTERNAL_APP";
 
         if (TARGET_PACKAGE.equals(fg)) {
+            if (FruitGameSolver.looksLikeFruitGame(text)) return "FRUIT_PAIR_GAME";
+            if (MahjongGameSolver.looksLikeMahjongPairGame(text)) return "MAHJONG_PAIR_GAME";
             if (containsAny(text, "正在跳转", "打开淘宝", "打开支付宝", "打开美团")) {
                 return "JUMP_PAGE";
             }
@@ -1066,6 +1070,8 @@ public final class TaskExecutor {
             case MINE: return "MINE";
             case XIANYU_HOME: return "XIANYU_HOME";
             case AD_OR_INSTALL: return "AD_OR_INSTALL";
+            case FRUIT_PAIR_GAME: return "FRUIT_PAIR_GAME";
+            case MAHJONG_PAIR_GAME: return "MAHJONG_PAIR_GAME";
             case EXTERNAL_APP: return "EXTERNAL_APP";
             case MODULE_APP: return "MODULE_APP";
             case UNKNOWN_XIANYU: return "UNKNOWN_XIANYU";
@@ -3404,6 +3410,8 @@ public final class TaskExecutor {
         MINE,
         XIANYU_HOME,
         AD_OR_INSTALL,
+        FRUIT_PAIR_GAME,
+        MAHJONG_PAIR_GAME,
         EXTERNAL_APP,
         MODULE_APP,
         UNKNOWN_XIANYU,
@@ -3465,6 +3473,10 @@ public final class TaskExecutor {
 
         if (looksLikeAdOrInstallPageV47(text)) {
             kind = PageKindV411.AD_OR_INSTALL;
+        } else if (FruitGameSolver.looksLikeFruitGame(text)) {
+            kind = PageKindV411.FRUIT_PAIR_GAME;
+        } else if (MahjongGameSolver.looksLikeMahjongPairGame(text)) {
+            kind = PageKindV411.MAHJONG_PAIR_GAME;
         } else if (isTaskPageV45(null, ocr)) {
             kind = PageKindV411.TASK_PANEL;
         } else if (isCoinPageV45(null, ocr)) {
@@ -3494,7 +3506,8 @@ public final class TaskExecutor {
         String[] markers = {
                 "得骰子赚闲鱼币", "继续试玩", "正在跳转", "打开淘宝",
                 "闲鱼币", "我的收藏", "历史浏览", "闲鱼", "签到",
-                "领取奖励", "去完成", "立即下载", "安装"
+                "领取奖励", "去完成", "立即下载", "安装",
+                "剩余", "消除", "打乱", "点击麻将对", "麻将对"
         };
         List<String> found = new ArrayList<>();
         for (String m : markers) {
@@ -3862,6 +3875,13 @@ public final class TaskExecutor {
 
         diagnostic("[执行] " + taskName);
 
+        if (containsAny(taskName, "消了还想消")) {
+            return executeFruitPairGameV418(suPath, taskName);
+        }
+        if (containsAny(taskName, "点点消不停")) {
+            return executeMahjongPairGameV419(suPath, taskName);
+        }
+
         boolean isVideo = containsAny(taskName, "视频", "观看", "看15秒");
         boolean isSearch = containsAny(taskName, "搜一搜", "搜索", "搜商品");
         boolean isBounce = isBounceTask(taskName);
@@ -4024,6 +4044,154 @@ public final class TaskExecutor {
         } finally {
             if (isBounce) inBounceTask = false;
         }
+    }
+
+    private static boolean executeFruitPairGameV418(
+            String suPath,
+            String taskName
+    ) {
+        diagnostic("[游戏V4.18] 启动水果配对求解器：" + taskName);
+        if (!paceSleepV415(480L, 760L)) return false;
+
+        FruitGameSolver.Result result = FruitGameSolver.solveOneRound(
+                lastContext,
+                suPath,
+                new FruitGameSolver.Host() {
+                    @Override
+                    public boolean tap(int x, int y, String reason) {
+                        if (userAborted || physicalTouchDetected) return false;
+                        int jx = x + ThreadLocalRandom.current().nextInt(-5, 6);
+                        int jy = y + ThreadLocalRandom.current().nextInt(-5, 6);
+                        RootResult r = rootWithPath(
+                                suPath,
+                                "input tap " + Math.max(1, jx) + " " + Math.max(1, jy)
+                        );
+                        diagnostic("[游戏V4.18] " + reason + " → " + jx + "," + jy);
+                        return r.exitCode == 0 && !userAborted;
+                    }
+
+                    @Override
+                    public boolean sleep(long minMs, long maxMs) {
+                        return paceSleepV415(minMs, maxMs);
+                    }
+
+                    @Override
+                    public boolean aborted() {
+                        return userAborted || physicalTouchDetected;
+                    }
+
+                    @Override
+                    public void log(String message) {
+                        diagnostic(message);
+                    }
+
+                    @Override
+                    public ScreenOcr.Snapshot ocr(String reason) {
+                        return captureOcrV45(suPath, reason);
+                    }
+                }
+        );
+
+        if (result == FruitGameSolver.Result.ABORTED) return false;
+
+        if (result == FruitGameSolver.Result.COMPLETED) {
+            diagnostic("[游戏V4.18] 水果第1关完成，返回任务面板");
+            TaskProfileStoreV48.recordRecovery(taskName, "fruit_game_completed");
+            return conditionalBackRecoveryV410(suPath, taskName, "水果游戏完成返回");
+        }
+
+        if (result == FruitGameSolver.Result.NOT_FRUIT_GAME) {
+            diagnostic("[游戏V4.18] 点击任务后没有进入预期水果页，执行安全恢复");
+            TaskProfileStoreV48.recordFailure(taskName, "fruit_game_not_detected");
+        } else {
+            diagnostic("[游戏V4.18] 水果游戏安全停止，未把任务标记为完成");
+            TaskProfileStoreV48.recordUnverifiedV411(taskName, "fruit_game_safe_stop");
+        }
+        conditionalBackRecoveryV410(suPath, taskName, "水果游戏异常安全返回");
+        return false;
+    }
+
+    private static boolean executeMahjongPairGameV419(
+            String suPath,
+            String taskName
+    ) {
+        diagnostic("[麻将V4.19] 启动‘点点消不停’视觉求解器：" + taskName);
+        if (!paceSleepV415(320L, 560L)) return false;
+
+        MahjongGameSolver.Result result = MahjongGameSolver.solveOneRound(
+                lastContext,
+                suPath,
+                new MahjongGameSolver.Host() {
+                    @Override
+                    public boolean tap(int x, int y, String reason) {
+                        if (userAborted || physicalTouchDetected) return false;
+                        int jx = x + ThreadLocalRandom.current().nextInt(-4, 5);
+                        int jy = y + ThreadLocalRandom.current().nextInt(-4, 5);
+                        RootResult r = rootWithPath(
+                                suPath,
+                                "input tap " + Math.max(1, jx) + " " + Math.max(1, jy)
+                        );
+                        diagnostic("[麻将V4.19] " + reason + " → " + jx + "," + jy);
+                        return r.exitCode == 0 && !userAborted;
+                    }
+
+                    @Override
+                    public boolean swipe(
+                            int sx, int sy, int ex, int ey, int durationMs, String reason
+                    ) {
+                        if (userAborted || physicalTouchDetected) return false;
+                        RootResult r = rootWithPath(
+                                suPath,
+                                "input swipe " + Math.max(1, sx) + " " + Math.max(1, sy)
+                                        + " " + Math.max(1, ex) + " " + Math.max(1, ey)
+                                        + " " + Math.max(160, durationMs)
+                        );
+                        diagnostic("[麻将V4.19] " + reason
+                                + " → " + sx + "," + sy
+                                + " -> " + ex + "," + ey
+                                + " / " + durationMs + "ms");
+                        return r.exitCode == 0 && !userAborted;
+                    }
+
+                    @Override
+                    public boolean sleep(long minMs, long maxMs) {
+                        return paceSleepV415(minMs, maxMs);
+                    }
+
+                    @Override
+                    public boolean aborted() {
+                        return userAborted || physicalTouchDetected;
+                    }
+
+                    @Override
+                    public void log(String message) {
+                        diagnostic(message);
+                    }
+
+                    @Override
+                    public ScreenOcr.Snapshot ocr(String reason) {
+                        return captureOcrV45(suPath, reason);
+                    }
+                }
+        );
+
+        if (result == MahjongGameSolver.Result.ABORTED) return false;
+
+        if (result == MahjongGameSolver.Result.COMPLETED) {
+            diagnostic("[麻将V4.19] ✅ 第1关完成，返回任务面板");
+            TaskProfileStoreV48.recordRecovery(taskName, "mahjong_game_completed");
+            return conditionalBackRecoveryV410(suPath, taskName, "麻将游戏完成返回");
+        }
+
+        if (result == MahjongGameSolver.Result.NOT_MAHJONG_GAME) {
+            diagnostic("[麻将V4.19] 点击任务后没有进入预期麻将页，执行安全恢复");
+            TaskProfileStoreV48.recordFailure(taskName, "mahjong_game_not_detected");
+        } else {
+            diagnostic("[麻将V4.19] 麻将游戏安全停止，未把任务标记为完成");
+            TaskProfileStoreV48.recordUnverifiedV411(taskName, "mahjong_game_safe_stop");
+        }
+        conditionalBackRecoveryV410(suPath, taskName, "麻将游戏异常安全返回");
+        return false;
     }
 
     private static boolean executeVideoTaskPolling(
