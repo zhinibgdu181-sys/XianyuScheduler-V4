@@ -61,6 +61,7 @@ import javax.xml.parsers.DocumentBuilderFactory;
  *     新触摸不再继承上一手势坐标；增加语义去重、页面/外部 App 归一化和无关系统动作过滤。
  * 13. V4.15：自适应节奏。减少重复 OCR/固定等待；验证页复用最近任务面板快照；
  * 14. V4.16：任务面板立即连贯执行。返回/识别到 TASK_PANEL 后复用该帧直接挑选
+ * 15. V4.17：修复“赚骰子/1分兑换”OCR粘连误点；导航OCR优先；UIAutomator快速超时；人工接管即时中断。
  *     下一个“签到/领取奖励/去完成”，不再为了上一任务的进度变化额外停留。
  *     简单跳转任务缩短等待，浏览/视频保留必要时长；任务间使用小范围动态间隔。
  */
@@ -93,6 +94,11 @@ public final class TaskExecutor {
 
     private static final long ROOT_TIMEOUT_MS =
             8000L;
+
+    // V4.17: UIAutomator is fallback only. Never allow one dump to stall navigation
+    // for the full generic root timeout.
+    private static final long UI_DUMP_TIMEOUT_MS_V417 = 2800L;
+    private static final int UI_DUMP_ATTEMPTS_V417 = 1;
 
     private static final int ROOT_PROBE_ATTEMPTS =
             3;
@@ -1758,11 +1764,14 @@ public final class TaskExecutor {
                 diagnostic("⚠️ 点击‘我的’后仍未识别到个人页");
             }
 
-            xml = dumpUi(suPath);
+            // V4.17: OCR already proves the page; do not pay another 2~8 s UIAutomator dump.
+            xml = "";
             ocr = captureOcrV45(suPath, "我的页");
 
-            if (xml == null && ocr.isEmpty()) {
-                return false;
+            if (ocr.isEmpty()) {
+                // XML is only a fallback when OCR itself is unavailable.
+                xml = dumpUi(suPath);
+                if (xml == null) return false;
             }
 
         } else if (isMinePageV45(xml, ocr)) {
@@ -1787,30 +1796,17 @@ public final class TaskExecutor {
 
                 if (!ensureFg(suPath)) return false;
 
-                xml = dumpUi(suPath);
+                // V4.17: OCR first. XML is only used if OCR cannot classify/click.
+                xml = "";
                 ocr = captureOcrV45(suPath, "寻找闲鱼币#" + attempt);
 
-                if (isTaskPageV45(xml, ocr)) return true;
-                if (isCoinPageV45(xml, ocr)) {
+                if (isTaskPageV45(null, ocr)) return true;
+                if (isCoinPageV45(null, ocr)) {
                     enteredCoin = true;
                     break;
                 }
 
-                boolean clickedCoin = false;
-
-                if (xml != null) {
-                    clickedCoin = clickTextAny(
-                            suPath,
-                            xml,
-                            "闲鱼币",
-                            "闲鱼币中心",
-                            "赚闲鱼币",
-                            "领闲鱼币"
-                    );
-                }
-
-                if (!clickedCoin) {
-                    clickedCoin = clickOcrTextAnyV45(
+                boolean clickedCoin = clickOcrTextAnyV45(
                             suPath,
                             ocr,
                             false,
@@ -1819,6 +1815,24 @@ public final class TaskExecutor {
                             "赚闲鱼币",
                             "领闲鱼币"
                     );
+
+                if (!clickedCoin && ocr.isEmpty()) {
+                    xml = dumpUi(suPath);
+                    if (xml != null) {
+                        clickedCoin = clickTextAny(
+                                suPath,
+                                xml,
+                                "闲鱼币",
+                                "闲鱼币中心",
+                                "赚闲鱼币",
+                                "领闲鱼币"
+                        );
+                    }
+                }
+
+                /* V4.17 OCR-first block ended. */
+                if (false) {
+                    // unreachable compatibility stub
                 }
 
                 if (!clickedCoin && isMinePageV45(xml, ocr)) {
@@ -1853,8 +1867,9 @@ public final class TaskExecutor {
                 return false;
             }
 
-            xml = dumpUi(suPath);
+            xml = "";
             ocr = captureOcrV45(suPath, "闲鱼币主页");
+            if (ocr.isEmpty()) xml = dumpUi(suPath);
         }
 
         if (isTaskPageV45(xml, ocr)) return true;
@@ -1870,35 +1885,36 @@ public final class TaskExecutor {
 
             if (!ensureFg(suPath)) return false;
 
-            xml = dumpUi(suPath);
+            // V4.17: OCR first and only click the left “赚骰子” control.
+            // “赚骰子  1分兑换” is frequently merged into one OCR line; clicking
+            // the line center opens the exchange shop, which was the V4.16 failure.
+            xml = "";
             ocr = captureOcrV45(suPath, "赚骰子#" + attempt);
 
-            if (isTaskPageV45(xml, ocr)) {
-                diagnostic("[导航] ✅ 已进入任务面板");
+            if (isTaskPageV45(null, ocr)) {
+                diagnostic("[导航V4.17] ✅ 已进入任务面板");
                 return true;
             }
 
-            boolean clickedEarn = false;
-            if (xml != null) {
-                clickedEarn = clickTextAny(suPath, xml, "赚骰子");
+            if (!isCoinPageV45(null, ocr)) {
+                if (looksLikeCoinExchangePageV417(ocr)) {
+                    diagnostic("[导航V4.17] ⚠️ 检测到误入‘闲鱼币兑好礼’，只返回一层到闲鱼币主页");
+                    if (!backOneLevelToCoinHomeV417(suPath)) return false;
+                    continue;
+                }
+                diagnostic("[导航V4.17] 当前已不是闲鱼币主页，禁止继续盲点‘赚骰子’");
+                return false;
             }
 
-            if (!clickedEarn) {
-                clickedEarn = clickOcrTextAnyV45(
-                        suPath,
-                        ocr,
-                        false,
-                        "赚骰子"
-                );
-            }
+            boolean clickedEarn = clickEarnDiceV417(suPath, ocr);
 
             if (!clickedEarn) {
-                diagnostic("[导航] XML/OCR未识别到‘赚骰子’，使用已确认闲鱼币页的比例坐标兜底");
+                diagnostic("[导航V4.17] 未找到可安全点击的‘赚骰子’，使用已确认闲鱼币页比例坐标");
                 clickedEarn = tapByRatioV43(
                         suPath,
                         0.735f,
                         0.495f,
-                        "闲鱼币-赚骰子",
+                        "闲鱼币-赚骰子V4.17",
                         false
                 );
             }
@@ -1911,10 +1927,16 @@ public final class TaskExecutor {
                     return true;
                 }
 
-                diagnostic("[导航] 点击赚骰子后暂时没识别到任务面板");
+                ScreenOcr.Snapshot afterEarn = captureOcrV45(suPath, "赚骰子点击结果V4.17");
+                if (looksLikeCoinExchangePageV417(afterEarn)) {
+                    diagnostic("[导航V4.17] ⚠️ 点击后进入兑换页，立即返回一层，不再重复坐标点击");
+                    if (!backOneLevelToCoinHomeV417(suPath)) return false;
+                } else {
+                    diagnostic("[导航] 点击赚骰子后暂时没识别到任务面板");
+                }
             }
 
-            SystemClock.sleep(800L);
+            sleepAbortableV48(220L);
         }
 
         ScreenOcr.Snapshot finalOcr = captureOcrV45(suPath, "任务面板失败页");
@@ -1933,11 +1955,19 @@ public final class TaskExecutor {
     private static String recoverNavigationContextV45(String suPath) {
 
         for (int i = 0; i < 5; i++) {
-            if (!ensureFg(suPath)) return null;
+            if (!ensureFg(suPath) || userAborted) return null;
+
+            // V4.17: OCR first. Most IdleFish surfaces are WebView/Flutter-like and
+            // UIAutomator is both slower and less reliable than the screenshot OCR.
+            ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "页面恢复#" + (i + 1));
+            if (isTaskPageV45(null, ocr)
+                    || isCoinPageV45(null, ocr)
+                    || isMinePageV45(null, ocr)
+                    || isHomePageV45(null, ocr)) {
+                return "";
+            }
 
             String xml = dumpUi(suPath);
-            ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "页面恢复#" + (i + 1));
-
             if (isTaskPageV45(xml, ocr)
                     || isCoinPageV45(xml, ocr)
                     || isMinePageV45(xml, ocr)
@@ -1946,14 +1976,14 @@ public final class TaskExecutor {
             }
 
             String text = combinedTextV45(xml, ocr);
-            diagnostic("[导航恢复] 未知闲鱼子页面，返回上一层："
+            diagnostic("[导航恢复V4.17] 未知闲鱼子页面，返回上一层："
                     + trimForLog(text, 300));
 
             rootWithPath(suPath, "input keyevent KEYCODE_BACK");
-            SystemClock.sleep(900L);
+            if (!sleepAbortableV48(420L)) return null;
         }
 
-        diagnostic("[导航恢复] 连续返回仍无法识别，重启闲鱼到主页面");
+        diagnostic("[导航恢复V4.17] 连续返回仍无法识别，重启闲鱼到主页面");
         rootWithPath(
                 suPath,
                 "am force-stop " + TARGET_PACKAGE
@@ -1961,11 +1991,16 @@ public final class TaskExecutor {
         );
 
         if (!waitFg(suPath, 15000L)) return null;
-        SystemClock.sleep(1800L);
+        if (!sleepAbortableV48(650L)) return null;
 
-        String xml = dumpUi(suPath);
         ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "重启后的闲鱼");
-
+        if (isTaskPageV45(null, ocr)
+                || isCoinPageV45(null, ocr)
+                || isMinePageV45(null, ocr)
+                || isHomePageV45(null, ocr)) {
+            return "";
+        }
+        String xml = dumpUi(suPath);
         if (isTaskPageV45(xml, ocr)
                 || isCoinPageV45(xml, ocr)
                 || isMinePageV45(xml, ocr)
@@ -1973,7 +2008,7 @@ public final class TaskExecutor {
             return xml == null ? "" : xml;
         }
 
-        diagnostic("[导航恢复] 重启后仍无法识别闲鱼主页面");
+        diagnostic("[导航恢复V4.17] 重启后仍无法识别闲鱼主页面");
         return null;
     }
 
@@ -2177,46 +2212,125 @@ public final class TaskExecutor {
 
     private static boolean waitMinePageV45(String suPath, long timeout) {
         long end = SystemClock.elapsedRealtime() + Math.max(0L, timeout);
+        int loop = 0;
         while (SystemClock.elapsedRealtime() < end) {
             if (userAborted) return false;
-            String xml = dumpUi(suPath);
             ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "等待我的页");
-            if (isMinePageV45(xml, ocr)
-                    || isCoinPageV45(xml, ocr)
-                    || isTaskPageV45(xml, ocr)) {
+            if (isMinePageV45(null, ocr)
+                    || isCoinPageV45(null, ocr)
+                    || isTaskPageV45(null, ocr)) {
                 return true;
             }
-            SystemClock.sleep(500L);
+            // XML fallback only once when OCR is ambiguous.
+            if (loop++ == 0) {
+                String xml = dumpUi(suPath);
+                if (isMinePageV45(xml, ocr)
+                        || isCoinPageV45(xml, ocr)
+                        || isTaskPageV45(xml, ocr)) return true;
+            }
+            if (!sleepAbortableV48(220L)) return false;
         }
         return false;
     }
 
     private static boolean waitCoinPageV45(String suPath, long timeout) {
         long end = SystemClock.elapsedRealtime() + Math.max(0L, timeout);
+        int loop = 0;
         while (SystemClock.elapsedRealtime() < end) {
             if (userAborted) return false;
-            String xml = dumpUi(suPath);
             ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "等待闲鱼币页");
-            if (isCoinPageV45(xml, ocr)) {
-                diagnostic("[导航] ✅ 已确认闲鱼币主页");
+            if (isCoinPageV45(null, ocr)) {
+                diagnostic("[导航V4.17] ✅ 已确认闲鱼币主页");
                 return true;
             }
-            if (isTaskPageV45(xml, ocr)) return true;
-            SystemClock.sleep(500L);
+            if (isTaskPageV45(null, ocr)) return true;
+            if (loop++ == 0) {
+                String xml = dumpUi(suPath);
+                if (isCoinPageV45(xml, ocr)) {
+                    diagnostic("[导航V4.17] ✅ XML兜底确认闲鱼币主页");
+                    return true;
+                }
+                if (isTaskPageV45(xml, ocr)) return true;
+            }
+            if (!sleepAbortableV48(220L)) return false;
         }
         return false;
     }
 
     private static boolean waitTaskPageV45(String suPath, long timeout) {
         long end = SystemClock.elapsedRealtime() + Math.max(0L, timeout);
+        int loop = 0;
         while (SystemClock.elapsedRealtime() < end) {
             if (userAborted) return false;
-            String xml = dumpUi(suPath);
             ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "等待任务面板");
-            if (isTaskPageV45(xml, ocr)) return true;
-            SystemClock.sleep(500L);
+            if (isTaskPageV45(null, ocr)) return true;
+            // Fail fast: this is the exact wrong page caused by OCR merging
+            // “赚骰子 1分兑换”. The caller will return one level immediately.
+            if (looksLikeCoinExchangePageV417(ocr)) return false;
+            if (loop++ == 0 && ocr.isEmpty()) {
+                String xml = dumpUi(suPath);
+                if (isTaskPageV45(xml, ocr)) return true;
+            }
+            if (!sleepAbortableV48(220L)) return false;
         }
         return false;
+    }
+
+    private static boolean looksLikeCoinExchangePageV417(ScreenOcr.Snapshot ocr) {
+        if (ocr == null || ocr.isEmpty()) return false;
+        String text = ocr.fullText == null ? "" : ocr.fullText;
+        int score = 0;
+        if (text.contains("闲鱼币兑好礼")) score += 2;
+        if (text.contains("每晚8点抢兑") || text.contains("开抢中")) score++;
+        if (text.contains("已兑换") || text.contains("人想要")) score++;
+        if (text.contains("预约") || text.contains("提醒我")) score++;
+        return score >= 2;
+    }
+
+    private static boolean clickEarnDiceV417(String suPath, ScreenOcr.Snapshot ocr) {
+        if (ocr == null || ocr.isEmpty()) return false;
+
+        for (ScreenOcr.Item item : ocr.items) {
+            if (item == null || item.text == null) continue;
+            String t = item.text.replace(" ", "").replace("賺", "赚").replace("股子", "骰子");
+            if (!t.contains("赚骰子")) continue;
+
+            // A clean OCR box can be clicked at its center.
+            if (!containsAny(t, "1分兑换", "1分兑換", "兑换", "兑換", "兑好物")) {
+                int x = item.centerX();
+                int y = item.centerY();
+                diagnostic("[导航V4.17] OCR精确点击‘赚骰子’：" + item.text + " → " + x + "," + y);
+                RootResult r = rootWithPath(suPath, "input tap " + x + " " + y);
+                if (r.exitCode != 0) return false;
+                return sleepAbortableV48(240L);
+            }
+
+            // ML Kit sometimes merges the two adjacent controls into one line:
+            // “赚骰子  1分兑换”. Never click the center; click the left quarter.
+            int width = Math.max(1, item.bounds.right - item.bounds.left);
+            int x = item.bounds.left + Math.round(width * 0.26f);
+            int y = item.centerY();
+            diagnostic("[导航V4.17] OCR粘连‘赚骰子/1分兑换’，只点左侧："
+                    + item.text + " → " + x + "," + y);
+            RootResult r = rootWithPath(suPath, "input tap " + x + " " + y);
+            if (r.exitCode != 0) return false;
+            return sleepAbortableV48(240L);
+        }
+        return false;
+    }
+
+    private static boolean backOneLevelToCoinHomeV417(String suPath) {
+        int[] screen = getScreenSizeV43(suPath);
+        int w = screen != null && screen.length >= 2 ? screen[0] : 1440;
+        int h = screen != null && screen.length >= 2 ? screen[1] : 3120;
+        int sx = Math.max(1, w - 2);
+        int sy = Math.max(1, Math.round(h * 0.75f));
+        int ex = Math.max(1, Math.round(w * 0.76f));
+        diagnostic("[导航V4.17] 单次右侧返回兑换页：" + sx + "," + sy + " → " + ex + "," + sy);
+        RootResult r = rootWithPath(suPath, "input swipe " + sx + " " + sy + " " + ex + " " + sy + " 260");
+        if (r.exitCode != 0) return false;
+        if (!sleepAbortableV48(320L)) return false;
+        return waitCoinPageV45(suPath, 4200L);
     }
 
     private static boolean clickOcrTextAnyV45(
@@ -4613,7 +4727,7 @@ public final class TaskExecutor {
         }
 
         for (int attempt = 1;
-             attempt <= 3;
+             attempt <= UI_DUMP_ATTEMPTS_V417;
              attempt++) {
 
             if (userAborted) return null;
@@ -4633,11 +4747,11 @@ public final class TaskExecutor {
                 return xml;
             }
 
-            SystemClock.sleep(800L);
+            if (!sleepAbortableV48(120L)) return null;
         }
 
         diagnostic(
-                "❌ UIAutomator 连续 3 次失败"
+                "⚠️ UIAutomator 快速兜底失败，跳过XML"
         );
 
         return null;
@@ -4672,9 +4786,10 @@ public final class TaskExecutor {
                         + " 2>/dev/null";
 
         RootResult r =
-                rootWithPath(
+                rootWithPathTimedV417(
                         suPath,
-                        command
+                        command,
+                        UI_DUMP_TIMEOUT_MS_V417
                 );
 
         if (r.exitCode != 0) {
@@ -6099,6 +6214,12 @@ public final class TaskExecutor {
             String command
     ) {
 
+        // V4.17 hard abort applies to read-only root probes too. Otherwise a
+        // blocking dumpsys/uiautomator may keep the executor alive after touch.
+        if (!learningModeV412 && (userAborted || physicalTouchDetected)) {
+            return new RootResult(-4, "", "manual_takeover_hard_stop");
+        }
+
         if (isUiMutationCommandV412(command)) {
             if (learningModeV412) {
                 diagnostic("[学习模式V4.13] 已拦截主动 UI 操作：" + command);
@@ -6149,103 +6270,72 @@ public final class TaskExecutor {
             String suPath,
             String command
     ) {
+        return rootRawTimedV417(suPath, command, ROOT_TIMEOUT_MS);
+    }
 
+    private static RootResult rootWithPathTimedV417(
+            String suPath,
+            String command,
+            long timeoutMs
+    ) {
+        if (!learningModeV412 && (userAborted || physicalTouchDetected)) {
+            return new RootResult(-4, "", "manual_takeover_hard_stop");
+        }
+        if (suPath == null || suPath.isEmpty()) {
+            return new RootResult(-1, "", "su path empty");
+        }
+        diagnostic("[ROOT] su -c " + command);
+        return rootRawTimedV417(suPath, command, timeoutMs);
+    }
+
+    private static RootResult rootRawTimedV417(
+            String suPath,
+            String command,
+            long timeoutMs
+    ) {
         Process process = null;
-
-        StringBuilder stdout =
-                new StringBuilder();
-
-        StringBuilder stderr =
-                new StringBuilder();
+        StringBuilder stdout = new StringBuilder();
+        StringBuilder stderr = new StringBuilder();
 
         try {
+            process = Runtime.getRuntime().exec(new String[]{suPath, "-c", command});
 
-            process =
-                    Runtime.getRuntime()
-                            .exec(
-                                    new String[]{
-                                            suPath,
-                                            "-c",
-                                            command
-                                    }
-                            );
-
-            Thread outThread =
-                    new Thread(
-                            new StreamReader(
-                                    process.getInputStream(),
-                                    stdout
-                            )
-                    );
-
-            Thread errThread =
-                    new Thread(
-                            new StreamReader(
-                                    process.getErrorStream(),
-                                    stderr
-                            )
-                    );
-
+            Thread outThread = new Thread(new StreamReader(process.getInputStream(), stdout));
+            Thread errThread = new Thread(new StreamReader(process.getErrorStream(), stderr));
             outThread.start();
             errThread.start();
 
-            boolean finished =
-                    process.waitFor(
-                            ROOT_TIMEOUT_MS,
-                            TimeUnit.MILLISECONDS
-                    );
-
-            if (!finished) {
-
-                process.destroy();
-
-                try {
-                    process.destroyForcibly();
-                } catch (Throwable ignored) {
+            long deadline = SystemClock.elapsedRealtime() + Math.max(200L, timeoutMs);
+            boolean finished = false;
+            while (SystemClock.elapsedRealtime() < deadline) {
+                if (!learningModeV412 && (userAborted || physicalTouchDetected)) {
+                    process.destroy();
+                    try { process.destroyForcibly(); } catch (Throwable ignored) {}
+                    return new RootResult(-4, stdout.toString(), "manual_takeover_hard_stop");
                 }
-
-                return new RootResult(
-                        -2,
-                        stdout.toString(),
-                        "timeout"
-                );
+                if (process.waitFor(100L, TimeUnit.MILLISECONDS)) {
+                    finished = true;
+                    break;
+                }
             }
 
-            outThread.join(500L);
-            errThread.join(500L);
+            if (!finished) {
+                process.destroy();
+                try { process.destroyForcibly(); } catch (Throwable ignored) {}
+                return new RootResult(-2, stdout.toString(), "timeout");
+            }
 
-            return new RootResult(
-                    process.exitValue(),
-                    stdout.toString(),
-                    stderr.toString()
-            );
+            outThread.join(300L);
+            errThread.join(300L);
+            return new RootResult(process.exitValue(), stdout.toString(), stderr.toString());
 
         } catch (Throwable t) {
-
-            return new RootResult(
-                    -1,
-                    stdout.toString(),
-                    t.toString()
-            );
-
+            return new RootResult(-1, stdout.toString(), t.toString());
         } finally {
-
             if (process != null) {
-
-                try {
-                    process.getInputStream().close();
-                } catch (Throwable ignored) {
-                }
-
-                try {
-                    process.getErrorStream().close();
-                } catch (Throwable ignored) {
-                }
-
-                try {
-                    process.getOutputStream().close();
-                } catch (Throwable ignored) {
-                }
+                try { process.getInputStream().close(); } catch (Throwable ignored) {}
+                try { process.getErrorStream().close(); } catch (Throwable ignored) {}
+                try { process.getOutputStream().close(); } catch (Throwable ignored) {}
             }
         }
     }

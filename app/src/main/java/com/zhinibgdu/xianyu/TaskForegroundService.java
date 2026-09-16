@@ -15,7 +15,7 @@ import android.util.Log;
 
 /**
  * Owns the process lifetime while TaskExecutor is controlling Xianyu or
- * recording a V4.12 human demonstration.
+ * recording a V4.13 human demonstration.
  */
 public class TaskForegroundService extends Service {
     private static final String TAG = "XianyuTaskService";

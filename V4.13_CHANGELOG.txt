@@ -1,0 +1,12 @@
+XianyuScheduler V4.13 - 真人示范采集器修复版
+
+1. 修复新手势继承上一手势结束坐标的问题：每个 TRACKING_ID/BTN_TOUCH DOWN 都强制清空坐标。
+2. 手势持续时间改为 getevent -lt 原始事件时间戳的 DOWN→UP 差值，避免大量 1 ms 假数据。
+3. 新增 EDGE_BACK_RIGHT / EDGE_BACK_LEFT 的稳定识别，保留真实边缘返回的平均起止位置。
+4. 学习库改为语义去重：页面类型 + App + 动作类型 + 语义动作 + 粗粒度区域 + 结果页面。
+5. TAP/LONG_PRESS 才绑定 OCR 动作文字；普通滑动不再被随机商品文案污染。
+6. 增强 TASK_PANEL / COIN_HOME / JUMP_PAGE / AD_OR_INSTALL 页面语义分类。
+7. 过滤助手自身、SystemUI、权限控制器等无关操作。
+8. 新学习库使用 xianyu_learning_v413.xml，与 V4.12 的错误样本隔离，不覆盖旧数据。
+9. 学习日志改为 xianyu_learning_v413_log.txt。
+10. 学习案例新增 schema=413、min/max/avg duration 及平均坐标统计。

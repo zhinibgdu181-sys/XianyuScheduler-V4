@@ -1,0 +1,13 @@
+XianyuScheduler V4.15
+
+- Adaptive pacing: fast actions move faster; time-sensitive tasks keep required dwell time.
+- Reuses freshly verified TASK_PANEL OCR during completion verification.
+- Reduces completion verification from 4 fixed OCR checks to 2-3 adaptive checks.
+- Shortens post-task handoff delays and varies them within bounded ranges.
+- Replaces fixed 8.5 s bounce wait with task-category-specific timing.
+- Preserves explicit 15s/30s task duration requirements.
+- Prioritizes learned edge-back recovery before force-opening Xianyu.
+- Exits persistent Android system-transition foreground early instead of waiting the full task timer.
+- Defers diagnostic screenshots until repeated failure/unverified states.
+- Manual takeover final status is ABORTED instead of FINISHED.
+- V4.13 learning data and V4.14 learned-return behavior remain compatible.
