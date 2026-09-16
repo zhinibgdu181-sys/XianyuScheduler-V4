@@ -918,4 +918,4 @@ final class FruitGameSolver {
             this.shapeIou = shapeIou;
         }
     }
-             }
+            }
