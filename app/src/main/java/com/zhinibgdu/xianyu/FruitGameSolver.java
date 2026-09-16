@@ -14,12 +14,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * V4.18 视觉小游戏模块："消了还想消"水果配对。
+ * V4.22 视觉小游戏模块："消了还想消"水果配对。
  *
  * 规则：点击水果会进入下方坑位；两个相同水果自动消除；坑位最多3个。
  * 安全策略：只点击高置信度的完整同类对 A->A，一次只处理一对。
- * 如果无法找到高置信度对子，只在逻辑坑位为空时尝试“打乱”；若任何一步
- * 无法确认则安全停止，不继续塞入第三种水果。
+ * V4.22 安全约束：只允许点击水果对象本身。禁止点击“打乱”“消除”
+ * “解锁”“使用”等任何游戏功能按钮。找不到高置信度对子时直接安全停止。
  *
  * 这个实现不依赖 OpenCV。它把截图缩放到约720px宽，利用蓝色背景分割、
  * 连通域、归一化图块颜色/形状相似度寻找重复水果。
@@ -46,7 +46,6 @@ final class FruitGameSolver {
     private static final long SCREENSHOT_TIMEOUT_MS = 4200L;
     private static final long MAX_ROUND_MS = 7L * 60L * 1000L;
     private static final int MAX_PAIR_ACTIONS = 130;
-    private static final int MAX_SHUFFLES = 5;
 
     // Conservative thresholds measured against the supplied real game screenshot.
     // Exact repeated sprites score around 0.98~0.99. We intentionally reject
@@ -74,24 +73,23 @@ final class FruitGameSolver {
         }
 
         if (!host.sleep(420L, 720L)) return Result.ABORTED;
-        ScreenOcr.Snapshot firstOcr = host.ocr("水果游戏V4.18/进入确认");
+        ScreenOcr.Snapshot firstOcr = host.ocr("水果游戏V4.22/进入确认");
         if (host.aborted()) return Result.ABORTED;
 
         String firstText = normalize(firstOcr == null ? "" : firstOcr.fullText);
         if (!looksLikeFruitGame(firstText)) {
-            host.log("[游戏V4.18] 当前页面不是水果配对游戏，停止视觉求解");
+            host.log("[游戏V4.22] 当前页面不是水果配对游戏，停止视觉求解");
             return Result.NOT_FRUIT_GAME;
         }
 
         int remaining = parseRemaining(firstText);
         int progress = parsePercent(firstText);
-        host.log("[游戏V4.18] ✅ 识别水果游戏"
+        host.log("[游戏V4.22] ✅ 识别水果游戏"
                 + (remaining >= 0 ? " / 剩余=" + remaining : "")
                 + (progress >= 0 ? " / 进度=" + progress + "%" : ""));
 
         long started = SystemClock.elapsedRealtime();
         int pairActions = 0;
-        int shuffles = 0;
         int consecutiveCaptureFail = 0;
 
         while (!host.aborted()
@@ -101,7 +99,7 @@ final class FruitGameSolver {
             GameFrame frame = captureFrame(context, suPath, host);
             if (frame == null) {
                 consecutiveCaptureFail++;
-                host.log("[游戏V4.18] 截图失败 " + consecutiveCaptureFail + "/3");
+                host.log("[游戏V4.22] 截图失败 " + consecutiveCaptureFail + "/3");
                 if (consecutiveCaptureFail >= 3) return Result.SAFE_STOP;
                 if (!host.sleep(250L, 420L)) return Result.ABORTED;
                 continue;
@@ -111,7 +109,7 @@ final class FruitGameSolver {
             List<FruitObject> objects = detectFruitObjects(frame);
             PairChoice pair = chooseBestPair(objects);
 
-            host.log("[游戏V4.18] 当前检测水果=" + objects.size()
+            host.log("[游戏V4.22] 当前检测水果=" + objects.size()
                     + (pair == null ? " / 无高置信对子" :
                     " / 最佳对子=" + format(pair.score)
                             + " rgb=" + format(pair.rgbSimilarity)
@@ -121,32 +119,19 @@ final class FruitGameSolver {
             if (pair == null) {
                 safeRecycle(frame.bitmap);
 
-                ScreenOcr.Snapshot checkpoint = host.ocr("水果游戏V4.18/无对子检查");
+                ScreenOcr.Snapshot checkpoint = host.ocr("水果游戏V4.22/无对子检查");
                 if (host.aborted()) return Result.ABORTED;
                 String text = normalize(checkpoint == null ? "" : checkpoint.fullText);
                 if (isRoundCompleted(text)) {
-                    host.log("[游戏V4.18] ✅ 已检测到一关完成状态");
+                    host.log("[游戏V4.22] ✅ 已检测到一关完成状态");
                     return Result.COMPLETED;
                 }
 
-                // No uncertain clicking. Only shuffle when we have never left an
-                // unmatched fruit intentionally. With pair-only actions, logical
-                // tray state stays at zero after each trusted pair.
-                if (shuffles >= MAX_SHUFFLES) {
-                    host.log("[游戏V4.18] 连续无法找到可信对子，达到打乱上限，安全停止");
-                    return Result.SAFE_STOP;
-                }
-
-                int shuffleX = Math.round(frame.originalWidth * 0.78f);
-                int shuffleY = Math.round(frame.originalHeight * 0.955f);
-                host.log("[游戏V4.18] 无可信对子，坑位按安全状态=0，点击‘打乱’ #"
-                        + (shuffles + 1));
-                if (!host.tap(shuffleX, shuffleY, "水果游戏-打乱")) {
-                    return host.aborted() ? Result.ABORTED : Result.SAFE_STOP;
-                }
-                shuffles++;
-                if (!host.sleep(780L, 1180L)) return Result.ABORTED;
-                continue;
+                // V4.22 hard rule from real-device feedback: never touch game
+                // function controls such as shuffle/eliminate/unlock/use. Only
+                // fruit sprites themselves may be tapped by the solver.
+                host.log("[游戏V4.22] 无高置信对子；禁止点击打乱/消除/解锁/使用等功能按钮，安全停止");
+                return Result.SAFE_STOP;
             }
 
             int ax = mapX(frame, pair.a.centerX);
@@ -155,7 +140,7 @@ final class FruitGameSolver {
             int by = mapY(frame, pair.b.centerY);
             safeRecycle(frame.bitmap);
 
-            host.log("[游戏V4.18] 配对点击 A=(" + ax + "," + ay + ")"
+            host.log("[游戏V4.22] 配对点击 A=(" + ax + "," + ay + ")"
                     + " B=(" + bx + "," + by + ") / score=" + format(pair.score));
 
             // First fruit occupies at most one tray slot.
@@ -167,7 +152,7 @@ final class FruitGameSolver {
             // If B cannot be clicked we stop immediately: this avoids filling a
             // third slot after an incomplete pair.
             if (!host.tap(bx, by, "水果游戏-配对B")) {
-                host.log("[游戏V4.18] 第二个水果点击失败；为保护3槽坑位立即停止");
+                host.log("[游戏V4.22] 第二个水果点击失败；为保护3槽坑位立即停止");
                 return host.aborted() ? Result.ABORTED : Result.SAFE_STOP;
             }
             pairActions++;
@@ -177,28 +162,28 @@ final class FruitGameSolver {
             // Every few pairs verify that the game is still progressing / ended.
             if (pairActions == 1 || pairActions % 6 == 0) {
                 ScreenOcr.Snapshot checkpoint = host.ocr(
-                        "水果游戏V4.18/进度检查#" + pairActions);
+                        "水果游戏V4.22/进度检查#" + pairActions);
                 if (host.aborted()) return Result.ABORTED;
                 String text = normalize(checkpoint == null ? "" : checkpoint.fullText);
 
                 int nowRemaining = parseRemaining(text);
                 int nowProgress = parsePercent(text);
-                host.log("[游戏V4.18] 进度检查 pair=" + pairActions
+                host.log("[游戏V4.22] 进度检查 pair=" + pairActions
                         + (nowRemaining >= 0 ? " / 剩余=" + nowRemaining : "")
                         + (nowProgress >= 0 ? " / " + nowProgress + "%" : ""));
 
                 if (isRoundCompleted(text)) {
-                    host.log("[游戏V4.18] ✅ 第1关完成");
+                    host.log("[游戏V4.22] ✅ 第1关完成");
                     return Result.COMPLETED;
                 }
 
                 // If we unexpectedly left the fruit game, do not continue tapping.
                 if (!text.isEmpty() && !looksLikeFruitGame(text)) {
                     if (looksLikeTaskPanel(text)) {
-                        host.log("[游戏V4.18] 已自动返回任务面板，按完成流程交给外层验证");
+                        host.log("[游戏V4.22] 已自动返回任务面板，按完成流程交给外层验证");
                         return Result.COMPLETED;
                     }
-                    host.log("[游戏V4.18] 页面已离开水果游戏，停止继续点击");
+                    host.log("[游戏V4.22] 页面已离开水果游戏，停止继续点击");
                     return Result.SAFE_STOP;
                 }
 
@@ -208,7 +193,7 @@ final class FruitGameSolver {
         }
 
         if (host.aborted()) return Result.ABORTED;
-        host.log("[游戏V4.18] 达到本轮安全上限，停止自动点击");
+        host.log("[游戏V4.22] 达到本轮安全上限，停止自动点击");
         return Result.SAFE_STOP;
     }
 
