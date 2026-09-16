@@ -80,6 +80,9 @@ public class MainActivity extends Activity {
     private TextView alarmPermissionHintText;
     private volatile boolean rootCheckInFlight;
 
+    // V4.31 缓存最近一次 ROOT 授权结果，用于卡片点击时决定是"重新检测"还是"跳管理器"
+    private volatile boolean rootGrantedCache = false;
+
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable runningRefresh = new Runnable() {
         @Override
@@ -163,12 +166,14 @@ public class MainActivity extends Activity {
         navLogs.setOnClickListener(v -> selectBottomTab(3));
         selectBottomTab(0);
 
+        // V4.31 点击卡片：已授权 → 重新检测；未授权 → 跳 KernelSU/Magisk 管理器
         rootPermissionCard.setOnClickListener(v -> {
-            setStatusMessage(
-                    "正在重新检测 ROOT 权限。若显示未授权，请打开 KernelSU → 超级用户，"
-                            + "给“闲鱼定时助手”开启权限后再返回。"
-            );
-            refreshRootPermissionAsync(true);
+            if (isRootGrantedNow()) {
+                setStatusMessage("ROOT 已授权，正在重新检测。");
+                refreshRootPermissionAsync(true);
+            } else {
+                openRootManager();
+            }
         });
 
 
@@ -351,6 +356,9 @@ public class MainActivity extends Activity {
     }
 
     private void applyRootPermissionResult(RootPermissionResult result) {
+        // V4.31 缓存本次检测结果，供卡片点击时决定是"重新检测"还是"跳管理器"
+        rootGrantedCache = result.granted;
+
         if (result.granted) {
             rootPermissionCard.setBackgroundResource(R.drawable.bg_permission_granted);
             rootPermissionIcon.setText("✓ ROOT");
@@ -369,9 +377,84 @@ public class MainActivity extends Activity {
             rootPermissionStatusText.setTextColor(0xFF4B5563);
             rootPermissionHintText.setText(
                     result.suDetected
-                            ? "已检测到 su · 请在 KernelSU → 超级用户中授权\n授权后返回本应用"
-                            : "未检测到可用 su / ROOT 环境\n点卡片可重新检测"
+                            ? "已检测到 su · 点卡片打开 KernelSU/Magisk 授权\n授权后返回本应用自动刷新"
+                            : "未检测到可用 su / ROOT 环境\n点卡片可尝试打开 Root 管理器"
             );
+        }
+    }
+
+    /**
+     * V4.31 判断上次检测结果是否为已授权。
+     */
+    private boolean isRootGrantedNow() {
+        return rootGrantedCache;
+    }
+
+    /**
+     * V4.31 尝试跳转到已安装的 Root 管理器：
+     * 1. KernelSU 官方
+     * 2. SukiSU Ultra（KernelSU 分支）
+     * 3. Magisk
+     * 4. MMRL（模块管理器）
+     * 5. 都没装则打开本应用系统信息页
+     * 6. 最后兜底只弹 Toast
+     */
+    private void openRootManager() {
+        // 不硬编码 Activity 名，交给系统解析各包的主 Activity，
+        // 这样对 KernelSU / Magisk / SukiSU 各版本都兼容。
+        String[][] candidates = {
+                {"me.weishu.kernelsu", "KernelSU"},
+                {"com.sukisu.ultra", "SukiSU Ultra"},
+                {"com.topjohnwu.magisk", "Magisk"},
+                {"com.dergoogler.mmrl", "MMRL"}
+        };
+
+        for (String[] entry : candidates) {
+            String pkg = entry[0];
+            String label = entry[1];
+            try {
+                Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
+                if (launch != null) {
+                    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                            | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+                    startActivity(launch);
+                    Toast.makeText(
+                            this,
+                            "已打开 " + label
+                                    + "，请切到“超级用户”页面给“闲鱼定时助手”授权，然后返回本应用",
+                            Toast.LENGTH_LONG
+                    ).show();
+                    setStatusMessage(
+                            "已跳转 " + label
+                                    + "。请在超级用户列表中找到“闲鱼定时助手”并开启权限；\n"
+                                    + "返回本应用后会自动刷新授权状态。"
+                    );
+                    return;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+
+        // 没有装任何已知 Root 管理器：退而求其次，打开本应用的系统信息页，
+        // 让用户自己去系统设置里找权限入口。
+        try {
+            Intent appInfo = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            appInfo.setData(Uri.parse("package:" + getPackageName()));
+            appInfo.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(appInfo);
+            Toast.makeText(
+                    this,
+                    "未检测到 KernelSU/Magisk，已打开应用信息页",
+                    Toast.LENGTH_LONG
+            ).show();
+            setStatusMessage("未检测到已安装的 Root 管理器。已打开本应用信息页，请手动前往管理器授权。");
+        } catch (Throwable t) {
+            Toast.makeText(
+                    this,
+                    "未找到可用的 Root 管理器，请手动打开 KernelSU/Magisk 授权",
+                    Toast.LENGTH_LONG
+            ).show();
+            setStatusMessage("未找到可用的 Root 管理器。请手动打开 KernelSU/Magisk 给本应用授权。");
         }
     }
 
@@ -457,7 +540,7 @@ public class MainActivity extends Activity {
     private void confirmClearLog() {
         new AlertDialog.Builder(this)
                 .setTitle("清空日志")
-                .setMessage("确认删除当前全部运行日志？\n不会影响今日任务记录、定时设置和学习库。")
+                .setMessage("确认删除当前全部运行日志？\n同时会清空诊断截图和学习日志文件，\n但不会影响今日任务记录、定时设置和学习库。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("清空", (dialog, which) -> {
                     boolean ok = TaskStatusReceiver.clearLog(getApplicationContext());
@@ -734,4 +817,4 @@ public class MainActivity extends Activity {
             return "读取日志失败：" + t;
         }
     }
-}
+                        }
