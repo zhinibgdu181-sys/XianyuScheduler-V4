@@ -11,8 +11,8 @@ android {
         minSdk = 26
         targetSdk = 35
 
-        versionCode = 6
-        versionName = "4.2.0"
+        versionCode = 9
+        versionName = "4.6.0"
     }
 
     buildTypes {
@@ -40,4 +40,5 @@ android {
 }
 
 dependencies {
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 }
