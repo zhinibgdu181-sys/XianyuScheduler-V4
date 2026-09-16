@@ -1,9 +1,0 @@
-V4.17 navigation correctness + speed fix
-
-1. Fix OCR merge “赚骰子 1分兑换” causing center tap to open 闲鱼币兑好礼.
-2. If exchange page is detected, perform only one right-edge Back and verify COIN_HOME.
-3. Never keep tapping earn-dice fallback coordinates after leaving COIN_HOME.
-4. Navigation is OCR-first; UIAutomator is fallback only.
-5. UIAutomator fallback limited to one 2.8s attempt instead of three 8s stalls.
-6. Manual takeover interrupts root probes within ~100ms and prevents post-abort navigation.
-7. Wait loops use short abortable pauses instead of fixed long sleeps.
