@@ -19,9 +19,10 @@ import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
-import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.app.TimePickerDialog;
+import android.app.DatePickerDialog;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -76,8 +77,6 @@ public class MainActivity extends Activity {
     private TextView rootPermissionHintText;
     private TextView alarmPermissionStatusText;
     private TextView alarmPermissionHintText;
-    private Switch alarmPermissionSwitch;
-    private boolean updatingAlarmSwitch;
     private volatile boolean rootCheckInFlight;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -134,7 +133,6 @@ public class MainActivity extends Activity {
         rootPermissionHintText = findViewById(R.id.root_permission_hint_text);
         alarmPermissionStatusText = findViewById(R.id.alarm_permission_status_text);
         alarmPermissionHintText = findViewById(R.id.alarm_permission_hint_text);
-        alarmPermissionSwitch = findViewById(R.id.alarm_permission_switch);
 
         Button schedule = findViewById(R.id.schedule_button);
         Button cancel = findViewById(R.id.cancel_button);
@@ -178,10 +176,9 @@ public class MainActivity extends Activity {
             requestExactAlarmPermission();
         });
 
-        alarmPermissionSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            if (updatingAlarmSwitch) return;
-            handleAlarmPermissionToggle(isChecked);
-        });
+        selectedRecordDate = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
+
+        todayDateText.setOnClickListener(v -> chooseRecordDate());
 
         refreshSummary();
         refreshTodayCompleted();
@@ -257,13 +254,18 @@ public class MainActivity extends Activity {
     }
 
     private void refreshTodayCompleted() {
-        String date = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
-        todayDateText.setText(date);
+        String date = selectedRecordDate;
+        if (date == null || date.trim().isEmpty()) {
+            date = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
+            selectedRecordDate = date;
+        }
+        todayDateText.setText(date + "  ▼");
         List<String> tasks = TaskStatusReceiver.getCompletedTasksForDate(this, date);
         int coins = TaskStatusReceiver.getCoinsForDate(this, date);
-        todaySummaryText.setText("今日完成 " + tasks.size() + " 个任务 · 闲鱼币 +" + coins);
+        boolean isToday = date.equals(new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date()));
+        todaySummaryText.setText((isToday ? "今日" : date) + "完成 " + tasks.size() + " 个任务 · 闲鱼币 +" + coins);
         if (tasks.isEmpty()) {
-            todayCompletedText.setText("今天还没有已验证完成的任务。\n\n记录会按日期自动保存在本机。" );
+            todayCompletedText.setText("该日期还没有已验证完成的任务。\n\n记录会按日期自动保存在本机。");
         } else {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < tasks.size(); i++) {
@@ -272,9 +274,23 @@ public class MainActivity extends Activity {
             }
             if (coins == 0) {
                 sb.append("\n\n闲鱼币：当前没有可被程序明确确认的奖励数值，因此不猜测、不虚报。");
+            } else {
+                sb.append("\n\n闲鱼币合计：+").append(coins);
             }
             todayCompletedText.setText(sb.toString());
         }
+    }
+
+    private void chooseRecordDate() {
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        try {
+            Date d = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).parse(selectedRecordDate);
+            if (d != null) c.setTime(d);
+        } catch (Throwable ignored) {}
+        new DatePickerDialog(this, (view, year, month, dayOfMonth) -> {
+            selectedRecordDate = String.format(Locale.US, "%04d-%02d-%02d", year, month + 1, dayOfMonth);
+            refreshTodayCompleted();
+        }, c.get(java.util.Calendar.YEAR), c.get(java.util.Calendar.MONTH), c.get(java.util.Calendar.DAY_OF_MONTH)).show();
     }
 
     private void refreshPermissionDashboard() {
@@ -302,40 +318,8 @@ public class MainActivity extends Activity {
         } else if (granted) {
             alarmPermissionHintText.setText("精确闹钟可用 · 每日定时可正常触发");
         } else {
-            alarmPermissionHintText.setText("打开开关后在系统页面允许“闹钟和提醒”");
+            alarmPermissionHintText.setText("点击卡片进入系统“闹钟和提醒”权限页面");
         }
-
-        updatingAlarmSwitch = true;
-        alarmPermissionSwitch.setChecked(granted);
-        alarmPermissionSwitch.setEnabled(Build.VERSION.SDK_INT >= 31);
-        updatingAlarmSwitch = false;
-    }
-
-    private void handleAlarmPermissionToggle(boolean requestedEnabled) {
-        if (Build.VERSION.SDK_INT < 31) {
-            refreshAlarmPermissionCard();
-            return;
-        }
-
-        boolean actual = hasExactAlarmPermission();
-        if (requestedEnabled == actual) {
-            refreshAlarmPermissionCard();
-            return;
-        }
-
-        if (requestedEnabled) {
-            setStatusMessage(
-                    "请在接下来的系统页面允许“闲鱼定时助手”的闹钟和提醒权限。\n"
-                            + "返回本应用后，开关会自动变成绿色开启状态。"
-            );
-        } else {
-            setStatusMessage(
-                    "Android 不允许应用直接撤销自己的精确闹钟特殊权限。\n"
-                            + "请在接下来的系统页面关闭，返回后开关会自动同步。"
-            );
-        }
-
-        requestExactAlarmPermission();
     }
 
     private void refreshRootPermissionAsync(boolean userRequested) {
@@ -620,26 +604,22 @@ public class MainActivity extends Activity {
         AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
         if (Build.VERSION.SDK_INT >= 31 && am != null && !am.canScheduleExactAlarms()) {
             requestExactAlarmPermission();
-            setStatusMessage("请先允许“闹钟和提醒/精确闹钟”权限，然后再次点击设置。\n这是每日定时触发所必需的系统权限。");
+            setStatusMessage("请先允许“闹钟和提醒/精确闹钟”权限，然后再次设置每日时间。");
             return;
         }
 
-        boolean ok = schedule(
-                this,
-                AppConfig.DEFAULT_HOUR,
-                AppConfig.DEFAULT_MINUTE,
-                true
-        );
-
-        if (ok) {
-            refreshSummary();
-            setStatusMessage("定时设置成功 · "
-                    + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-                    .format(new Date()));
-            Toast.makeText(this, "每日 09:00 已设置", Toast.LENGTH_SHORT).show();
-        } else {
-            setStatusMessage("设置失败：系统未允许精确闹钟，或 AlarmManager 当前不可用。");
-        }
+        int initialHour = AppConfig.isScheduleEnabled(this) ? AppConfig.getHour(this) : AppConfig.DEFAULT_HOUR;
+        int initialMinute = AppConfig.isScheduleEnabled(this) ? AppConfig.getMinute(this) : AppConfig.DEFAULT_MINUTE;
+        new TimePickerDialog(this, (view, hourOfDay, minute) -> {
+            boolean ok = schedule(this, hourOfDay, minute, true);
+            if (ok) {
+                refreshSummary();
+                setStatusMessage(String.format(Locale.US, "每日定时设置成功：%02d:%02d", hourOfDay, minute));
+                Toast.makeText(this, String.format(Locale.US, "已设置每日 %02d:%02d", hourOfDay, minute), Toast.LENGTH_SHORT).show();
+            } else {
+                setStatusMessage("设置失败：系统未允许精确闹钟，或 AlarmManager 当前不可用。");
+            }
+        }, initialHour, initialMinute, true).show();
     }
 
     private void requestExactAlarmPermission() {

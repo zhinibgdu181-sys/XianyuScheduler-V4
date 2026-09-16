@@ -1,3 +1,11 @@
+# V4.29
+
+- Fruit game: top no-drop zone and bottom UI are hard forbidden touch zones.
+- Fruit detection only accepts complete sprites in the middle droppable region.
+- Added second-layer coordinate guard and explicit ALLOW/BLOCK logs.
+- Fruit SAFE_STOP no longer uses edge swipe; it uses KEYCODE_BACK to avoid touching game controls.
+- Existing V4.28 UI, records, scheduling, learning and Mahjong logic retained.
+
 # Changelog
 
 ## 4.26.0
@@ -27,3 +35,10 @@
 ## 4.22.0
 
 - 小游戏对象白名单：水果只点水果，麻将只操作麻将牌；禁止点击游戏功能按钮。
+
+## V4.28.0
+- 每日定时改为 TimePicker，自定义小时和分钟，不再固定 09:00。
+- 任务记录页支持点击日期选择历史日期并查询该日 SUCCESS 任务。
+- 闹钟权限卡移除 Switch，整张卡片点击跳转系统精确闹钟权限页，返回自动刷新。
+- 数据/文件目录卡从自动化页移动到首页底部。
+- 自动化页保持：任务运行 → 真人学习 → 每日定时。

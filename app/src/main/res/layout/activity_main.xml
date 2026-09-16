@@ -162,27 +162,13 @@
                         android:orientation="vertical"
                         android:padding="15dp">
 
-                        <LinearLayout
+                        <TextView
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:gravity="center_vertical"
-                            android:orientation="horizontal">
-
-                            <TextView
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:text="闹钟"
-                                android:textColor="#4B5563"
-                                android:textSize="20sp"
-                                android:textStyle="bold" />
-
-                            <Switch
-                                android:id="@+id/alarm_permission_switch"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:showText="false" />
-                        </LinearLayout>
+                            android:text="闹钟"
+                            android:textColor="#4B5563"
+                            android:textSize="20sp"
+                            android:textStyle="bold" />
 
                         <TextView
                             android:id="@+id/alarm_permission_status_text"
@@ -231,6 +217,44 @@
                         android:textColor="#4B5563"
                         android:textSize="14sp" />
                 </LinearLayout>
+
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="18dp"
+                    android:background="@drawable/bg_card"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="数据路径"
+                        android:textColor="#374151"
+                        android:textSize="15sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/data_path_text"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="点击查看日志、记录和学习库保存位置"
+                        android:textColor="#6B7280"
+                        android:textIsSelectable="true"
+                        android:textSize="12sp" />
+
+                    <Button
+                        android:id="@+id/show_path_button"
+                        android:layout_width="match_parent"
+                        android:layout_height="46dp"
+                        android:layout_marginTop="10dp"
+                        android:backgroundTint="#E9EEF8"
+                        android:text="查看保存路径"
+                        android:textColor="#2F6FED"
+                        android:textSize="13sp" />
+                </LinearLayout>
             </LinearLayout>
         </ScrollView>
 
@@ -274,6 +298,8 @@
                         <TextView
                             android:id="@+id/today_date_text"
                             android:layout_width="wrap_content"
+                            android:clickable="true"
+                            android:focusable="true"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="4dp"
                             android:text="今天"
@@ -491,7 +517,7 @@
                             android:layout_height="48dp"
                             android:layout_weight="1"
                             android:backgroundTint="#E9EEF8"
-                            android:text="设置每日 09:00"
+                            android:text="设置每日时间"
                             android:textColor="#2F6FED"
                             android:textSize="13sp" />
 
@@ -511,42 +537,7 @@
                     </LinearLayout>
                 </LinearLayout>
 
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:background="@drawable/bg_card"
-                    android:orientation="vertical"
-                    android:padding="16dp">
 
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="数据路径"
-                        android:textColor="#374151"
-                        android:textSize="15sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/data_path_text"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:text="点击查看日志、记录和学习库保存位置"
-                        android:textColor="#6B7280"
-                        android:textIsSelectable="true"
-                        android:textSize="12sp" />
-
-                    <Button
-                        android:id="@+id/show_path_button"
-                        android:layout_width="match_parent"
-                        android:layout_height="46dp"
-                        android:layout_marginTop="10dp"
-                        android:backgroundTint="#E9EEF8"
-                        android:text="查看保存路径"
-                        android:textColor="#2F6FED"
-                        android:textSize="13sp" />
-                </LinearLayout>
 
                 <TextView
                     android:id="@+id/automation_feedback_text"
