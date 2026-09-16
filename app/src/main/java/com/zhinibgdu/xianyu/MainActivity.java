@@ -14,7 +14,9 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.view.View;
 import android.widget.Button;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
@@ -39,11 +41,33 @@ public class MainActivity extends Activity {
     private TextView runtimeStatusText;
     private TextView statusDetailText;
     private TextView learningStatusText;
+    private TextView automationFeedbackText;
+    private TextView todayDateText;
+    private TextView todaySummaryText;
+    private TextView todayCompletedText;
     private TextView logText;
     private ScrollView logScroll;
 
-    // V4.24 permission dashboard. ROOT is display-only because KernelSU must
-    // grant it explicitly; exact-alarm uses Android's system special-access page.
+    // V4.26: 首页 / 今日 / 自动化 / 日志. The navigation bar is fixed and
+    // styled as a floating dark pill similar to the user-provided reference UI.
+    private View pageHome;
+    private View pageToday;
+    private View pageAutomation;
+    private View pageLogs;
+    private LinearLayout navHome;
+    private LinearLayout navToday;
+    private LinearLayout navAutomation;
+    private LinearLayout navLogs;
+    private ImageView navHomeIcon;
+    private ImageView navTodayIcon;
+    private ImageView navAutomationIcon;
+    private ImageView navLogsIcon;
+    private TextView navHomeText;
+    private TextView navTodayText;
+    private TextView navAutomationText;
+    private TextView navLogsText;
+    private int selectedBottomTab = 0;
+
     private LinearLayout rootPermissionCard;
     private LinearLayout alarmPermissionCard;
     private TextView rootPermissionIcon;
@@ -60,6 +84,7 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             showStatus(false);
+            refreshTodayCompleted();
             if (TaskExecutor.isRunning()) {
                 handler.postDelayed(this, 1500L);
             }
@@ -75,8 +100,30 @@ public class MainActivity extends Activity {
         runtimeStatusText = findViewById(R.id.runtime_status_text);
         statusDetailText = findViewById(R.id.status_detail_text);
         learningStatusText = findViewById(R.id.learning_status_text);
+        automationFeedbackText = findViewById(R.id.automation_feedback_text);
+        todayDateText = findViewById(R.id.today_date_text);
+        todaySummaryText = findViewById(R.id.today_summary_text);
+        todayCompletedText = findViewById(R.id.today_completed_text);
         logText = findViewById(R.id.log_text);
         logScroll = findViewById(R.id.log_scroll);
+
+        pageHome = findViewById(R.id.page_home);
+        pageToday = findViewById(R.id.page_today);
+        pageAutomation = findViewById(R.id.page_automation);
+        pageLogs = findViewById(R.id.page_logs);
+
+        navHome = findViewById(R.id.nav_home);
+        navToday = findViewById(R.id.nav_today);
+        navAutomation = findViewById(R.id.nav_automation);
+        navLogs = findViewById(R.id.nav_logs);
+        navHomeIcon = findViewById(R.id.nav_home_icon);
+        navTodayIcon = findViewById(R.id.nav_today_icon);
+        navAutomationIcon = findViewById(R.id.nav_automation_icon);
+        navLogsIcon = findViewById(R.id.nav_logs_icon);
+        navHomeText = findViewById(R.id.nav_home_text);
+        navTodayText = findViewById(R.id.nav_today_text);
+        navAutomationText = findViewById(R.id.nav_automation_text);
+        navLogsText = findViewById(R.id.nav_logs_text);
 
         rootPermissionCard = findViewById(R.id.root_permission_card);
         alarmPermissionCard = findViewById(R.id.alarm_permission_card);
@@ -92,19 +139,29 @@ public class MainActivity extends Activity {
         Button test = findViewById(R.id.test_button);
         Button learning = findViewById(R.id.learning_button);
         Button stop = findViewById(R.id.stop_button);
+        Button learningStop = findViewById(R.id.learning_stop_button);
         Button log = findViewById(R.id.log_button);
         Button clearLog = findViewById(R.id.clear_log_button);
+        Button todayRefresh = findViewById(R.id.today_refresh_button);
 
         schedule.setOnClickListener(v -> scheduleDailyTask());
         cancel.setOnClickListener(v -> cancelDailyTask());
         test.setOnClickListener(v -> triggerXianyuTask());
         learning.setOnClickListener(v -> triggerLearningMode());
         stop.setOnClickListener(v -> stopCurrentRun());
+        learningStop.setOnClickListener(v -> stopCurrentRun());
         log.setOnClickListener(v -> showStatus(true));
         clearLog.setOnClickListener(v -> confirmClearLog());
+        todayRefresh.setOnClickListener(v -> refreshTodayCompleted());
+
+        navHome.setOnClickListener(v -> selectBottomTab(0));
+        navToday.setOnClickListener(v -> selectBottomTab(1));
+        navAutomation.setOnClickListener(v -> selectBottomTab(2));
+        navLogs.setOnClickListener(v -> selectBottomTab(3));
+        selectBottomTab(0);
 
         rootPermissionCard.setOnClickListener(v -> {
-            statusDetailText.setText(
+            setStatusMessage(
                     "正在重新检测 ROOT 权限。若显示未授权，请打开 KernelSU → 超级用户，"
                             + "给“闲鱼定时助手”开启权限后再返回。"
             );
@@ -117,6 +174,7 @@ public class MainActivity extends Activity {
         });
 
         refreshSummary();
+        refreshTodayCompleted();
         refreshPermissionDashboard();
         showStatus(false);
 
@@ -131,14 +189,81 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         refreshSummary();
+        refreshTodayCompleted();
         refreshPermissionDashboard();
         showStatus(false);
+        selectBottomTab(selectedBottomTab);
     }
 
     @Override
     protected void onDestroy() {
         handler.removeCallbacks(runningRefresh);
         super.onDestroy();
+    }
+
+    private void selectBottomTab(int tab) {
+        selectedBottomTab = Math.max(0, Math.min(3, tab));
+
+        pageHome.setVisibility(selectedBottomTab == 0 ? View.VISIBLE : View.GONE);
+        pageToday.setVisibility(selectedBottomTab == 1 ? View.VISIBLE : View.GONE);
+        pageAutomation.setVisibility(selectedBottomTab == 2 ? View.VISIBLE : View.GONE);
+        pageLogs.setVisibility(selectedBottomTab == 3 ? View.VISIBLE : View.GONE);
+
+        applyBottomNavState(navHome, navHomeIcon, navHomeText, selectedBottomTab == 0);
+        applyBottomNavState(navToday, navTodayIcon, navTodayText, selectedBottomTab == 1);
+        applyBottomNavState(navAutomation, navAutomationIcon, navAutomationText, selectedBottomTab == 2);
+        applyBottomNavState(navLogs, navLogsIcon, navLogsText, selectedBottomTab == 3);
+
+        if (selectedBottomTab == 0) {
+            refreshPermissionDashboard();
+            refreshSummary();
+        } else if (selectedBottomTab == 1) {
+            refreshTodayCompleted();
+        } else if (selectedBottomTab == 2) {
+            refreshSummary();
+        } else {
+            showStatus(false);
+        }
+    }
+
+    private void applyBottomNavState(
+            LinearLayout item,
+            ImageView icon,
+            TextView label,
+            boolean selected
+    ) {
+        int color = selected ? 0xFF4B86FF : 0xFFAEB4BF;
+        icon.setColorFilter(color);
+        label.setTextColor(color);
+        label.setTypeface(null,
+                selected ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
+        item.setBackgroundResource(selected ? R.drawable.bg_bottom_nav_selected : 0);
+        icon.setAlpha(selected ? 1.0f : 0.90f);
+    }
+
+    private void setStatusMessage(CharSequence message) {
+        if (statusDetailText != null) statusDetailText.setText(message);
+        if (automationFeedbackText != null) automationFeedbackText.setText(message);
+    }
+
+    private void refreshTodayCompleted() {
+        if (todayDateText == null || todaySummaryText == null || todayCompletedText == null) return;
+        String date = new SimpleDateFormat("yyyy年MM月dd日", Locale.getDefault()).format(new Date());
+        todayDateText.setText(date);
+
+        List<String> entries = TaskStatusReceiver.getTodayCompletedTasks(getApplicationContext());
+        todaySummaryText.setText("今天已验证完成 " + entries.size() + " 个任务");
+        if (entries.isEmpty()) {
+            todayCompletedText.setText("今天还没有已验证完成的任务。");
+            return;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < entries.size(); i++) {
+            if (i > 0) sb.append('\n');
+            sb.append("✓ ").append(entries.get(i));
+        }
+        todayCompletedText.setText(sb.toString());
     }
 
     private void refreshPermissionDashboard() {
@@ -188,12 +313,12 @@ public class MainActivity extends Activity {
         }
 
         if (requestedEnabled) {
-            statusDetailText.setText(
+            setStatusMessage(
                     "请在接下来的系统页面允许“闲鱼定时助手”的闹钟和提醒权限。\n"
                             + "返回本应用后，开关会自动变成绿色开启状态。"
             );
         } else {
-            statusDetailText.setText(
+            setStatusMessage(
                     "Android 不允许应用直接撤销自己的精确闹钟特殊权限。\n"
                             + "请在接下来的系统页面关闭，返回后开关会自动同步。"
             );
@@ -232,7 +357,7 @@ public class MainActivity extends Activity {
     private void applyRootPermissionResult(RootPermissionResult result) {
         if (result.granted) {
             rootPermissionCard.setBackgroundResource(R.drawable.bg_permission_granted);
-            rootPermissionIcon.setText("✓");
+            rootPermissionIcon.setText("✓ ROOT");
             rootPermissionIcon.setTextColor(0xFF16A34A);
             rootPermissionStatusText.setText("已授权");
             rootPermissionStatusText.setTextColor(0xFF166534);
@@ -242,7 +367,7 @@ public class MainActivity extends Activity {
             );
         } else {
             rootPermissionCard.setBackgroundResource(R.drawable.bg_permission_denied);
-            rootPermissionIcon.setText("—");
+            rootPermissionIcon.setText("ROOT");
             rootPermissionIcon.setTextColor(0xFF6B7280);
             rootPermissionStatusText.setText("未授权");
             rootPermissionStatusText.setTextColor(0xFF4B5563);
@@ -293,12 +418,8 @@ public class MainActivity extends Activity {
                     return new RootPermissionResult(true, true, path);
                 }
 
-                // An executable su was found but this app did not receive uid=0.
-                // Do not invoke several other su paths: KernelSU authorization is
-                // explicit and repeated probes only create noise/delay.
                 return new RootPermissionResult(false, true, path);
             } catch (Throwable ignored) {
-                // Try the next known su path. The UI intentionally stays quiet here.
             } finally {
                 if (process != null) {
                     try { process.destroy(); } catch (Throwable ignored) { }
@@ -324,12 +445,12 @@ public class MainActivity extends Activity {
     private void confirmClearLog() {
         new AlertDialog.Builder(this)
                 .setTitle("清空日志")
-                .setMessage("确认删除当前全部运行日志？\n不会影响定时设置和任务配置。")
+                .setMessage("确认删除当前全部运行日志？\n不会影响今日任务记录、定时设置和学习库。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("清空", (dialog, which) -> {
                     boolean ok = TaskStatusReceiver.clearLog(getApplicationContext());
                     logText.setText("暂无日志。");
-                    statusDetailText.setText(ok ? "日志已清空。" : "清空日志失败，请稍后重试。");
+                    setStatusMessage(ok ? "日志已清空。" : "清空日志失败，请稍后重试。");
                     Toast.makeText(
                             this,
                             ok ? "日志已清空" : "清空失败",
@@ -341,12 +462,12 @@ public class MainActivity extends Activity {
 
     private void triggerLearningMode() {
         if (TaskExecutor.isRunning()) {
-            statusDetailText.setText("当前已有运行实例，请先停止当前任务。");
+            setStatusMessage("当前已有运行实例，请先停止当前任务。");
             Toast.makeText(this, "已有任务正在运行", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        statusDetailText.setText(
+        setStatusMessage(
                 "真人示范学习即将开始。\n"
                         + "启动后请手动离开本助手并正常操作闲鱼/广告/外部 App；"
                         + "程序只记录，不会主动点击或滑动。\n"
@@ -359,7 +480,7 @@ public class MainActivity extends Activity {
             handler.removeCallbacks(runningRefresh);
             handler.postDelayed(runningRefresh, 800L);
         } catch (Throwable t) {
-            statusDetailText.setText("启动学习模式失败：" + t.getClass().getSimpleName()
+            setStatusMessage("启动学习模式失败：" + t.getClass().getSimpleName()
                     + "：" + t.getMessage());
             Toast.makeText(this, "启动学习模式失败", Toast.LENGTH_LONG).show();
         }
@@ -372,7 +493,7 @@ public class MainActivity extends Activity {
         }
 
         TaskExecutor.requestStop("用户点击“停止当前运行”");
-        statusDetailText.setText(
+        setStatusMessage(
                 TaskExecutor.isLearningMode()
                         ? "正在结束学习模式并保存记录……"
                         : "已请求停止自动任务，后续主动 UI 操作将被立即拦截。"
@@ -382,7 +503,7 @@ public class MainActivity extends Activity {
     }
 
     private void triggerXianyuTask() {
-        statusDetailText.setText("正在启动任务服务，随后会检查 Root、打开闲鱼并进入任务页。\n运行期间请保持手机解锁。");
+        setStatusMessage("正在启动任务服务，随后会检查 Root、打开闲鱼并进入任务页。\n运行期间请保持手机解锁。");
         setRuntimeState(true);
         try {
             TaskForegroundService.start(getApplicationContext());
@@ -391,15 +512,11 @@ public class MainActivity extends Activity {
             handler.postDelayed(runningRefresh, 800L);
         } catch (Throwable t) {
             setRuntimeState(false);
-            statusDetailText.setText("启动任务失败：" + t.getClass().getSimpleName() + "：" + t.getMessage());
+            setStatusMessage("启动任务失败：" + t.getClass().getSimpleName() + "：" + t.getMessage());
             Toast.makeText(this, "启动任务失败", Toast.LENGTH_LONG).show();
         }
     }
 
-    /**
-     * Schedules one exact alarm. Public for AlarmReceiver/BootReceiver.
-     * persist=true means this is a user configuration change.
-     */
     public static boolean schedule(
             Context context,
             int hour,
@@ -457,7 +574,6 @@ public class MainActivity extends Activity {
         return true;
     }
 
-    /** Compatibility overload retained for any old call site. */
     public static boolean schedule(Context context, int hour, int minute) {
         return schedule(context, hour, minute, true);
     }
@@ -466,7 +582,7 @@ public class MainActivity extends Activity {
         AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
         if (Build.VERSION.SDK_INT >= 31 && am != null && !am.canScheduleExactAlarms()) {
             requestExactAlarmPermission();
-            statusDetailText.setText("请先允许“闹钟和提醒/精确闹钟”权限，然后再次点击设置。\n这是每日定时触发所必需的系统权限。");
+            setStatusMessage("请先允许“闹钟和提醒/精确闹钟”权限，然后再次点击设置。\n这是每日定时触发所必需的系统权限。");
             return;
         }
 
@@ -479,12 +595,12 @@ public class MainActivity extends Activity {
 
         if (ok) {
             refreshSummary();
-            statusDetailText.setText("定时设置成功 · "
+            setStatusMessage("定时设置成功 · "
                     + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
                     .format(new Date()));
             Toast.makeText(this, "每日 09:00 已设置", Toast.LENGTH_SHORT).show();
         } else {
-            statusDetailText.setText("设置失败：系统未允许精确闹钟，或 AlarmManager 当前不可用。");
+            setStatusMessage("设置失败：系统未允许精确闹钟，或 AlarmManager 当前不可用。");
         }
     }
 
@@ -519,7 +635,7 @@ public class MainActivity extends Activity {
         }
         AppConfig.setScheduleEnabled(this, false);
         refreshSummary();
-        statusDetailText.setText("每日自动任务已取消。立即测试功能仍可单独使用。");
+        setStatusMessage("每日自动任务已取消。立即运行功能仍可单独使用。");
         Toast.makeText(this, "已取消每日任务", Toast.LENGTH_SHORT).show();
     }
 
@@ -566,16 +682,16 @@ public class MainActivity extends Activity {
 
         if (running) {
             if (TaskExecutor.isLearningMode()) {
-                statusDetailText.setText(
+                setStatusMessage(
                         "真人示范学习正在记录。\n"
                                 + "程序不会主动点击/滑动；示范结束后切回本助手即可自动保存。");
             } else {
-                statusDetailText.setText(
+                setStatusMessage(
                         "任务正在执行 · 日志会自动刷新。\n"
                                 + "切回本助手或点击“停止当前运行”都会立即停止主动操作。");
             }
         } else if (userRequested) {
-            statusDetailText.setText("日志已刷新 · "
+            setStatusMessage("日志已刷新 · "
                     + new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date()));
         }
 

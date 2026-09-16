@@ -324,7 +324,7 @@ public final class TaskExecutor {
         diagnostic(
                 learning
                         ? "========== 真人示范学习开始 · V4.13 =========="
-                        : "========== 闲鱼任务开始 · V4.24 =========="
+                        : "========== 闲鱼任务开始 · V4.26 =========="
         );
 
         if (learning) {
@@ -1716,10 +1716,10 @@ public final class TaskExecutor {
             boolean freshLaunchV421
     ) {
 
-        diagnostic("[极速导航V4.23] 首页 → 我的 → 闲鱼币 → 赚骰子 → 任务面板");
+        diagnostic("[极速导航V4.26] 首页 → 我的 → 闲鱼币 → 赚骰子 → 任务面板");
 
         if (!ensureFg(suPath)) {
-            diagnostic("[极速导航V4.23] 闲鱼没有在前台");
+            diagnostic("[极速导航V4.26] 闲鱼没有在前台");
             return false;
         }
 
@@ -1733,7 +1733,7 @@ public final class TaskExecutor {
         //    HOME -> MINE path fast without assuming InitActivity always lands HOME.
         if (freshLaunchV421) {
             if (!paceSleepV415(220L, 340L)) return false;
-            diagnostic("[极速导航V4.23] 新启动闲鱼，先尝试一次底部‘我的’快速点击");
+            diagnostic("[极速导航V4.26] 新启动闲鱼，先尝试一次底部‘我的’快速点击");
             boolean tappedMine = tapByRatioV43(
                     suPath, 0.885f, 0.950f, "极速导航V4.23-首页-我的", true);
             if (tappedMine && !paceSleepV415(420L, 620L)) return false;
@@ -1751,7 +1751,7 @@ public final class TaskExecutor {
                         || page.kind == PageKindV411.MAHJONG_PAIR_GAME)
                     && deepRecovery < 2) {
                 deepRecovery++;
-                diagnostic("[极速导航V4.23] 新启动恢复到旧子页面：" + page.kind
+                diagnostic("[极速导航V4.26] 新启动恢复到旧子页面：" + page.kind
                         + "，执行右侧边缘返回 #" + deepRecovery);
                 int[] size = getScreenSizeV43(suPath);
                 int w = size == null ? 1440 : size[0];
@@ -1769,19 +1769,19 @@ public final class TaskExecutor {
 
         if (page.kind == PageKindV411.FRUIT_PAIR_GAME
                 || page.kind == PageKindV411.MAHJONG_PAIR_GAME) {
-            diagnostic("[游戏独占V4.23] 当前已经在小游戏页面，禁止导航流程把游戏当未知页退出");
+            diagnostic("[游戏独占V4.26] 当前已经在小游戏页面，禁止导航流程把游戏当未知页退出");
             return false;
         }
 
         if (!isFastNavKnownPageV420(page.kind)) {
-            diagnostic("[极速导航V4.23] 初始页=" + page.kind + "，先执行一次安全页面恢复");
+            diagnostic("[极速导航V4.26] 初始页=" + page.kind + "，先执行一次安全页面恢复");
             String recovered = recoverNavigationContextV45(suPath);
             if (recovered == null || userAborted) return false;
             page = probePageV411(suPath, "极速导航恢复后");
         }
 
         if (page.kind == PageKindV411.TASK_PANEL) {
-            diagnostic("[极速导航V4.23] ✅ 已在任务面板");
+            diagnostic("[极速导航V4.26] ✅ 已在任务面板");
             return true;
         }
 
@@ -1789,7 +1789,7 @@ public final class TaskExecutor {
         // positively identified, one direct proportional tap is faster than a
         // second OCR/UIAutomator pass.
         if (page.kind == PageKindV411.XIANYU_HOME) {
-            diagnostic("[极速导航V4.23] 首页已确认，立即点击‘我的’");
+            diagnostic("[极速导航V4.26] 首页已确认，立即点击‘我的’");
             if (!tapByRatioV43(suPath, 0.885f, 0.950f, "极速导航-首页-我的", true)) {
                 return false;
             }
@@ -1803,12 +1803,12 @@ public final class TaskExecutor {
             // fall through; reuse this exact OCR frame to click earn-dice.
         } else if (page.kind == PageKindV411.MINE) {
             // MINE -> COIN_HOME. Reuse the OCR frame that confirmed MINE.
-            diagnostic("[极速导航V4.23] 复用‘我的’页OCR，立即点击闲鱼币");
+            diagnostic("[极速导航V4.26] 复用‘我的’页OCR，立即点击闲鱼币");
             boolean clickedCoin = clickOcrTextAnyV45(
                     suPath, page.ocr, false,
                     "闲鱼币", "闲鱼币中心", "赚闲鱼币", "领闲鱼币");
             if (!clickedCoin) {
-                diagnostic("[极速导航V4.23] OCR未找到闲鱼币，使用已确认个人页比例坐标兜底");
+                diagnostic("[极速导航V4.26] OCR未找到闲鱼币，使用已确认个人页比例坐标兜底");
                 clickedCoin = tapByRatioV43(
                         suPath, 0.105f, 0.720f, "极速导航-我的-闲鱼币", false);
             }
@@ -1819,14 +1819,14 @@ public final class TaskExecutor {
             // If the direct tap is too early/misses, the final task-panel probe
             // below will classify COIN_HOME and perform the normal OCR fallback.
             if (!paceSleepV415(850L, 1150L)) return false;
-            diagnostic("[极速导航V4.23] 已点闲鱼币，乐观直点‘赚骰子’，减少一次整屏OCR");
+            diagnostic("[极速导航V4.26] 已点闲鱼币，乐观直点‘赚骰子’，减少一次整屏OCR");
             boolean optimisticEarn = tapByRatioV43(
                     suPath, 0.735f, 0.495f, "极速导航V4.23-闲鱼币-赚骰子快速点击", false);
             if (optimisticEarn && !paceSleepV415(650L, 950L)) return false;
 
             PageProbeV411 optimisticTask = probePageV411(suPath, "极速导航V4.23/乐观任务面板确认");
             if (optimisticTask.kind == PageKindV411.TASK_PANEL) {
-                diagnostic("[极速导航V4.23] ✅ 乐观链路直接进入任务面板");
+                diagnostic("[极速导航V4.26] ✅ 乐观链路直接进入任务面板");
                 return true;
             }
             if (optimisticTask.kind == PageKindV411.UNKNOWN_XIANYU) {
@@ -1835,27 +1835,27 @@ public final class TaskExecutor {
                 if (!paceSleepV415(420L, 620L)) return false;
                 optimisticTask = probePageV411(suPath, "极速导航V4.23/乐观链路短重试");
                 if (optimisticTask.kind == PageKindV411.TASK_PANEL) {
-                    diagnostic("[极速导航V4.23] ✅ 短重试后进入任务面板");
+                    diagnostic("[极速导航V4.26] ✅ 短重试后进入任务面板");
                     return true;
                 }
             }
             page = optimisticTask;
         } else {
-            diagnostic("[极速导航V4.23] 未到‘我的/闲鱼币’页面：" + page.kind);
+            diagnostic("[极速导航V4.26] 未到‘我的/闲鱼币’页面：" + page.kind);
             return false;
         }
 
         if (page.kind == PageKindV411.TASK_PANEL) return true;
         if (page.kind != PageKindV411.COIN_HOME) {
-            diagnostic("[极速导航V4.23] 未确认闲鱼币主页，停止导航：" + page.kind);
+            diagnostic("[极速导航V4.26] 未确认闲鱼币主页，停止导航：" + page.kind);
             return false;
         }
 
         // COIN_HOME -> TASK_PANEL. Again, reuse the confirmation OCR frame.
-        diagnostic("[极速导航V4.23] 复用闲鱼币主页OCR，立即点击‘赚骰子’");
+        diagnostic("[极速导航V4.26] 复用闲鱼币主页OCR，立即点击‘赚骰子’");
         boolean clickedEarn = clickEarnDiceV417(suPath, page.ocr);
         if (!clickedEarn) {
-            diagnostic("[极速导航V4.23] ‘赚骰子’OCR仍不稳定，使用已确认COIN_HOME比例坐标");
+            diagnostic("[极速导航V4.26] ‘赚骰子’OCR仍不稳定，使用已确认COIN_HOME比例坐标");
             clickedEarn = tapByRatioV43(
                     suPath, 0.735f, 0.495f, "极速导航-闲鱼币-赚骰子", false);
         }
@@ -1865,13 +1865,13 @@ public final class TaskExecutor {
         PageProbeV411 task = waitFastNavPageV420(
                 suPath, PageKindV411.TASK_PANEL, 5600L, "等待任务面板");
         if (task != null && task.kind == PageKindV411.TASK_PANEL) {
-            diagnostic("[极速导航V4.23] ✅ 任务面板打开成功");
+            diagnostic("[极速导航V4.26] ✅ 任务面板打开成功");
             return true;
         }
 
         // The only known dangerous mis-click is the adjacent 1-cent exchange.
         if (task != null && looksLikeCoinExchangePageV417(task.ocr)) {
-            diagnostic("[极速导航V4.23] ⚠️ 误入闲鱼币兑好礼，单次右侧返回后重试");
+            diagnostic("[极速导航V4.26] ⚠️ 误入闲鱼币兑好礼，单次右侧返回后重试");
             if (!backOneLevelToCoinHomeV417(suPath)) return false;
             PageProbeV411 coin = probePageV411(suPath, "兑换页返回后");
             if (coin.kind != PageKindV411.COIN_HOME) return false;
@@ -1879,12 +1879,12 @@ public final class TaskExecutor {
             task = waitFastNavPageV420(
                     suPath, PageKindV411.TASK_PANEL, 6500L, "赚骰子重试");
             if (task != null && task.kind == PageKindV411.TASK_PANEL) {
-                diagnostic("[极速导航V4.23] ✅ 重试后进入任务面板");
+                diagnostic("[极速导航V4.26] ✅ 重试后进入任务面板");
                 return true;
             }
         }
 
-        diagnostic("❌ [极速导航V4.23] 无法打开‘得骰子赚闲鱼币’任务面板");
+        diagnostic("❌ [极速导航V4.26] 无法打开‘得骰子赚闲鱼币’任务面板");
         return false;
     }
 
@@ -1911,19 +1911,19 @@ public final class TaskExecutor {
                 return page;
             }
             if (looksLikeCoinExchangePageV417(page.ocr)) {
-                diagnostic("[极速导航V4.23] 检测到闲鱼币兑好礼，提前结束等待以便纠错");
+                diagnostic("[极速导航V4.26] 检测到闲鱼币兑好礼，提前结束等待以便纠错");
                 return page;
             }
             if (page.kind == PageKindV411.FRUIT_PAIR_GAME
                     || page.kind == PageKindV411.MAHJONG_PAIR_GAME
                     || page.kind == PageKindV411.MODULE_APP
                     || page.kind == PageKindV411.EXTERNAL_APP) {
-                diagnostic("[极速导航V4.23] 等待" + expected + "时进入非导航页面：" + page.kind);
+                diagnostic("[极速导航V4.26] 等待" + expected + "时进入非导航页面：" + page.kind);
                 return page;
             }
             if (!sleepAbortableV48(120L)) return null;
         }
-        diagnostic("[极速导航V4.23] 等待" + expected + "超时：" + reason);
+        diagnostic("[极速导航V4.26] 等待" + expected + "超时：" + reason);
         return null;
     }
 
@@ -2820,7 +2820,7 @@ public final class TaskExecutor {
             String scanTextV421 = combinedTextV45(null, taskOcr);
             if (FruitGameSolver.looksLikeFruitGame(scanTextV421)
                     || MahjongGameSolver.looksLikeMahjongPairGame(scanTextV421)) {
-                diagnostic("[游戏守卫V4.22] 扫描阶段仍处于小游戏；停止普通扫描，禁止导航/返回乱操作"
+                diagnostic("[游戏守卫V4.26] 扫描阶段仍处于小游戏；停止普通扫描，禁止导航/返回乱操作"
                         + (gameIncompleteHoldV421 ? " / reason=solver_safe_stop" : ""));
                 break;
             }
@@ -3020,7 +3020,7 @@ public final class TaskExecutor {
             if (userAborted) break;
 
             if (gameIncompleteHoldV421) {
-                diagnostic("[游戏守卫V4.22] 未完成小游戏保留在当前页面，结束本轮自动扫描；等待下一版策略或人工处理");
+                diagnostic("[游戏守卫V4.26] 小游戏无法安全退出，保留当前页面并停止本轮扫描");
                 break;
             }
 
@@ -3720,7 +3720,7 @@ public final class TaskExecutor {
         if ((probe.kind == PageKindV411.FRUIT_PAIR_GAME
                 || probe.kind == PageKindV411.MAHJONG_PAIR_GAME)
                 && gameIncompleteHoldV421) {
-            diagnostic("[游戏守卫V4.22] Solver安全停止后游戏仍在前台；保留现场，不执行普通返回/导航");
+            diagnostic("[游戏守卫V4.26] Solver安全停止后游戏仍在前台；保留现场，不执行普通返回/导航");
             return new TaskVerificationResultV411(
                     false, "game_incomplete_hold:" + gameIncompleteKindV421, before);
         }
@@ -3950,7 +3950,7 @@ public final class TaskExecutor {
     private static void beginGameSolverOwnershipV420(String kind, String taskName) {
         gameSolverOwnsPageV420 = true;
         gameSolverKindV420 = kind == null ? "GAME" : kind;
-        diagnostic("[游戏独占V4.23] LOCK " + gameSolverKindV420 + " / " + taskName
+        diagnostic("[游戏独占V4.26] LOCK " + gameSolverKindV420 + " / " + taskName
                 + "；普通恢复/真人学习回放暂停");
     }
 
@@ -3958,7 +3958,7 @@ public final class TaskExecutor {
         String old = gameSolverKindV420;
         gameSolverKindV420 = "";
         gameSolverOwnsPageV420 = false;
-        diagnostic("[游戏独占V4.23] UNLOCK " + old + " / " + taskName);
+        diagnostic("[游戏独占V4.26] UNLOCK " + old + " / " + taskName);
     }
 
     private static boolean executeSingleTask(
@@ -4146,8 +4146,8 @@ public final class TaskExecutor {
             String suPath,
             String taskName
     ) {
-        diagnostic("[水果V4.22] 启动水果配对求解器：" + taskName);
-        if (!paceSleepV415(300L, 500L)) return false;
+        diagnostic("[水果V4.26] 启动水果配对求解器：" + taskName);
+        if (!paceSleepV415(260L, 420L)) return false;
 
         gameIncompleteHoldV421 = false;
         gameIncompleteKindV421 = "";
@@ -4156,98 +4156,112 @@ public final class TaskExecutor {
 
         FruitGameSolver.Result result = FruitGameSolver.Result.SAFE_STOP;
         try {
-            // A transient popup/animation can make one solver segment stop. Give
-            // it one bounded resume while retaining exclusive page ownership.
+            // Only bounded re-observation is allowed. No in-game function button
+            // (shuffle/eliminate/unlock/use) is ever touched by the solver.
             for (int segment = 1; segment <= 2; segment++) {
-                final int seg = segment;
-                diagnostic("[水果V4.22] 求解段 " + seg + "/2");
+                diagnostic("[水果V4.26] 求解段 " + segment + "/2");
                 result = FruitGameSolver.solveOneRound(
-                    lastContext,
-                    suPath,
-                    new FruitGameSolver.Host() {
-                        @Override
-                        public boolean tap(int x, int y, String reason) {
-                            if (userAborted || physicalTouchDetected) return false;
-                            if (reason == null || !reason.startsWith("水果游戏-配对")) {
-                                diagnostic("[游戏限制V4.22] 拒绝非水果对象点击：" + reason);
-                                return false;
+                        lastContext,
+                        suPath,
+                        new FruitGameSolver.Host() {
+                            @Override
+                            public boolean tap(int x, int y, String reason) {
+                                if (userAborted || physicalTouchDetected) return false;
+                                if (reason == null || !reason.startsWith("水果游戏-配对")) {
+                                    diagnostic("[游戏限制V4.26] 拒绝非水果对象点击：" + reason);
+                                    return false;
+                                }
+                                int jx = x + ThreadLocalRandom.current().nextInt(-4, 5);
+                                int jy = y + ThreadLocalRandom.current().nextInt(-4, 5);
+                                RootResult r = rootWithPath(
+                                        suPath,
+                                        "input tap " + Math.max(1, jx) + " " + Math.max(1, jy)
+                                );
+                                diagnostic("[水果V4.26] " + reason + " → " + jx + "," + jy);
+                                return r.exitCode == 0 && !userAborted;
                             }
-                            int jx = x + ThreadLocalRandom.current().nextInt(-5, 6);
-                            int jy = y + ThreadLocalRandom.current().nextInt(-5, 6);
-                            RootResult r = rootWithPath(
-                                    suPath,
-                                    "input tap " + Math.max(1, jx) + " " + Math.max(1, jy)
-                            );
-                            diagnostic("[水果V4.22] " + reason + " → " + jx + "," + jy);
-                            return r.exitCode == 0 && !userAborted;
-                        }
 
-                        @Override
-                        public boolean sleep(long minMs, long maxMs) {
-                            return paceSleepV415(minMs, maxMs);
-                        }
+                            @Override
+                            public boolean sleep(long minMs, long maxMs) {
+                                return paceSleepV415(minMs, maxMs);
+                            }
 
-                        @Override
-                        public boolean aborted() {
-                            return userAborted || physicalTouchDetected;
-                        }
+                            @Override
+                            public boolean aborted() {
+                                return userAborted || physicalTouchDetected;
+                            }
 
-                        @Override
-                        public void log(String message) {
-                            diagnostic(message.replace("[游戏V4.22]", "[水果V4.22]"));
-                        }
+                            @Override
+                            public void log(String message) {
+                                diagnostic(message);
+                            }
 
-                        @Override
-                        public ScreenOcr.Snapshot ocr(String reason) {
-                            return captureOcrV45(suPath, reason.replace("V4.22", "V4.22"));
+                            @Override
+                            public ScreenOcr.Snapshot ocr(String reason) {
+                                return captureOcrV45(suPath, reason);
+                            }
                         }
-                    }
                 );
 
                 if (result != FruitGameSolver.Result.SAFE_STOP) break;
-                ScreenOcr.Snapshot still = captureOcrV45(suPath, "水果V4.22/安全停止页面确认");
+                ScreenOcr.Snapshot still = captureOcrV45(suPath, "水果V4.26/安全停止页面确认");
                 String stillText = combinedTextV45(null, still);
                 if (!FruitGameSolver.looksLikeFruitGame(stillText)) break;
                 if (segment < 2) {
-                    diagnostic("[水果V4.22] SAFE_STOP但仍在水果页，短暂稳定后仅重试一次求解，不执行返回");
-                    if (!paceSleepV415(420L, 680L)) return false;
+                    diagnostic("[水果V4.26] 暂未找到可靠对子；不点任何功能按钮，稳定后再观察一次");
+                    if (!paceSleepV415(320L, 520L)) return false;
                 }
             }
-
-            if (result == FruitGameSolver.Result.ABORTED) return false;
-
-            if (result == FruitGameSolver.Result.COMPLETED) {
-                diagnostic("[水果V4.22] ✅ 水果第1关完成，解除独占后返回任务面板");
-                TaskProfileStoreV48.recordRecovery(taskName, "fruit_game_completed");
-                return true;
-            }
-
-            if (result == FruitGameSolver.Result.NOT_FRUIT_GAME) {
-                diagnostic("[水果V4.22] 点击任务后没有进入预期水果页；不执行盲目返回");
-                TaskProfileStoreV48.recordFailure(taskName, "fruit_game_not_detected");
-                return false;
-            }
-
-            ScreenOcr.Snapshot hold = captureOcrV45(suPath, "水果V4.22/最终安全停止确认");
-            String holdText = combinedTextV45(null, hold);
-            if (FruitGameSolver.looksLikeFruitGame(holdText)) {
-                gameIncompleteHoldV421 = true;
-                gameIncompleteKindV421 = "FRUIT_PAIR_GAME";
-                gameIncompleteTaskV421 = taskName;
-                diagnostic("[游戏守卫V4.22] 水果Solver未完成但游戏仍在前台：保留现场，禁止普通返回/导航");
-            }
-            TaskProfileStoreV48.recordUnverifiedV411(taskName, "fruit_game_safe_stop");
-            return false;
         } finally {
             endGameSolverOwnershipV420(taskName);
         }
+
+        if (result == FruitGameSolver.Result.ABORTED) return false;
+
+        if (result == FruitGameSolver.Result.COMPLETED) {
+            diagnostic("[水果V4.26] ✅ 水果第1关完成，执行受控返回到任务面板");
+            TaskProfileStoreV48.recordRecovery(taskName, "fruit_game_completed");
+            return conditionalBackRecoveryV410(suPath, taskName, "水果游戏完成返回");
+        }
+
+        if (result == FruitGameSolver.Result.NOT_FRUIT_GAME) {
+            diagnostic("[水果V4.26] 点击任务后没有进入预期水果页；不执行盲目点击");
+            TaskProfileStoreV48.recordFailure(taskName, "fruit_game_not_detected");
+            return false;
+        }
+
+        // V4.26: SAFE_STOP no longer kills the whole daily scan. We are allowed
+        // to leave the mini-game itself, but still never click its function buttons.
+        ScreenOcr.Snapshot hold = captureOcrV45(suPath, "水果V4.26/最终安全停止确认");
+        String holdText = combinedTextV45(null, hold);
+        TaskProfileStoreV48.recordUnverifiedV411(taskName, "fruit_game_safe_stop");
+
+        if (FruitGameSolver.looksLikeFruitGame(holdText)) {
+            diagnostic("[游戏守卫V4.26] 水果Solver未完成；不点打乱/消除/解锁，受控退出后继续其它任务");
+            boolean recovered = conditionalBackRecoveryV410(
+                    suPath, taskName, "水果游戏安全停止退出");
+            if (!recovered) {
+                recovered = recoverToXianyuTaskPanelV47(
+                        suPath, "水果游戏安全停止导航恢复");
+            }
+            if (recovered) {
+                gameIncompleteHoldV421 = false;
+                return true;
+            }
+
+            gameIncompleteHoldV421 = true;
+            gameIncompleteKindV421 = "FRUIT_PAIR_GAME";
+            gameIncompleteTaskV421 = taskName;
+            diagnostic("[游戏守卫V4.26] 无法安全退出水果页，才保留现场并停止继续扫描");
+        }
+        return false;
     }
 
     private static boolean executeMahjongPairGameV419(
             String suPath,
             String taskName
     ) {
-        diagnostic("[麻将V4.22] 启动‘点点消不停’视觉求解器：" + taskName);
+        diagnostic("[麻将V4.26] 启动‘点点消不停’视觉求解器：" + taskName);
         if (!paceSleepV415(320L, 560L)) return false;
 
         beginGameSolverOwnershipV420("MAHJONG_PAIR_GAME", taskName);
@@ -4261,7 +4275,7 @@ public final class TaskExecutor {
                     public boolean tap(int x, int y, String reason) {
                         if (userAborted || physicalTouchDetected) return false;
                         if (reason == null || !reason.startsWith("点击相邻麻将")) {
-                            diagnostic("[游戏限制V4.22] 拒绝非麻将对象点击：" + reason);
+                            diagnostic("[游戏限制V4.26] 拒绝非麻将对象点击：" + reason);
                             return false;
                         }
                         int jx = x + ThreadLocalRandom.current().nextInt(-4, 5);
@@ -4270,7 +4284,7 @@ public final class TaskExecutor {
                                 suPath,
                                 "input tap " + Math.max(1, jx) + " " + Math.max(1, jy)
                         );
-                        diagnostic("[麻将V4.22] " + reason + " → " + jx + "," + jy);
+                        diagnostic("[麻将V4.26] " + reason + " → " + jx + "," + jy);
                         return r.exitCode == 0 && !userAborted;
                     }
 
@@ -4280,7 +4294,7 @@ public final class TaskExecutor {
                     ) {
                         if (userAborted || physicalTouchDetected) return false;
                         if (reason == null || !(reason.startsWith("滑动麻将") || reason.startsWith("拖动麻将"))) {
-                            diagnostic("[游戏限制V4.22] 拒绝非麻将对象滑动：" + reason);
+                            diagnostic("[游戏限制V4.26] 拒绝非麻将对象滑动：" + reason);
                             return false;
                         }
                         RootResult r = rootWithPath(
@@ -4289,7 +4303,7 @@ public final class TaskExecutor {
                                         + " " + Math.max(1, ex) + " " + Math.max(1, ey)
                                         + " " + Math.max(160, durationMs)
                         );
-                        diagnostic("[麻将V4.22] " + reason
+                        diagnostic("[麻将V4.26] " + reason
                                 + " → " + sx + "," + sy
                                 + " -> " + ex + "," + ey
                                 + " / " + durationMs + "ms");
@@ -4324,27 +4338,39 @@ public final class TaskExecutor {
         if (result == MahjongGameSolver.Result.ABORTED) return false;
 
         if (result == MahjongGameSolver.Result.COMPLETED) {
-            diagnostic("[麻将V4.22] ✅ 第1关完成，返回任务面板");
+            diagnostic("[麻将V4.26] ✅ 第1关完成，返回任务面板");
             TaskProfileStoreV48.recordRecovery(taskName, "mahjong_game_completed");
             return conditionalBackRecoveryV410(suPath, taskName, "麻将游戏完成返回");
         }
 
         if (result == MahjongGameSolver.Result.NOT_MAHJONG_GAME) {
-            diagnostic("[麻将V4.22] 点击任务后没有进入预期麻将页；不执行盲目返回");
+            diagnostic("[麻将V4.26] 点击任务后没有进入预期麻将页；不执行盲目返回");
             TaskProfileStoreV48.recordFailure(taskName, "mahjong_game_not_detected");
             return false;
         }
 
-        ScreenOcr.Snapshot hold = captureOcrV45(suPath, "麻将V4.22/最终安全停止确认");
+        ScreenOcr.Snapshot hold = captureOcrV45(suPath, "麻将V4.26/最终安全停止确认");
         String holdText = combinedTextV45(null, hold);
+        TaskProfileStoreV48.recordUnverifiedV411(taskName, "mahjong_game_safe_stop");
         if (MahjongGameSolver.looksLikeMahjongPairGame(holdText)) {
+            diagnostic("[游戏守卫V4.26] 麻将Solver未完成；不点游戏功能按钮，受控退出后继续其它任务");
+            boolean recovered = conditionalBackRecoveryV410(
+                    suPath, taskName, "麻将游戏安全停止退出");
+            if (!recovered) {
+                recovered = recoverToXianyuTaskPanelV47(
+                        suPath, "麻将游戏安全停止导航恢复");
+            }
+            if (recovered) {
+                gameIncompleteHoldV421 = false;
+                return true;
+            }
+
             gameIncompleteHoldV421 = true;
             gameIncompleteKindV421 = "MAHJONG_PAIR_GAME";
             gameIncompleteTaskV421 = taskName;
-            diagnostic("[游戏守卫V4.22] 麻将Solver未完成但游戏仍在前台：保留现场，禁止普通返回/导航");
+            diagnostic("[游戏守卫V4.26] 无法安全退出麻将页，才保留现场并停止继续扫描");
         }
-        diagnostic("[麻将V4.22] 麻将游戏安全停止，未把任务标记为完成");
-        TaskProfileStoreV48.recordUnverifiedV411(taskName, "mahjong_game_safe_stop");
+        diagnostic("[麻将V4.26] 麻将游戏安全停止，未把任务标记为完成");
         return false;
     }
 
@@ -4467,7 +4493,7 @@ public final class TaskExecutor {
     ) {
         if (userAborted) return false;
         if (gameSolverOwnsPageV420) {
-            diagnostic("[游戏独占V4.23] 拦截普通恢复：" + reason
+            diagnostic("[游戏独占V4.26] 拦截普通恢复：" + reason
                     + " / owner=" + gameSolverKindV420);
             return false;
         }
@@ -5594,7 +5620,7 @@ public final class TaskExecutor {
     ) {
         if (userAborted) return false;
         if (gameSolverOwnsPageV420) {
-            diagnostic("[游戏独占V4.23] 拦截条件返回：" + reason
+            diagnostic("[游戏独占V4.26] 拦截条件返回：" + reason
                     + " / owner=" + gameSolverKindV420);
             return false;
         }

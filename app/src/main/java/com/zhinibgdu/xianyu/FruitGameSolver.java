@@ -14,11 +14,11 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * V4.22 视觉小游戏模块："消了还想消"水果配对。
+ * V4.26 视觉小游戏模块："消了还想消"水果配对。
  *
  * 规则：点击水果会进入下方坑位；两个相同水果自动消除；坑位最多3个。
  * 安全策略：只点击高置信度的完整同类对 A->A，一次只处理一对。
- * V4.22 安全约束：只允许点击水果对象本身。禁止点击“打乱”“消除”
+ * V4.26 安全约束：只允许点击水果对象本身。禁止点击“打乱”“消除”
  * “解锁”“使用”等任何游戏功能按钮。找不到高置信度对子时直接安全停止。
  *
  * 这个实现不依赖 OpenCV。它把截图缩放到约720px宽，利用蓝色背景分割、
@@ -50,10 +50,10 @@ final class FruitGameSolver {
     // Conservative thresholds measured against the supplied real game screenshot.
     // Exact repeated sprites score around 0.98~0.99. We intentionally reject
     // uncertain pairs because the tray only has three positions.
-    private static final double MIN_PAIR_SCORE = 0.974;
-    private static final double MAX_RGB_MAD = 0.060;
-    private static final double MIN_HIST_COS = 0.935;
-    private static final double MIN_SHAPE_IOU = 0.78;
+    private static final double MIN_PAIR_SCORE = 0.958;
+    private static final double MAX_RGB_MAD = 0.090;
+    private static final double MIN_HIST_COS = 0.900;
+    private static final double MIN_SHAPE_IOU = 0.64;
 
     private static final Pattern REMAINING_PATTERN =
             Pattern.compile("剩余\\s*([0-9]{1,4})");
@@ -73,18 +73,18 @@ final class FruitGameSolver {
         }
 
         if (!host.sleep(420L, 720L)) return Result.ABORTED;
-        ScreenOcr.Snapshot firstOcr = host.ocr("水果游戏V4.22/进入确认");
+        ScreenOcr.Snapshot firstOcr = host.ocr("水果游戏V4.26/进入确认");
         if (host.aborted()) return Result.ABORTED;
 
         String firstText = normalize(firstOcr == null ? "" : firstOcr.fullText);
         if (!looksLikeFruitGame(firstText)) {
-            host.log("[游戏V4.23] 当前页面不是水果配对游戏，停止视觉求解");
+            host.log("[游戏V4.26] 当前页面不是水果配对游戏，停止视觉求解");
             return Result.NOT_FRUIT_GAME;
         }
 
         int remaining = parseRemaining(firstText);
         int progress = parsePercent(firstText);
-        host.log("[游戏V4.23] ✅ 识别水果游戏"
+        host.log("[游戏V4.26] ✅ 识别水果游戏"
                 + (remaining >= 0 ? " / 剩余=" + remaining : "")
                 + (progress >= 0 ? " / 进度=" + progress + "%" : ""));
 
@@ -99,7 +99,7 @@ final class FruitGameSolver {
             GameFrame frame = captureFrame(context, suPath, host);
             if (frame == null) {
                 consecutiveCaptureFail++;
-                host.log("[游戏V4.23] 截图失败 " + consecutiveCaptureFail + "/3");
+                host.log("[游戏V4.26] 截图失败 " + consecutiveCaptureFail + "/3");
                 if (consecutiveCaptureFail >= 3) return Result.SAFE_STOP;
                 if (!host.sleep(250L, 420L)) return Result.ABORTED;
                 continue;
@@ -109,28 +109,33 @@ final class FruitGameSolver {
             List<FruitObject> objects = detectFruitObjects(frame);
             PairChoice pair = chooseBestPair(objects);
 
-            host.log("[游戏V4.23] 当前检测水果=" + objects.size()
+            host.log("[游戏V4.26] 当前检测水果=" + objects.size()
                     + (pair == null ? " / 无高置信对子" :
                     " / 最佳对子=" + format(pair.score)
                             + " rgb=" + format(pair.rgbSimilarity)
                             + " hist=" + format(pair.histCos)
                             + " shape=" + format(pair.shapeIou)));
 
+            if (objects.size() < 10) {
+                saveVisionDiagnostic(context, frame.bitmap, "low_objects_" + objects.size());
+                host.log("[游戏V4.26] 检测数量异常偏少，已保存视觉诊断图；本轮不会点击功能按钮");
+            }
+
             if (pair == null) {
                 safeRecycle(frame.bitmap);
 
-                ScreenOcr.Snapshot checkpoint = host.ocr("水果游戏V4.22/无对子检查");
+                ScreenOcr.Snapshot checkpoint = host.ocr("水果游戏V4.26/无对子检查");
                 if (host.aborted()) return Result.ABORTED;
                 String text = normalize(checkpoint == null ? "" : checkpoint.fullText);
                 if (isRoundCompleted(text)) {
-                    host.log("[游戏V4.23] ✅ 已检测到一关完成状态");
+                    host.log("[游戏V4.26] ✅ 已检测到一关完成状态");
                     return Result.COMPLETED;
                 }
 
-                // V4.22 hard rule from real-device feedback: never touch game
+                // V4.26 hard rule from real-device feedback: never touch game
                 // function controls such as shuffle/eliminate/unlock/use. Only
                 // fruit sprites themselves may be tapped by the solver.
-                host.log("[游戏V4.23] 无高置信对子；禁止点击打乱/消除/解锁/使用等功能按钮，安全停止");
+                host.log("[游戏V4.26] 无高置信对子；禁止点击打乱/消除/解锁/使用等功能按钮，安全停止");
                 return Result.SAFE_STOP;
             }
 
@@ -140,7 +145,7 @@ final class FruitGameSolver {
             int by = mapY(frame, pair.b.centerY);
             safeRecycle(frame.bitmap);
 
-            host.log("[游戏V4.23] 配对点击 A=(" + ax + "," + ay + ")"
+            host.log("[游戏V4.26] 配对点击 A=(" + ax + "," + ay + ")"
                     + " B=(" + bx + "," + by + ") / score=" + format(pair.score));
 
             // First fruit occupies at most one tray slot.
@@ -152,7 +157,7 @@ final class FruitGameSolver {
             // If B cannot be clicked we stop immediately: this avoids filling a
             // third slot after an incomplete pair.
             if (!host.tap(bx, by, "水果游戏-配对B")) {
-                host.log("[游戏V4.23] 第二个水果点击失败；为保护3槽坑位立即停止");
+                host.log("[游戏V4.26] 第二个水果点击失败；为保护3槽坑位立即停止");
                 return host.aborted() ? Result.ABORTED : Result.SAFE_STOP;
             }
             pairActions++;
@@ -162,28 +167,28 @@ final class FruitGameSolver {
             // Every few pairs verify that the game is still progressing / ended.
             if (pairActions == 1 || pairActions % 6 == 0) {
                 ScreenOcr.Snapshot checkpoint = host.ocr(
-                        "水果游戏V4.22/进度检查#" + pairActions);
+                        "水果游戏V4.26/进度检查#" + pairActions);
                 if (host.aborted()) return Result.ABORTED;
                 String text = normalize(checkpoint == null ? "" : checkpoint.fullText);
 
                 int nowRemaining = parseRemaining(text);
                 int nowProgress = parsePercent(text);
-                host.log("[游戏V4.23] 进度检查 pair=" + pairActions
+                host.log("[游戏V4.26] 进度检查 pair=" + pairActions
                         + (nowRemaining >= 0 ? " / 剩余=" + nowRemaining : "")
                         + (nowProgress >= 0 ? " / " + nowProgress + "%" : ""));
 
                 if (isRoundCompleted(text)) {
-                    host.log("[游戏V4.23] ✅ 第1关完成");
+                    host.log("[游戏V4.26] ✅ 第1关完成");
                     return Result.COMPLETED;
                 }
 
                 // If we unexpectedly left the fruit game, do not continue tapping.
                 if (!text.isEmpty() && !looksLikeFruitGame(text)) {
                     if (looksLikeTaskPanel(text)) {
-                        host.log("[游戏V4.23] 已自动返回任务面板，按完成流程交给外层验证");
+                        host.log("[游戏V4.26] 已自动返回任务面板，按完成流程交给外层验证");
                         return Result.COMPLETED;
                     }
-                    host.log("[游戏V4.23] 页面已离开水果游戏，停止继续点击");
+                    host.log("[游戏V4.26] 页面已离开水果游戏，停止继续点击");
                     return Result.SAFE_STOP;
                 }
 
@@ -193,7 +198,7 @@ final class FruitGameSolver {
         }
 
         if (host.aborted()) return Result.ABORTED;
-        host.log("[游戏V4.23] 达到本轮安全上限，停止自动点击");
+        host.log("[游戏V4.26] 达到本轮安全上限，停止自动点击");
         return Result.SAFE_STOP;
     }
 
@@ -309,8 +314,8 @@ final class FruitGameSolver {
         Bitmap bitmap = frame.bitmap;
         int width = bitmap.getWidth();
         int height = bitmap.getHeight();
-        int roiTop = clamp(Math.round(height * 0.07f), 0, height - 1);
-        int roiBottom = clamp(Math.round(height * 0.64f), roiTop + 1, height);
+        int roiTop = clamp(Math.round(height * 0.025f), 0, height - 1);
+        int roiBottom = clamp(Math.round(height * 0.70f), roiTop + 1, height);
         int roiHeight = roiBottom - roiTop;
 
         int[] pixels = new int[width * height];
@@ -340,8 +345,8 @@ final class FruitGameSolver {
         int nextLabel = 0;
         List<Component> components = new ArrayList<>();
 
-        int minBox = Math.max(44, Math.round(width * 0.085f));
-        int maxBox = Math.max(minBox + 1, Math.round(width * 0.148f));
+        int minBox = Math.max(34, Math.round(width * 0.060f));
+        int maxBox = Math.max(minBox + 1, Math.round(width * 0.175f));
 
         for (int i = 0; i < mask.length; i++) {
             if (!mask[i] || labels[i] != 0) continue;
@@ -382,7 +387,7 @@ final class FruitGameSolver {
             int bh = maxY - minY + 1;
             if (bw < minBox || bw > maxBox || bh < minBox || bh > maxBox) continue;
             double fill = area / (double) (bw * bh);
-            if (fill < 0.43 || fill > 0.92) continue;
+            if (fill < 0.28 || fill > 0.95) continue;
 
             // Exclude top-right menu/close controls and the left reward ribbon.
             int absoluteTop = minY + roiTop;
@@ -543,7 +548,7 @@ final class FruitGameSolver {
         // Game background is cyan/sky-blue (~165°..215°) with medium/high V.
         // Fruit sprites are saturated colors outside that band; very dark pixels
         // are also retained for outlines/shadows.
-        boolean saturatedNonBlue = sat > 0.18f && (hue < 165f || hue > 215f);
+        boolean saturatedNonBlue = sat > 0.14f && (hue < 160f || hue > 220f);
         boolean darkDetail = max < 0.47f;
         return saturatedNonBlue || darkDetail;
     }
@@ -678,6 +683,28 @@ final class FruitGameSolver {
     private static String shellQuote(String value) {
         if (value == null) return "''";
         return "'" + value.replace("'", "'\\''") + "'";
+    }
+
+    private static void saveVisionDiagnostic(Context context, Bitmap bitmap, String suffix) {
+        if (context == null || bitmap == null || bitmap.isRecycled()) return;
+        try {
+            File base = context.getExternalFilesDir(null);
+            if (base == null) return;
+            File dir = new File(base, "xianyu_diagnostics");
+            if (!dir.exists() && !dir.mkdirs()) return;
+            File out = new File(dir, System.currentTimeMillis()
+                    + "_fruit_vision_" + (suffix == null ? "diag" : suffix) + ".png");
+            try (java.io.FileOutputStream stream = new java.io.FileOutputStream(out)) {
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream);
+                stream.flush();
+            }
+            File[] files = dir.listFiles((d, name) -> name != null && name.contains("_fruit_vision_"));
+            if (files != null && files.length > 8) {
+                java.util.Arrays.sort(files, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+                for (int i = 8; i < files.length; i++) safeDelete(files[i]);
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     private static void safeDelete(File file) {
