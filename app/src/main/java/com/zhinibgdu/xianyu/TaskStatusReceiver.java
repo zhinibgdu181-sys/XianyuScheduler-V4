@@ -18,11 +18,16 @@ import java.util.Map;
  * Persistent log utility retained under its historical class name to avoid
  * touching every existing TaskExecutor call site.
  *
- * V4.26 additionally keeps a tiny date-scoped SUCCESS history for the "今日"
- * tab. Clearing the text log does not erase today's verified task list.
+ * V4.31 additionally:
+ * 1. Keeps a tiny date-scoped SUCCESS history for the "今日" tab.
+ * 2. clearLog() now also cleans diagnostic screenshots and the learning log,
+ *    so the "清空日志" button truly resets all on-disk residue without touching
+ *    the "今日任务记录" or the "真人学习库" SharedPreferences.
  */
 public final class TaskStatusReceiver {
     private static final String LOG_FILE_NAME = "xianyu_log.txt";
+    private static final String DIAG_DIR_NAME = "xianyu_diagnostics";
+    private static final String LEARNING_LOG_FILE_NAME = "xianyu_learning_v413_log.txt";
     private static final int MAX_LOG_BYTES = 2 * 1024 * 1024;
 
     private static final String TODAY_PREFS = "xianyu_records_v427";
@@ -72,15 +77,61 @@ public final class TaskStatusReceiver {
         writeLog(context, "INFO", "系统日志", message);
     }
 
+    /**
+     * V4.31 清空所有运行时产生的磁盘残留：
+     * 1. 运行日志 xianyu_log.txt
+     * 2. 诊断截图目录 xianyu_diagnostics/*
+     * 3. 真人学习文本日志 xianyu_learning_v413_log.txt
+     *
+     * 不触碰"今日任务记录"和"真人学习库"两个 SharedPreferences。
+     */
     public static synchronized boolean clearLog(Context context) {
+        if (context == null) return false;
         try {
-            if (context == null) return false;
             Context app = context.getApplicationContext();
             File dir = app.getExternalFilesDir(null);
             if (dir == null) return false;
+
+            boolean ok = true;
+
+            // 1. 运行日志
             File file = new File(dir, LOG_FILE_NAME);
-            if (!file.exists()) return true;
-            return file.delete();
+            if (file.exists()) {
+                try {
+                    if (!file.delete()) ok = false;
+                } catch (Throwable ignored) {
+                    ok = false;
+                }
+            }
+
+            // 2. 诊断截图目录
+            try {
+                File diagDir = new File(dir, DIAG_DIR_NAME);
+                if (diagDir.exists() && diagDir.isDirectory()) {
+                    File[] files = diagDir.listFiles();
+                    if (files != null) {
+                        for (File f : files) {
+                            if (f == null) continue;
+                            try {
+                                if (f.isFile()) f.delete();
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+
+            // 3. 学习库文本日志
+            try {
+                File learnLog = new File(dir, LEARNING_LOG_FILE_NAME);
+                if (learnLog.exists()) {
+                    try { learnLog.delete(); } catch (Throwable ignored) {}
+                }
+            } catch (Throwable ignored) {
+            }
+
+            return ok;
         } catch (Throwable ignored) {
             return false;
         }
