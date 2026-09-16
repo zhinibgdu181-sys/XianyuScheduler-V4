@@ -41,7 +41,7 @@ import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
 /**
- * XianyuTaskExecutor V4.14
+ * XianyuTaskExecutor V4.16
  *
  * 重点修复：
  * 1. dumpsys 前台解析不再把“未知”误判为模块 App。
@@ -59,6 +59,10 @@ import javax.xml.parsers.DocumentBuilderFactory;
  * 11. V4.12：自动模式人工接管后进入硬停止态，所有后续 UI 变更 Root 命令都会被统一拦截。
  * 12. V4.13：修复真人示范触摸生命周期和持续时间采集；按 getevent 事件时间计算 DOWN→UP，
  *     新触摸不再继承上一手势坐标；增加语义去重、页面/外部 App 归一化和无关系统动作过滤。
+ * 13. V4.15：自适应节奏。减少重复 OCR/固定等待；验证页复用最近任务面板快照；
+ * 14. V4.16：任务面板立即连贯执行。返回/识别到 TASK_PANEL 后复用该帧直接挑选
+ *     下一个“签到/领取奖励/去完成”，不再为了上一任务的进度变化额外停留。
+ *     简单跳转任务缩短等待，浏览/视频保留必要时长；任务间使用小范围动态间隔。
  */
 public final class TaskExecutor {
 
@@ -185,6 +189,17 @@ public final class TaskExecutor {
     private static volatile long cachedOcrAtV411 = 0L;
     private static final long OCR_CACHE_MS_V411 = 350L;
 
+    // V4.15: a verified TASK_PANEL probe is much more valuable than a generic
+    // OCR cache entry. Keep it briefly so completion verification can reuse the
+    // frame that was already captured by conditional-return/recovery logic.
+    private static volatile ScreenOcr.Snapshot lastTaskPanelOcrV415 = ScreenOcr.Snapshot.empty();
+    private static volatile long lastTaskPanelOcrAtV415 = 0L;
+    private static final long TASK_PANEL_OCR_REUSE_MS_V415 = 2200L;
+    // V4.16: once a return/page probe has already confirmed TASK_PANEL, the very
+    // same OCR frame may be consumed by the next scan. This removes the extra
+    // screenshot round-trip between one completed task and the next click.
+    private static final long TASK_PANEL_CHAIN_REUSE_MS_V416 = 1500L;
+
     private static final String PROFILE_PREFS_V48 = "xianyu_task_profiles_v48";
     private static final int PROFILE_SCHEMA_V411 = 411;
     private static final long FEATURE_TTL_MS_V411 = 90L * 24L * 60L * 60L * 1000L;
@@ -281,7 +296,7 @@ public final class TaskExecutor {
         diagnostic(
                 learning
                         ? "========== 真人示范学习开始 · V4.13 =========="
-                        : "========== 闲鱼任务开始 · V4.14 =========="
+                        : "========== 闲鱼任务开始 · V4.16 =========="
         );
 
         if (learning) {
@@ -349,7 +364,7 @@ public final class TaskExecutor {
                         }
                     }
                 },
-                learning ? "XianyuLearn-V413" : "XianyuTask-V413"
+                learning ? "XianyuLearn-V413" : "XianyuTask-V415"
         );
 
         worker.start();
@@ -1639,13 +1654,23 @@ public final class TaskExecutor {
                         + completed
         );
 
-        sendStatus(
-                "",
-                "FINISHED",
-                "本次完成 "
-                        + completed
-                        + " 个任务"
-        );
+        if (userAborted) {
+            sendStatus(
+                    "",
+                    "ABORTED",
+                    "人工接管，已停止；本次已验证完成 "
+                            + completed
+                            + " 个任务"
+            );
+        } else {
+            sendStatus(
+                    "",
+                    "FINISHED",
+                    "本次完成 "
+                            + completed
+                            + " 个任务"
+            );
+        }
     }
 
     private static boolean enterViaMineCoin(
@@ -1984,6 +2009,8 @@ public final class TaskExecutor {
     private static void invalidateOcrCacheV411() {
         cachedOcrV411 = ScreenOcr.Snapshot.empty();
         cachedOcrAtV411 = 0L;
+        lastTaskPanelOcrV415 = ScreenOcr.Snapshot.empty();
+        lastTaskPanelOcrAtV415 = 0L;
     }
 
     private static String combinedTextV45(
@@ -2665,7 +2692,12 @@ public final class TaskExecutor {
                 continue;
             }
 
-            taskOcr = captureOcrV45(suPath, "快速扫描任务页");
+            taskOcr = consumeTaskPanelOcrForNextScanV416();
+            if (taskOcr != null && !taskOcr.isEmpty()) {
+                diagnostic("[连贯执行V4.16] 复用刚确认的任务面板，立即挑选下一任务");
+            } else {
+                taskOcr = captureOcrV45(suPath, "快速扫描任务页");
+            }
             boolean taskPage = isTaskPageV45(null, taskOcr);
 
             if (!taskPage) {
@@ -2804,7 +2836,7 @@ public final class TaskExecutor {
 
             boolean executionReturned;
             if (target.isClaimReward) {
-                executionReturned = sleepAbortableV48(520L) && !userAborted;
+                executionReturned = paceSleepV415(120L, 240L) && !userAborted;
             } else {
                 executionReturned = executeSingleTask(suPath, target.name);
             }
@@ -2838,23 +2870,37 @@ public final class TaskExecutor {
             } else if (!userAborted && executionReturned) {
                 flow.move(TaskRunStateV411.UNVERIFIED, verification.reason);
                 TaskProfileStoreV48.recordUnverifiedV411(target.name, verification.reason);
-                captureFailureDiagnosticV411(
-                        suPath, target.name, "unverified_" + verification.reason);
+                if (TaskProfileStoreV48.shouldCaptureDiagnosticV415(target.name)) {
+                    captureFailureDiagnosticV411(
+                            suPath, target.name, "unverified_" + verification.reason);
+                } else {
+                    diagnostic("[快节奏V4.15] 首次未验证，暂不阻塞保存诊断截图");
+                }
                 sendStatus(target.name, "FAILED",
                         "已返回，但任务进度未验证：" + verification.reason);
             } else if (!userAborted) {
                 flow.move(TaskRunStateV411.FAILED, verification.reason);
                 TaskProfileStoreV48.recordFailure(target.name, verification.reason);
-                captureFailureDiagnosticV411(
-                        suPath, target.name, "failed_" + verification.reason);
+                if (TaskProfileStoreV48.shouldCaptureDiagnosticV415(target.name)) {
+                    captureFailureDiagnosticV411(
+                            suPath, target.name, "failed_" + verification.reason);
+                } else {
+                    diagnostic("[快节奏V4.15] 首次失败，暂不阻塞保存诊断截图");
+                }
                 sendStatus(target.name, "FAILED", "任务执行失败：" + verification.reason);
             }
 
             if (userAborted) break;
 
-            // V4.8 removes the old unconditional dumpUi/closePopup pass here.
-            // The next OCR scan handles popups using the already captured frame.
-            sleepAbortableV48(320L);
+            // V4.16: TASK_PANEL itself is the hand-off signal. Once the previous
+            // task has returned here, do not wait for a delayed progress animation
+            // before selecting the next visible action. Keep only a tiny UI-settle
+            // window; the next scan normally consumes the already-confirmed OCR.
+            if (verification.verified) {
+                paceSleepV415(20L, 60L);
+            } else {
+                paceSleepV415(30L, 90L);
+            }
         }
 
         return completed;
@@ -3318,6 +3364,10 @@ public final class TaskExecutor {
         }
 
         String pageMarker = pageMarkerV411(text);
+        if (kind == PageKindV411.TASK_PANEL && ocr != null && !ocr.isEmpty()) {
+            lastTaskPanelOcrV415 = ocr;
+            lastTaskPanelOcrAtV415 = SystemClock.elapsedRealtime();
+        }
         TaskProfileStoreV48.observePageV411(kind.name(), fg, pageMarker);
         diagnostic("[页面特征V4.11] " + reason + " -> " + kind
                 + (pageMarker.isEmpty() ? "" : " / " + pageMarker));
@@ -3527,7 +3577,7 @@ public final class TaskExecutor {
         }
 
         if (probe.kind != PageKindV411.TASK_PANEL) {
-            diagnostic("[验证V4.11] 当前不是任务面板：" + probe.kind + "，开始恢复");
+            diagnostic("[验证V4.15] 当前不是任务面板：" + probe.kind + "，开始恢复");
             boolean recovered = conditionalBackRecoveryV410(
                     suPath, taskName, "任务完成验证返回");
             if (!recovered) {
@@ -3545,17 +3595,43 @@ public final class TaskExecutor {
         }
 
         TaskVerificationSnapshotV411 lastAfter = null;
+        boolean hasFreshPanelFrameV416 = freshTaskPanelOcrV415() != null
+                && !freshTaskPanelOcrV415().isEmpty();
+        // V4.16: for ordinary tasks, once return logic has already confirmed the
+        // task panel, do a single zero-wait verification pass and move on. Progress
+        // text can update later; it must not stall the next visible task. Claims
+        // keep a second chance because their row/button often changes in place.
+        int maxChecks = claim ? 2 : (hasFreshPanelFrameV416 ? 1 : 2);
 
-        // Allow the WebView a short time to update progress/reward state.
-        for (int i = 0; i < 4; i++) {
-            if (i > 0 && !sleepAbortableV48(750L)) break;
-            ScreenOcr.Snapshot ocr = captureOcrV45(
-                    suPath, "真实完成验证#" + (i + 1));
+        // V4.15/V4.16: the recovery/conditional-back path has just OCR-confirmed the
+        // task panel in most runs. Reuse that exact frame as check #1 instead of
+        // immediately taking another screenshot. Subsequent checks use short,
+        // bounded variable delays so fast UI updates proceed quickly while slow
+        // WebView updates still get a second/third chance.
+        for (int i = 0; i < maxChecks; i++) {
+            if (i > 0) {
+                long min = (i == 1) ? 140L : 320L;
+                long max = (i == 1) ? 260L : 520L;
+                if (!paceSleepV415(min, max)) break;
+            }
+
+            ScreenOcr.Snapshot ocr;
+            if (i == 0) {
+                ocr = freshTaskPanelOcrV415();
+                if (ocr != null && !ocr.isEmpty()) {
+                    diagnostic("[连贯执行V4.16] 真实完成验证#1复用刚才任务面板OCR");
+                } else {
+                    ocr = captureOcrV45(suPath, "真实完成验证#1");
+                }
+            } else {
+                ocr = captureOcrV45(suPath, "真实完成验证#" + (i + 1));
+            }
+
             TaskVerificationSnapshotV411 after =
                     buildTaskVerificationSnapshotV411(ocr, taskName, false);
             lastAfter = after;
 
-            diagnostic("[验证V4.11] before=" + before.describe()
+            diagnostic("[验证V4.15] before=" + before.describe()
                     + " / after=" + after.describe());
 
             if (after.current >= 0
@@ -3585,9 +3661,6 @@ public final class TaskExecutor {
                         true, "claim_confirmation_text", after);
             }
 
-            // For a reward claim, disappearance from the same task panel after
-            // the click is a strong signal. This rule is intentionally NOT used
-            // for ordinary "去完成" tasks because scrolling could hide a row.
             if (claim
                     && before.present
                     && !after.present
@@ -3597,10 +3670,42 @@ public final class TaskExecutor {
             }
         }
 
+        if (executionReturned && hasFreshPanelFrameV416 && !claim) {
+            diagnostic("[连贯执行V4.16] 已回任务面板但进度尚未刷新，不等待；立即交给下一任务");
+        }
         return new TaskVerificationResultV411(
                 false,
                 executionReturned ? "no_progress_change" : "execution_not_returned",
                 lastAfter == null ? before : lastAfter);
+    }
+
+    private static ScreenOcr.Snapshot freshTaskPanelOcrV415() {
+        ScreenOcr.Snapshot ocr = lastTaskPanelOcrV415;
+        long age = SystemClock.elapsedRealtime() - lastTaskPanelOcrAtV415;
+        if (ocr != null && !ocr.isEmpty()
+                && age >= 0L && age <= TASK_PANEL_OCR_REUSE_MS_V415) {
+            return ocr;
+        }
+        return ScreenOcr.Snapshot.empty();
+    }
+
+    private static ScreenOcr.Snapshot consumeTaskPanelOcrForNextScanV416() {
+        ScreenOcr.Snapshot ocr = lastTaskPanelOcrV415;
+        long age = SystemClock.elapsedRealtime() - lastTaskPanelOcrAtV415;
+        if (ocr != null && !ocr.isEmpty()
+                && age >= 0L && age <= TASK_PANEL_CHAIN_REUSE_MS_V416
+                && isTaskPageV45(null, ocr)) {
+            // Consume once. Any later scan must acquire a fresh frame unless a new
+            // page probe/conditional return confirms TASK_PANEL again.
+            lastTaskPanelOcrV415 = ScreenOcr.Snapshot.empty();
+            lastTaskPanelOcrAtV415 = 0L;
+            return ocr;
+        }
+        if (age > TASK_PANEL_CHAIN_REUSE_MS_V416) {
+            lastTaskPanelOcrV415 = ScreenOcr.Snapshot.empty();
+            lastTaskPanelOcrAtV415 = 0L;
+        }
+        return ScreenOcr.Snapshot.empty();
     }
 
     private static void captureFailureDiagnosticV411(
@@ -3653,18 +3758,27 @@ public final class TaskExecutor {
             return executeVideoTaskPolling(suPath, taskName);
         }
 
-        long defaultWaitMs = isSearch
-                ? 6500L
-                : isBounce
-                ? 8500L
-                : isInternalBrowse
-                ? 9000L
-                : 7000L;
+        long defaultWaitMs = defaultTaskWaitV415(
+                taskName, isSearch, isBounce, isInternalBrowse);
 
         TaskProfileStoreV48.StrategyV49 strategy =
                 TaskProfileStoreV48.chooseStrategyV49(taskName, defaultWaitMs, isBounce, false);
-        long waitMs = strategy.waitMs;
-        diagnostic("[策略V4.11] " + strategy.describe());
+        long explicitRequired = explicitSecondsRequirementV415(taskName);
+        long minSafeWait = minimumTaskWaitV415(taskName, isBounce, isInternalBrowse);
+        long waitMs;
+        if (explicitRequired > 0L) {
+            long explicitBase = explicitRequired + 950L;
+            waitMs = jitterDurationV415(
+                    explicitBase,
+                    explicitRequired + 650L,
+                    Math.min(45000L, explicitRequired + 1700L),
+                    0.025);
+        } else {
+            waitMs = jitterDurationV415(strategy.waitMs, minSafeWait, 15000L, 0.09);
+        }
+        diagnostic("[策略V4.15] " + strategy.describe()
+                + " / adaptive=" + waitMs + "ms"
+                + (explicitRequired > 0L ? " / required=" + explicitRequired + "ms" : ""));
 
         if (isBounce) {
             inBounceTask = true;
@@ -3674,21 +3788,38 @@ public final class TaskExecutor {
         long started = SystemClock.elapsedRealtime();
 
         try {
-            long nextBrowseSwipe = 2800L;
+            long nextBrowseSwipe = jitterDurationV415(2600L, 2200L, 3300L, 0.12);
             long nextFgCheck = 0L;
+            long systemTransitSince = 0L;
 
             while (SystemClock.elapsedRealtime() - started < waitMs) {
-                if (!sleepAbortableV48(250L)) return false;
+                if (!paceSleepV415(170L, 290L)) return false;
 
                 long elapsed = SystemClock.elapsedRealtime() - started;
 
                 if (elapsed >= nextFgCheck) {
                     String fg = getFg(suPath, false);
-                    nextFgCheck = elapsed + 750L;
+                    nextFgCheck = elapsed + ThreadLocalRandom.current().nextLong(560L, 900L);
 
                     if (MODULE_PACKAGE.equals(fg)) {
                         markUserAbortV48("检测到用户切回闲鱼定时助手");
                         return false;
+                    }
+
+                    // If a bounce task is stuck on Android's system transition
+                    // surface for a sustained period, waiting the full task timer
+                    // does not help. Move to return/verification early. Brief
+                    // transition flashes are ignored.
+                    if (isBounce && isSystemTransitFgV415(fg)) {
+                        if (systemTransitSince == 0L) systemTransitSince = elapsed;
+                        if (elapsed >= 2600L && elapsed - systemTransitSince >= 1600L) {
+                            diagnostic("[快节奏V4.15] 系统中转页持续 "
+                                    + (elapsed - systemTransitSince)
+                                    + "ms，提前进入返回验证");
+                            break;
+                        }
+                    } else {
+                        systemTransitSince = 0L;
                     }
                 }
 
@@ -3705,7 +3836,7 @@ public final class TaskExecutor {
                         );
                         diagnostic("[执行] 内部浏览滑动，elapsed=" + elapsed + "ms");
                     }
-                    nextBrowseSwipe += 3000L;
+                    nextBrowseSwipe += ThreadLocalRandom.current().nextLong(2600L, 3500L);
                 }
             }
 
@@ -3721,20 +3852,26 @@ public final class TaskExecutor {
                 return false;
             }
 
+            boolean recoveredTaskPanelV415 = false;
             if (!TARGET_PACKAGE.equals(fg)) {
-                diagnostic("[执行] 任务结束后快速返回闲鱼");
+                diagnostic("[执行V4.15] 外部页结束，优先按真人经验返回任务面板");
                 TaskProfileStoreV48.recordRecovery(taskName, "return_from:" + printableFg(fg));
-                rootWithPath(suPath, "am start -n " + TARGET_MAIN_ACTIVITY);
-                if (!waitFg(suPath, 4500L)) {
+                if (!recoverToXianyuTaskPanelV47(suPath, "任务执行结束快速返回")) {
                     TaskProfileStoreV48.recordFailure(taskName, "return_to_xianyu_failed");
                     return false;
                 }
-                sleepAbortableV48(450L);
+                recoveredTaskPanelV415 = true;
+                paceSleepV415(20L, 70L);
+            }
+
+            if (recoveredTaskPanelV415 && !isSearch) {
+                diagnostic("[连贯执行V4.16] 已验证回到任务面板，立即交给完成验证/下一任务");
+                return true;
             }
 
             if (isSearch) {
                 rootWithPath(suPath, "input keyevent 4");
-                if (!sleepAbortableV48(450L)) return false;
+                if (!paceSleepV415(260L, 480L)) return false;
             }
 
             // OCR-first completion check. uiautomator is only fallback now.
@@ -3794,7 +3931,7 @@ public final class TaskExecutor {
 
         while (SystemClock.elapsedRealtime() - start < videoTimeout) {
 
-            if (!sleepAbortableV48(1500L)) return false;
+            if (!paceSleepV415(950L, 1450L)) return false;
             loop++;
 
             String fg = getFg(suPath, false);
@@ -3836,7 +3973,7 @@ public final class TaskExecutor {
                 if (elapsed >= 18000L && !attemptedReturn) {
                     attemptedReturn = true;
                     preferredRightBackOnceV410(suPath, "视频广告页首次返回");
-                    sleepAbortableV48(500L);
+                    paceSleepV415(320L, 560L);
                 }
                 continue;
             }
@@ -3961,7 +4098,7 @@ public final class TaskExecutor {
                     .getSharedPreferences(LEARNING_PREFS_V412, Context.MODE_PRIVATE);
             List<String> ids = splitLearningIndexV412(p.getString("__ids", ""));
             if (ids.isEmpty()) {
-                diagnostic("[学习决策V4.14] 学习库为空，不执行经验回放");
+                diagnostic("[学习决策V4.15] 学习库为空，不执行经验回放");
                 return false;
             }
 
@@ -4000,7 +4137,7 @@ public final class TaskExecutor {
             }
 
             if (bestId == null) {
-                diagnostic("[学习决策V4.14] 当前外部应用=" + printableFg(currentFg)
+                diagnostic("[学习决策V4.15] 当前外部应用=" + printableFg(currentFg)
                         + "，没有满足阈值的安全返回经验；使用原恢复逻辑");
                 return false;
             }
@@ -4031,7 +4168,7 @@ public final class TaskExecutor {
                 ex = Math.min(w - 2, (int) (w * 0.24));
             }
 
-            diagnostic("[学习决策V4.14] 命中案例#" + bestId
+            diagnostic("[学习决策V4.15] 命中案例#" + bestId
                     + " gesture=" + gesture
                     + " count=" + count
                     + " app=" + currentApp
@@ -4042,7 +4179,7 @@ public final class TaskExecutor {
             RootResult rr = rootWithPath(suPath,
                     "input swipe " + sx + " " + y + " " + ex + " " + y + " " + duration);
             if (rr.exitCode != 0) {
-                diagnostic("[学习决策V4.14] 返回手势执行失败，转原恢复逻辑");
+                diagnostic("[学习决策V4.15] 返回手势执行失败，转原恢复逻辑");
                 return false;
             }
             if (!sleepAbortableV48(550L) || userAborted) return false;
@@ -4054,23 +4191,23 @@ public final class TaskExecutor {
                 return false;
             }
             if (!TARGET_PACKAGE.equals(fgAfter)) {
-                diagnostic("[学习决策V4.14] 单次返回后仍在外部应用="
+                diagnostic("[学习决策V4.15] 单次返回后仍在外部应用="
                         + printableFg(fgAfter) + "；停止经验回放，交给恢复逻辑");
                 return false;
             }
 
             ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "学习返回验证");
             if (isTaskPageV45(null, ocr)) {
-                diagnostic("[学习决策V4.14] ✅ post_kind=TASK_PANEL 验证通过");
+                diagnostic("[学习决策V4.15] ✅ post_kind=TASK_PANEL 验证通过");
                 return true;
             }
             String xml = dumpUi(suPath);
             if (isTaskPageV45(xml, ocr)) {
-                diagnostic("[学习决策V4.14] ✅ XML/OCR 联合验证 TASK_PANEL 通过");
+                diagnostic("[学习决策V4.15] ✅ XML/OCR 联合验证 TASK_PANEL 通过");
                 return true;
             }
 
-            diagnostic("[学习决策V4.14] 返回后未验证到 TASK_PANEL；不执行第二次盲返回");
+            diagnostic("[学习决策V4.15] 返回后未验证到 TASK_PANEL；不执行第二次盲返回");
             return false;
         }
     }
@@ -5088,6 +5225,76 @@ public final class TaskExecutor {
         return !userAborted && !physicalTouchDetected;
     }
 
+    private static boolean paceSleepV415(long minMs, long maxMs) {
+        long lo = Math.max(0L, Math.min(minMs, maxMs));
+        long hi = Math.max(lo, Math.max(minMs, maxMs));
+        long wait = (hi <= lo) ? lo : ThreadLocalRandom.current().nextLong(lo, hi + 1L);
+        return sleepAbortableV48(wait);
+    }
+
+    private static long jitterDurationV415(
+            long baseMs, long minMs, long maxMs, double ratio
+    ) {
+        long base = Math.max(0L, baseMs);
+        double r = Math.max(0.0, Math.min(0.25, ratio));
+        long delta = Math.max(1L, Math.round(base * r));
+        long lo = Math.max(minMs, base - delta);
+        long hi = Math.min(maxMs, base + delta);
+        if (hi < lo) hi = lo;
+        return hi == lo ? lo : ThreadLocalRandom.current().nextLong(lo, hi + 1L);
+    }
+
+    private static long explicitSecondsRequirementV415(String taskName) {
+        if (taskName == null) return 0L;
+        Matcher m = Pattern.compile("(\\d{1,3})\\s*(?:秒|s|S)").matcher(taskName);
+        if (!m.find()) return 0L;
+        try {
+            int seconds = Integer.parseInt(m.group(1));
+            if (seconds <= 0 || seconds > 120) return 0L;
+            return seconds * 1000L;
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
+    private static long defaultTaskWaitV415(
+            String taskName, boolean isSearch, boolean isBounce, boolean isInternalBrowse
+    ) {
+        long explicit = explicitSecondsRequirementV415(taskName);
+        if (explicit > 0L) return Math.min(45000L, explicit + 900L);
+        if (isSearch) return 5200L;
+        if (isInternalBrowse) return 8200L;
+        if (isBounce) {
+            if (containsAny(taskName, "逛逛", "浏览", "农场", "果园", "玩1关", "玩一玩")) {
+                return 7800L;
+            }
+            if (containsAny(taskName, "签到", "领", "抽", "积分", "红包", "免单", "淘金币")) {
+                return 5200L;
+            }
+            return 6300L;
+        }
+        return 5200L;
+    }
+
+    private static long minimumTaskWaitV415(
+            String taskName, boolean isBounce, boolean isInternalBrowse
+    ) {
+        long explicit = explicitSecondsRequirementV415(taskName);
+        if (explicit > 0L) return Math.min(45000L, explicit + 500L);
+        if (isInternalBrowse) return 6200L;
+        if (isBounce && containsAny(taskName, "逛逛", "浏览", "农场", "果园")) return 6000L;
+        if (isBounce) return 3800L;
+        return 3000L;
+    }
+
+    private static boolean isSystemTransitFgV415(String fg) {
+        if (fg == null) return false;
+        return "android".equals(fg)
+                || fg.contains("permissioncontroller")
+                || fg.contains("resolver")
+                || fg.contains("packageinstaller");
+    }
+
     private static void markUserAbortV48(String reason) {
         if (!userAborted) {
             userAborted = true;
@@ -5662,6 +5869,15 @@ public final class TaskExecutor {
             recordUniqueCase(task, "recovery", recovery);
         }
 
+        static boolean shouldCaptureDiagnosticV415(String task) {
+            SharedPreferences p = prefs();
+            if (p == null) return true;
+            String b = base(task);
+            int fail = p.getInt(b + "fail", 0);
+            int unverified = p.getInt(b + "unverified", 0);
+            return fail + unverified >= 2;
+        }
+
         static long suggestedWaitMs(String task, long defaultMs) {
             SharedPreferences p = prefs();
             if (p == null) return defaultMs;
@@ -5669,11 +5885,14 @@ public final class TaskExecutor {
             long avg = p.getLong(b + "avg_success_ms", 0L);
             if (avg <= 0L) return defaultMs;
 
-            // Learned wait is conservative and bounded; it cannot collapse to
-            // an unrealistically short value after one lucky run.
-            long learned = Math.round(avg * 0.72);
-            long blended = Math.round(defaultMs * 0.45 + learned * 0.55);
-            return Math.max(4200L, Math.min(15000L, blended));
+            // V4.15: successful-run duration also contains verification/recovery
+            // overhead, so use it as a light hint instead of letting it dominate
+            // the actual dwell time.
+            long learned = Math.round(avg * 0.52);
+            long blended = Math.round(defaultMs * 0.72 + learned * 0.28);
+            long min = Math.max(2800L, Math.round(defaultMs * 0.68));
+            long max = Math.min(15000L, Math.max(min + 800L, Math.round(defaultMs * 1.55)));
+            return Math.max(min, Math.min(max, blended));
         }
 
         static final class StrategyV49 {
@@ -5722,9 +5941,9 @@ public final class TaskExecutor {
             // V4.11: recent behavior is more important than very old totals.
             boolean cautious = (recentBad >= 3 && recentBad > recentSuccess)
                     || (fail >= 2 && fail > success);
-            if (cautious) learned = Math.min(18000L, learned + 1800L);
+            if (cautious) learned = Math.min(15000L, learned + 1300L);
             if (recentSuccess >= 4 && recentBad == 0) {
-                learned = Math.max(4200L, learned - 700L);
+                learned = Math.max(3000L, learned - 650L);
             }
 
             int learnedSwipes = p.getInt(b + "return_swipes", 0);
