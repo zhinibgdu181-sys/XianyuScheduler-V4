@@ -41,7 +41,7 @@ import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
 /**
- * XianyuTaskExecutor V4.13
+ * XianyuTaskExecutor V4.14
  *
  * 重点修复：
  * 1. dumpsys 前台解析不再把“未知”误判为模块 App。
@@ -281,7 +281,7 @@ public final class TaskExecutor {
         diagnostic(
                 learning
                         ? "========== 真人示范学习开始 · V4.13 =========="
-                        : "========== 闲鱼任务开始 · V4.13 =========="
+                        : "========== 闲鱼任务开始 · V4.14 =========="
         );
 
         if (learning) {
@@ -3901,6 +3901,16 @@ public final class TaskExecutor {
             return false;
         }
 
+        // V4.14: before force-opening Xianyu, consult the V4.13 human
+        // demonstration library. Only safe learned navigation gestures are
+        // replayed here (EDGE_BACK_RIGHT / EDGE_BACK_LEFT), never learned TAPs.
+        // Every replay is immediately verified against the real task panel.
+        if (!TARGET_PACKAGE.equals(fg)
+                && LearnedDecisionV414.trySafeReturnToTaskPanel(suPath, fg)) {
+            return true;
+        }
+        if (userAborted) return false;
+
         if (!TARGET_PACKAGE.equals(fg)) {
             rootWithPath(suPath, "am start -n " + TARGET_MAIN_ACTIVITY);
             if (!waitFg(suPath, 4500L)) {
@@ -3928,6 +3938,141 @@ public final class TaskExecutor {
 
         TaskProfileStoreV48.recordRecovery("__NAV__", reason);
         return enterViaMineCoin(suPath);
+    }
+
+    /**
+     * V4.14 conservative replay layer.
+     *
+     * It reads V4.13 SharedPreferences directly, ranks only demonstrated
+     * external-app -> TASK_PANEL edge-back transitions, replays one gesture,
+     * then verifies the destination. Unknown pages, TAP cases, low-quality
+     * durations and non-task destinations are never replayed automatically.
+     */
+    private static final class LearnedDecisionV414 {
+        private static final int MIN_GENERAL_COUNT = 2;
+        private static final long MIN_DURATION_MS = 80L;
+        private static final long MAX_DURATION_MS = 1000L;
+
+        static boolean trySafeReturnToTaskPanel(String suPath, String currentFg) {
+            Context context = lastContext;
+            if (context == null || userAborted || learningModeV412) return false;
+
+            SharedPreferences p = context.getApplicationContext()
+                    .getSharedPreferences(LEARNING_PREFS_V412, Context.MODE_PRIVATE);
+            List<String> ids = splitLearningIndexV412(p.getString("__ids", ""));
+            if (ids.isEmpty()) {
+                diagnostic("[学习决策V4.14] 学习库为空，不执行经验回放");
+                return false;
+            }
+
+            String currentApp = learningAppKeyV413(currentFg);
+            String bestId = null;
+            int bestScore = Integer.MIN_VALUE;
+
+            for (String id : ids) {
+                String b = "c." + id + ".";
+                String preKind = p.getString(b + "pre_kind", "");
+                String preApp = p.getString(b + "pre_app", "");
+                String gesture = p.getString(b + "gesture", "");
+                String postKind = p.getString(b + "post_kind", "");
+                String postApp = p.getString(b + "post_app", "");
+                int count = p.getInt(b + "count", 0);
+                long duration = p.getLong(b + "avg_duration", 0L);
+
+                if (!"EXTERNAL_APP".equals(preKind)) continue;
+                if (!"TASK_PANEL".equals(postKind) || !"XIANYU".equals(postApp)) continue;
+                if (!("EDGE_BACK_RIGHT".equals(gesture)
+                        || "EDGE_BACK_LEFT".equals(gesture))) continue;
+                if (duration < MIN_DURATION_MS || duration > MAX_DURATION_MS) continue;
+
+                boolean exactApp = !currentApp.isEmpty() && currentApp.equals(preApp);
+                // One exact, verified external-app -> task-panel edge return is
+                // accepted. Cross-app/generalized experience requires repetition.
+                if (!exactApp && count < MIN_GENERAL_COUNT) continue;
+
+                int score = count * 10;
+                if (exactApp) score += 100;
+                if ("EDGE_BACK_RIGHT".equals(gesture)) score += 5;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestId = id;
+                }
+            }
+
+            if (bestId == null) {
+                diagnostic("[学习决策V4.14] 当前外部应用=" + printableFg(currentFg)
+                        + "，没有满足阈值的安全返回经验；使用原恢复逻辑");
+                return false;
+            }
+
+            String b = "c." + bestId + ".";
+            String gesture = p.getString(b + "gesture", "");
+            int count = p.getInt(b + "count", 0);
+            long learnedDuration = p.getLong(b + "avg_duration", 260L);
+            long duration = Math.max(160L, Math.min(450L, learnedDuration));
+            int learnedY = p.getInt(b + "sy", 7500);
+
+            int[] screen = getScreenSizeV43(suPath);
+            int w = screen == null ? 1440 : Math.max(2, screen[0]);
+            int h = screen == null ? 3120 : Math.max(2, screen[1]);
+            int y = Math.max(1, Math.min(h - 2,
+                    (int) Math.round((learnedY / 10000.0) * (h - 1))));
+            // Keep edge-back in the comfortable middle/lower-middle region even
+            // if a noisy learned sample was close to a system exclusion area.
+            y = Math.max((int) (h * 0.55), Math.min((int) (h * 0.88), y));
+
+            int sx;
+            int ex;
+            if ("EDGE_BACK_RIGHT".equals(gesture)) {
+                sx = w - 2;                         // absolute right edge
+                ex = Math.max(1, (int) (w * 0.76));
+            } else {
+                sx = 1;                             // absolute left edge
+                ex = Math.min(w - 2, (int) (w * 0.24));
+            }
+
+            diagnostic("[学习决策V4.14] 命中案例#" + bestId
+                    + " gesture=" + gesture
+                    + " count=" + count
+                    + " app=" + currentApp
+                    + " duration=" + duration + "ms"
+                    + " y=" + y + "/" + h);
+
+            if (userAborted) return false;
+            RootResult rr = rootWithPath(suPath,
+                    "input swipe " + sx + " " + y + " " + ex + " " + y + " " + duration);
+            if (rr.exitCode != 0) {
+                diagnostic("[学习决策V4.14] 返回手势执行失败，转原恢复逻辑");
+                return false;
+            }
+            if (!sleepAbortableV48(550L) || userAborted) return false;
+
+            // Verification is mandatory. Never chain a blind second Back.
+            String fgAfter = getFg(suPath, false);
+            if (MODULE_PACKAGE.equals(fgAfter)) {
+                markUserAbortV48("学习回放后检测到用户切回助手");
+                return false;
+            }
+            if (!TARGET_PACKAGE.equals(fgAfter)) {
+                diagnostic("[学习决策V4.14] 单次返回后仍在外部应用="
+                        + printableFg(fgAfter) + "；停止经验回放，交给恢复逻辑");
+                return false;
+            }
+
+            ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "学习返回验证");
+            if (isTaskPageV45(null, ocr)) {
+                diagnostic("[学习决策V4.14] ✅ post_kind=TASK_PANEL 验证通过");
+                return true;
+            }
+            String xml = dumpUi(suPath);
+            if (isTaskPageV45(xml, ocr)) {
+                diagnostic("[学习决策V4.14] ✅ XML/OCR 联合验证 TASK_PANEL 通过");
+                return true;
+            }
+
+            diagnostic("[学习决策V4.14] 返回后未验证到 TASK_PANEL；不执行第二次盲返回");
+            return false;
+        }
     }
 
     private static boolean isBounceTask(
