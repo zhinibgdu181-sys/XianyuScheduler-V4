@@ -41,7 +41,7 @@ import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
 /**
- * XianyuTaskExecutor V4.12
+ * XianyuTaskExecutor V4.13
  *
  * 重点修复：
  * 1. dumpsys 前台解析不再把“未知”误判为模块 App。
@@ -57,6 +57,8 @@ import javax.xml.parsers.DocumentBuilderFactory;
  * 10. V4.12：真人示范学习模式。学习模式只观察、不主动点击/滑动/启动目标 App；
  *     记录真人点击/滑动/边缘返回、动作前后页面、等待时间和页面转换，并对相同案例去重累计。
  * 11. V4.12：自动模式人工接管后进入硬停止态，所有后续 UI 变更 Root 命令都会被统一拦截。
+ * 12. V4.13：修复真人示范触摸生命周期和持续时间采集；按 getevent 事件时间计算 DOWN→UP，
+ *     新触摸不再继承上一手势坐标；增加语义去重、页面/外部 App 归一化和无关系统动作过滤。
  */
 public final class TaskExecutor {
 
@@ -154,7 +156,7 @@ public final class TaskExecutor {
     private static volatile Process touchMonitorProcess;
     private static volatile Thread touchMonitorThread;
 
-    // V4.12 learning mode. It is observation-only: no automated UI mutation is
+    // V4.13 learning mode. It is observation-only: no automated UI mutation is
     // allowed while this flag is true.
     private static volatile boolean learningModeV412 = false;
     private static volatile boolean learningStopRequestedV412 = false;
@@ -164,9 +166,11 @@ public final class TaskExecutor {
     private static volatile long learningLastPageAtV412 = 0L;
     private static volatile boolean learningHasLeftHelperV412 = false;
     private static volatile long learningLastActionEndV412 = 0L;
-    private static final String LEARNING_PREFS_V412 = "xianyu_learning_v412";
-    private static final String LEARNING_LOG_FILE_V412 = "xianyu_learning_log.txt";
-    private static final long LEARNING_PAGE_SAMPLE_MS_V412 = 1600L;
+    private static final Object learningPageHistoryLockV413 = new Object();
+    private static final List<TimedLearningPageV413> learningPageHistoryV413 = new ArrayList<>();
+    private static final String LEARNING_PREFS_V412 = "xianyu_learning_v413";
+    private static final String LEARNING_LOG_FILE_V412 = "xianyu_learning_v413_log.txt";
+    private static final long LEARNING_PAGE_SAMPLE_MS_V412 = 900L;
     private static final long LEARNING_POST_ACTION_DELAY_MS_V412 = 650L;
 
     // V4.11 manual-takeover hardening: shell-generated tap/swipe events are
@@ -215,7 +219,7 @@ public final class TaskExecutor {
         if (!running) return;
         if (learningModeV412) {
             learningStopRequestedV412 = true;
-            diagnostic("[学习模式V4.12] 收到停止请求："
+            diagnostic("[学习模式V4.13] 收到停止请求："
                     + (reason == null ? "" : reason));
             Process p = learningInputProcessV412;
             if (p != null) {
@@ -276,8 +280,8 @@ public final class TaskExecutor {
 
         diagnostic(
                 learning
-                        ? "========== 真人示范学习开始 · V4.12 =========="
-                        : "========== 闲鱼任务开始 · V4.12 =========="
+                        ? "========== 真人示范学习开始 · V4.13 =========="
+                        : "========== 闲鱼任务开始 · V4.13 =========="
         );
 
         if (learning) {
@@ -345,7 +349,7 @@ public final class TaskExecutor {
                         }
                     }
                 },
-                learning ? "XianyuLearn-V412" : "XianyuTask-V412"
+                learning ? "XianyuLearn-V413" : "XianyuTask-V413"
         );
 
         worker.start();
@@ -355,21 +359,21 @@ public final class TaskExecutor {
     private static void executeLearningV412(Context ctx) {
         String suPath = findSuPathWithRetry();
         if (suPath == null) {
-            diagnostic("❌ [学习模式V4.12] Root 不可用，无法读取真实触摸事件");
+            diagnostic("❌ [学习模式V4.13] Root 不可用，无法读取真实触摸事件");
             sendStatus("", "FAILED", "学习模式需要 Root 读取触摸事件");
             return;
         }
 
         RootResult id = rootWithPath(suPath, "id");
         if (id.exitCode != 0 || id.stdout == null || !id.stdout.contains("uid=0")) {
-            diagnostic("❌ [学习模式V4.12] Root 权限验证失败");
+            diagnostic("❌ [学习模式V4.13] Root 权限验证失败");
             sendStatus("", "FAILED", "Root 权限验证失败");
             return;
         }
 
         String device = findTouchscreenDeviceV48(suPath);
         if (device == null || device.isEmpty()) {
-            diagnostic("❌ [学习模式V4.12] 未识别到触摸屏输入设备");
+            diagnostic("❌ [学习模式V4.13] 未识别到触摸屏输入设备");
             sendStatus("", "FAILED", "未识别到触摸屏设备");
             return;
         }
@@ -389,18 +393,24 @@ public final class TaskExecutor {
                 "helper"
         );
         learningLastPageAtV412 = SystemClock.elapsedRealtime();
+        synchronized (learningPageHistoryLockV413) {
+            learningPageHistoryV413.clear();
+        }
+        rememberLearningPageV413(learningLastPageV412, learningLastPageAtV412);
 
-        diagnostic("[学习模式V4.12] 触摸设备=" + device
+        diagnostic("[学习模式V4.13] 触摸设备=" + device
                 + " screen=" + screenW + "x" + screenH
                 + " rawX=" + axis.minX + ".." + axis.maxX
                 + " rawY=" + axis.minY + ".." + axis.maxY);
-        diagnostic("[学习模式V4.12] 现在请真人正常操作手机；程序不会执行任何 input tap/swipe/back/am start");
-        diagnostic("[学习模式V4.12] 完成示范后切回“闲鱼定时助手”，学习会自动结束");
+        diagnostic("[学习模式V4.13] 触摸生命周期=TRACKING_ID/BTN_TOUCH DOWN→UP；持续时间使用 getevent 原始时间戳");
+        diagnostic("[学习模式V4.13] 现在请真人正常操作手机；程序不会执行任何 input tap/swipe/back/am start");
+        diagnostic("[学习模式V4.13] 完成示范后切回“闲鱼定时助手”，学习会自动结束");
 
         startLearningSamplerV412(suPath);
 
         Process process = null;
         int gestureCount = 0;
+        int skippedCount = 0;
         try {
             process = Runtime.getRuntime().exec(new String[]{
                     suPath,
@@ -414,13 +424,14 @@ public final class TaskExecutor {
             );
 
             boolean active = false;
-            int rawX = -1;
-            int rawY = -1;
             int startRawX = -1;
             int startRawY = -1;
             int endRawX = -1;
             int endRawY = -1;
-            long downAt = 0L;
+            long downEventMs = -1L;
+            long downElapsedMs = 0L;
+            long eventToElapsedOffsetMs = Long.MIN_VALUE;
+            long lastUpEventMs = -1L;
             PageProbeV411 before = null;
             String line;
 
@@ -430,83 +441,108 @@ public final class TaskExecutor {
                     && (line = reader.readLine()) != null) {
 
                 String u = line.toUpperCase(Locale.US);
+                long eventMs = parseGeteventTimestampMsV413(line);
+                if (eventMs >= 0L && eventToElapsedOffsetMs == Long.MIN_VALUE) {
+                    eventToElapsedOffsetMs = SystemClock.elapsedRealtime() - eventMs;
+                }
+
+                boolean trackingDown = isTrackingDownV413(u);
+                boolean trackingUp = isTrackingUpV413(u);
+                boolean buttonDown = isBtnTouchDownV413(u);
+                boolean buttonUp = isBtnTouchUpV413(u);
+
+                // A new contact MUST reset all coordinates. This is the key V4.13
+                // fix: the previous gesture's end point can never become this
+                // gesture's start point.
+                if ((trackingDown || buttonDown) && !active) {
+                    active = true;
+                    startRawX = -1;
+                    startRawY = -1;
+                    endRawX = -1;
+                    endRawY = -1;
+                    downEventMs = eventMs;
+                    downElapsedMs = eventMs >= 0L && eventToElapsedOffsetMs != Long.MIN_VALUE
+                            ? eventMs + eventToElapsedOffsetMs
+                            : SystemClock.elapsedRealtime();
+                    before = learningPageAtOrBeforeV413(downElapsedMs, 2800L);
+                    if (before == null) before = learningLastPageV412;
+                    if (before == null) {
+                        before = freshestLearningPageV412(suPath, 2500L);
+                    }
+                }
 
                 Integer xVal = parseGeteventAxisValueV412(u, "ABS_MT_POSITION_X", "0035");
-                if (xVal != null) {
-                    rawX = xVal;
-                    if (active) {
-                        if (startRawX < 0) startRawX = rawX;
-                        endRawX = rawX;
-                    }
+                if (xVal != null && active) {
+                    if (startRawX < 0) startRawX = xVal;
+                    endRawX = xVal;
                 }
 
                 Integer yVal = parseGeteventAxisValueV412(u, "ABS_MT_POSITION_Y", "0036");
-                if (yVal != null) {
-                    rawY = yVal;
-                    if (active) {
-                        if (startRawY < 0) startRawY = rawY;
-                        endRawY = rawY;
-                    }
+                if (yVal != null && active) {
+                    if (startRawY < 0) startRawY = yVal;
+                    endRawY = yVal;
                 }
 
-                boolean down =
-                        (u.contains("BTN_TOUCH")
-                                && (u.contains("DOWN") || u.endsWith("00000001")))
-                                || (u.contains("ABS_MT_TRACKING_ID")
-                                && !u.endsWith("FFFFFFFF")
-                                && !u.endsWith("-1"));
-
-                boolean up =
-                        (u.contains("BTN_TOUCH")
-                                && (u.contains("UP") || u.endsWith("00000000")))
-                                || (u.contains("ABS_MT_TRACKING_ID")
-                                && (u.endsWith("FFFFFFFF") || u.endsWith("-1")));
-
-                if (down && !active) {
-                    active = true;
-                    downAt = SystemClock.elapsedRealtime();
-                    startRawX = rawX;
-                    startRawY = rawY;
-                    endRawX = rawX;
-                    endRawY = rawY;
-                    before = freshestLearningPageV412(suPath, 2200L);
-                    continue;
-                }
-
-                if (up && active) {
+                if ((trackingUp || buttonUp) && active) {
                     active = false;
-                    long upAt = SystemClock.elapsedRealtime();
-                    long duration = Math.max(1L, upAt - downAt);
+                    long processUpElapsedMs = SystemClock.elapsedRealtime();
+                    long upElapsedMs = eventMs >= 0L && eventToElapsedOffsetMs != Long.MIN_VALUE
+                            ? eventMs + eventToElapsedOffsetMs
+                            : processUpElapsedMs;
+                    long duration = durationFromEventTimesV413(
+                            downEventMs,
+                            eventMs,
+                            downElapsedMs,
+                            upElapsedMs);
 
-                    int sx = axis.toScreenX(startRawX >= 0 ? startRawX : endRawX);
-                    int sy = axis.toScreenY(startRawY >= 0 ? startRawY : endRawY);
+                    int sx = axis.toScreenX(startRawX);
+                    int sy = axis.toScreenY(startRawY);
                     int ex = axis.toScreenX(endRawX >= 0 ? endRawX : startRawX);
                     int ey = axis.toScreenY(endRawY >= 0 ? endRawY : startRawY);
 
                     if (sx < 0 || sy < 0 || ex < 0 || ey < 0) {
-                        diagnostic("[学习模式V4.12] 忽略坐标不完整的触摸事件");
+                        skippedCount++;
+                        diagnostic("[学习模式V4.13] 忽略坐标不完整的触摸事件"
+                                + " rawStart=(" + startRawX + "," + startRawY + ")"
+                                + " rawEnd=(" + endRawX + "," + endRawY + ")");
+                        learningLastActionEndV412 = upElapsedMs;
+                        if (eventMs >= 0L) lastUpEventMs = eventMs;
                         startRawX = startRawY = endRawX = endRawY = -1;
+                        before = null;
+                        downEventMs = -1L;
                         continue;
                     }
 
-                    long idleBefore = learningLastActionEndV412 <= 0L
-                            ? 0L
-                            : Math.max(0L, downAt - learningLastActionEndV412);
+                    long idleBefore;
+                    if (downEventMs >= 0L && lastUpEventMs >= 0L && downEventMs >= lastUpEventMs) {
+                        idleBefore = downEventMs - lastUpEventMs;
+                    } else {
+                        idleBefore = learningLastActionEndV412 <= 0L
+                                ? 0L
+                                : Math.max(0L, downElapsedMs - learningLastActionEndV412);
+                    }
 
                     LearnedGestureV412 gesture = classifyLearnedGestureV412(
                             sx, sy, ex, ey, duration, screenW, screenH);
 
                     PageProbeV411 beforeFinal = before != null
                             ? before
-                            : freshestLearningPageV412(suPath, 3500L);
+                            : freshestLearningPageV412(suPath, 2500L);
 
+                    long afterTargetElapsed = upElapsedMs + 450L;
                     if (!learningStopRequestedV412) {
-                        SystemClock.sleep(LEARNING_POST_ACTION_DELAY_MS_V412);
+                        long remaining = afterTargetElapsed - SystemClock.elapsedRealtime();
+                        if (remaining > 0L) {
+                            SystemClock.sleep(Math.min(LEARNING_POST_ACTION_DELAY_MS_V412, remaining));
+                        }
                     }
 
                     PageProbeV411 after = learningStopRequestedV412
                             ? learningLastPageV412
-                            : sampleLearningPageV412(suPath, "动作后");
+                            : learningPageAtOrAfterV413(afterTargetElapsed, 2600L);
+                    if (after == null && !learningStopRequestedV412) {
+                        after = sampleLearningPageV412(suPath, "动作后");
+                    }
 
                     if (after == null) {
                         after = new PageProbeV411(
@@ -519,36 +555,47 @@ public final class TaskExecutor {
                                 PageKindV411.UNKNOWN, "");
                     }
 
-                    LearningStoreV412.record(
-                            ctx,
-                            beforeFinal,
-                            gesture,
-                            after,
-                            idleBefore,
-                            duration,
-                            screenW,
-                            screenH
-                    );
+                    if (shouldRecordLearningGestureV413(beforeFinal, gesture, after, duration)) {
+                        LearningStoreV412.record(
+                                ctx,
+                                beforeFinal,
+                                gesture,
+                                after,
+                                idleBefore,
+                                duration,
+                                screenW,
+                                screenH
+                        );
 
-                    gestureCount++;
-                    learningLastActionEndV412 = upAt;
+                        gestureCount++;
+                        diagnostic("[学习动作V4.13] #" + gestureCount
+                                + " " + gesture.kind
+                                + " (" + sx + "," + sy + ")->(" + ex + "," + ey + ")"
+                                + " duration=" + duration + "ms"
+                                + " idleBefore=" + idleBefore + "ms"
+                                + " page=" + learningPageKindV413(beforeFinal)
+                                + "->" + learningPageKindV413(after));
+                    } else {
+                        skippedCount++;
+                        diagnostic("[学习过滤V4.13] 忽略无关/异常动作 " + gesture.kind
+                                + " duration=" + duration + "ms"
+                                + " page=" + learningPageKindV413(beforeFinal)
+                                + "->" + learningPageKindV413(after));
+                    }
+
+                    learningLastActionEndV412 = upElapsedMs;
+                    if (eventMs >= 0L) lastUpEventMs = eventMs;
                     learningLastPageV412 = after;
                     learningLastPageAtV412 = SystemClock.elapsedRealtime();
 
-                    diagnostic("[学习动作V4.12] #" + gestureCount
-                            + " " + gesture.kind
-                            + " (" + sx + "," + sy + ")->(" + ex + "," + ey + ")"
-                            + " duration=" + duration + "ms"
-                            + " idleBefore=" + idleBefore + "ms"
-                            + " page=" + beforeFinal.kind + "->" + after.kind);
-
                     startRawX = startRawY = endRawX = endRawY = -1;
                     before = null;
+                    downEventMs = -1L;
                 }
             }
         } catch (Throwable t) {
             if (!learningStopRequestedV412) {
-                diagnostic("[学习模式V4.12] 触摸记录线程异常", t);
+                diagnostic("[学习模式V4.13] 触摸记录线程异常", t);
             }
         } finally {
             learningInputProcessV412 = null;
@@ -559,8 +606,89 @@ public final class TaskExecutor {
         }
 
         int cases = getLearningCaseCount(ctx);
-        diagnostic("[学习模式V4.12] 本次真人示范结束；当前唯一学习案例=" + cases);
+        diagnostic("[学习模式V4.13] 本次真人示范结束；有效动作=" + gestureCount
+                + " 忽略动作=" + skippedCount + " 当前唯一学习案例=" + cases);
         sendStatus("", "FINISHED", "学习完成，已保存 " + cases + " 个唯一案例");
+    }
+
+    private static long parseGeteventTimestampMsV413(String line) {
+        if (line == null) return -1L;
+        Matcher m = Pattern.compile("\\[\\s*([0-9]+(?:\\.[0-9]+)?)\\s*\\]").matcher(line);
+        if (!m.find()) return -1L;
+        try {
+            double seconds = Double.parseDouble(m.group(1));
+            return Math.round(seconds * 1000.0);
+        } catch (Throwable ignored) {
+            return -1L;
+        }
+    }
+
+    private static boolean isTrackingDownV413(String upperLine) {
+        if (upperLine == null || !(upperLine.contains("ABS_MT_TRACKING_ID") || upperLine.contains(" 0039 "))) return false;
+        String t = upperLine.trim();
+        return !(t.endsWith("FFFFFFFF") || t.endsWith("-1"));
+    }
+
+    private static boolean isTrackingUpV413(String upperLine) {
+        if (upperLine == null || !(upperLine.contains("ABS_MT_TRACKING_ID") || upperLine.contains(" 0039 "))) return false;
+        String t = upperLine.trim();
+        return t.endsWith("FFFFFFFF") || t.endsWith("-1");
+    }
+
+    private static boolean isBtnTouchDownV413(String upperLine) {
+        if (upperLine == null || !(upperLine.contains("BTN_TOUCH") || upperLine.contains(" 014A "))) return false;
+        String t = upperLine.trim();
+        return t.contains(" DOWN") || t.endsWith("00000001");
+    }
+
+    private static boolean isBtnTouchUpV413(String upperLine) {
+        if (upperLine == null || !(upperLine.contains("BTN_TOUCH") || upperLine.contains(" 014A "))) return false;
+        String t = upperLine.trim();
+        return t.contains(" UP") || t.endsWith("00000000");
+    }
+
+    private static long durationFromEventTimesV413(
+            long downEventMs,
+            long upEventMs,
+            long downElapsedMs,
+            long upElapsedMs
+    ) {
+        if (downEventMs >= 0L && upEventMs >= downEventMs) {
+            long d = upEventMs - downEventMs;
+            if (d >= 1L && d <= 30_000L) return d;
+        }
+        long fallback = Math.max(1L, upElapsedMs - downElapsedMs);
+        return Math.min(30_000L, fallback);
+    }
+
+    private static boolean shouldRecordLearningGestureV413(
+            PageProbeV411 before,
+            LearnedGestureV412 gesture,
+            PageProbeV411 after,
+            long durationMs
+    ) {
+        if (gesture == null) return false;
+        String preFg = before == null ? "" : safe(before.fg);
+        String postFg = after == null ? "" : safe(after.fg);
+
+        if (MODULE_PACKAGE.equals(preFg) || MODULE_PACKAGE.equals(postFg)) return false;
+        if (isLearningNoisePackageV413(preFg) || isLearningNoisePackageV413(postFg)) return false;
+        if (durationMs <= 0L || durationMs > 30_000L) return false;
+
+        // Extremely short large swipes are almost always malformed lifecycle
+        // pairs rather than human gestures.
+        double dist = Math.hypot(gesture.ex - gesture.sx, gesture.ey - gesture.sy);
+        if (durationMs < 12L && dist > 80.0) return false;
+        return true;
+    }
+
+    private static boolean isLearningNoisePackageV413(String pkg) {
+        if (pkg == null || pkg.isEmpty()) return false;
+        return "android".equals(pkg)
+                || "com.android.systemui".equals(pkg)
+                || "com.samsung.android.permissioncontroller".equals(pkg)
+                || "com.google.android.permissioncontroller".equals(pkg)
+                || "com.android.permissioncontroller".equals(pkg);
     }
 
     private static void startLearningSamplerV412(String suPath) {
@@ -577,7 +705,7 @@ public final class TaskExecutor {
                             if (helperSince == 0L) helperSince = SystemClock.elapsedRealtime();
                             if (SystemClock.elapsedRealtime() - helperSince >= 650L) {
                                 learningStopRequestedV412 = true;
-                                diagnostic("[学习模式V4.12] 检测到真人切回助手，停止学习并保存记录");
+                                diagnostic("[学习模式V4.13] 检测到真人切回助手，停止学习并保存记录");
                                 Process p = learningInputProcessV412;
                                 if (p != null) {
                                     try { p.destroy(); } catch (Throwable ignored) { }
@@ -600,11 +728,11 @@ public final class TaskExecutor {
 
                     SystemClock.sleep(320L);
                 } catch (Throwable t1) {
-                    diagnostic("[学习模式V4.12] 页面采样异常：" + t1);
+                    diagnostic("[学习模式V4.13] 页面采样异常：" + t1);
                     SystemClock.sleep(600L);
                 }
             }
-        }, "XianyuLearnSampler-V412");
+        }, "XianyuLearnSampler-V413");
 
         t.setDaemon(true);
         learningSamplerThreadV412 = t;
@@ -643,7 +771,61 @@ public final class TaskExecutor {
 
         learningLastPageV412 = page;
         learningLastPageAtV412 = SystemClock.elapsedRealtime();
+        rememberLearningPageV413(page, learningLastPageAtV412);
         return page;
+    }
+
+    private static final class TimedLearningPageV413 {
+        final long atElapsedMs;
+        final PageProbeV411 page;
+
+        TimedLearningPageV413(long atElapsedMs, PageProbeV411 page) {
+            this.atElapsedMs = atElapsedMs;
+            this.page = page;
+        }
+    }
+
+    private static void rememberLearningPageV413(PageProbeV411 page, long atElapsedMs) {
+        if (page == null) return;
+        synchronized (learningPageHistoryLockV413) {
+            learningPageHistoryV413.add(new TimedLearningPageV413(atElapsedMs, page));
+            while (learningPageHistoryV413.size() > 24) {
+                learningPageHistoryV413.remove(0);
+            }
+        }
+    }
+
+    private static PageProbeV411 learningPageAtOrBeforeV413(long targetElapsedMs, long maxAgeMs) {
+        TimedLearningPageV413 best = null;
+        synchronized (learningPageHistoryLockV413) {
+            for (TimedLearningPageV413 item : learningPageHistoryV413) {
+                if (item == null || item.page == null) continue;
+                if (item.atElapsedMs <= targetElapsedMs
+                        && targetElapsedMs - item.atElapsedMs <= maxAgeMs
+                        && (best == null || item.atElapsedMs > best.atElapsedMs)) {
+                    best = item;
+                }
+            }
+        }
+        return best == null ? null : best.page;
+    }
+
+    private static PageProbeV411 learningPageAtOrAfterV413(
+            long targetElapsedMs,
+            long maxWaitMs
+    ) {
+        TimedLearningPageV413 best = null;
+        synchronized (learningPageHistoryLockV413) {
+            for (TimedLearningPageV413 item : learningPageHistoryV413) {
+                if (item == null || item.page == null) continue;
+                if (item.atElapsedMs >= targetElapsedMs
+                        && item.atElapsedMs - targetElapsedMs <= maxWaitMs
+                        && (best == null || item.atElapsedMs < best.atElapsedMs)) {
+                    best = item;
+                }
+            }
+        }
+        return best == null ? null : best.page;
     }
 
     private static PageProbeV411 freshestLearningPageV412(
@@ -820,10 +1002,161 @@ public final class TaskExecutor {
         return Math.max(min, Math.min(max, v));
     }
 
+    private static String learningPageKindV413(PageProbeV411 page) {
+        if (page == null) return "UNKNOWN";
+        String fg = safe(page.fg);
+        String text = safe(page.text);
+
+        if (MODULE_PACKAGE.equals(fg)) return "MODULE_APP";
+        if (!fg.isEmpty() && !TARGET_PACKAGE.equals(fg)) return "EXTERNAL_APP";
+
+        if (TARGET_PACKAGE.equals(fg)) {
+            if (containsAny(text, "正在跳转", "打开淘宝", "打开支付宝", "打开美团")) {
+                return "JUMP_PAGE";
+            }
+            if (containsAny(text,
+                    "继续试玩", "安装应用可立即领奖", "安装完成即可领奖",
+                    "立即下载", "继续播放视频内容", "广告")) {
+                return "AD_OR_INSTALL";
+            }
+            if (containsAny(text, "得骰子赚闲鱼币")
+                    || (containsAny(text, "闲鱼币")
+                    && containsAny(text, "去完成", "领取奖励", "领取笑励", "收益+10%"))) {
+                return "TASK_PANEL";
+            }
+            if (containsAny(text, "扔骰子寻宝", "碎片收集", "1分兑换")
+                    || (containsAny(text, "赚骰子") && containsAny(text, "背包", "闲鱼币"))) {
+                return "COIN_HOME";
+            }
+            if (containsAny(text, "我的收藏")
+                    && containsAny(text, "我发布的", "我卖出的", "我买到的")) {
+                return "MINE";
+            }
+            if (containsAny(text, "卖闲置")
+                    && containsAny(text, "消息")
+                    && containsAny(text, "我的")) {
+                return "XIANYU_HOME";
+            }
+        }
+
+        switch (page.kind) {
+            case TASK_PANEL: return "TASK_PANEL";
+            case COIN_HOME: return "COIN_HOME";
+            case MINE: return "MINE";
+            case XIANYU_HOME: return "XIANYU_HOME";
+            case AD_OR_INSTALL: return "AD_OR_INSTALL";
+            case EXTERNAL_APP: return "EXTERNAL_APP";
+            case MODULE_APP: return "MODULE_APP";
+            case UNKNOWN_XIANYU: return "UNKNOWN_XIANYU";
+            default: return "UNKNOWN";
+        }
+    }
+
+    private static String learningAppKeyV413(String pkg) {
+        String p = safe(pkg);
+        if (p.isEmpty()) return "";
+        if (TARGET_PACKAGE.equals(p)) return "XIANYU";
+        if (MODULE_PACKAGE.equals(p)) return "HELPER";
+        if ("com.taobao.taobao".equals(p)) return "TAOBAO";
+        if ("com.eg.android.AlipayGphone".equals(p)) return "ALIPAY";
+        if ("com.sankuai.meituan".equals(p)) return "MEITUAN";
+        if ("com.dianping.v1".equals(p)) return "DIANPING";
+        if ("com.sec.android.app.samsungapps".equals(p)) return "GALAXY_STORE";
+        if (p.contains("permissioncontroller")) return "PERMISSION";
+        return p;
+    }
+
+    private static String learningSemanticActionV413(
+            PageProbeV411 before,
+            LearnedGestureV412 gesture,
+            int width,
+            int height
+    ) {
+        if (before == null || gesture == null) return "";
+        if (!("TAP".equals(gesture.kind) || "LONG_PRESS".equals(gesture.kind))) {
+            return "";
+        }
+        String raw = learningActionLabelV412(
+                before.ocr, gesture.sx, gesture.sy, width, height);
+        return canonicalLearningActionV413(raw);
+    }
+
+    private static String canonicalLearningActionV413(String raw) {
+        if (raw == null) return "";
+        String s = raw
+                .replace("领取笑励", "领取奖励")
+                .replace("赚股子", "赚骰子")
+                .replace("賺股子", "赚骰子")
+                .replace("安井", "安装")
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (s.isEmpty()) return "";
+
+        String button = "";
+        if (s.contains("去完成")) button = "去完成";
+        else if (s.contains("领取奖励")) button = "领取奖励";
+        else if (s.contains("签到")) button = "签到";
+        else if (s.contains("去浏览")) button = "去浏览";
+        else if (s.contains("去领取")) button = "去领取";
+
+        String row = "";
+        int slash = s.indexOf('/');
+        if (slash >= 0 && slash + 1 < s.length()) {
+            row = s.substring(slash + 1);
+        } else if (!button.isEmpty()) {
+            row = s.replace(button, "");
+        } else {
+            row = s;
+        }
+
+        row = row
+                .replaceAll("[\\p{Punct}，。！？、：；（）【】《》“”‘’·]+", "")
+                .replaceAll("\\s+", "")
+                .replaceAll("\\d+\\s*/\\s*\\d+", "")
+                .trim();
+        if (row.length() > 28) row = row.substring(0, 28);
+        if (row.matches("[0-9]+") || row.length() == 1) row = "";
+
+        if (!button.isEmpty()) {
+            return row.isEmpty() ? button : button + "/" + row;
+        }
+        return row;
+    }
+
+    private static String learningSemanticSpatialV413(
+            LearnedGestureV412 gesture,
+            String action,
+            int width,
+            int height
+    ) {
+        if (gesture == null || width <= 0 || height <= 0) return "";
+        if ("EDGE_BACK_LEFT".equals(gesture.kind)
+                || "EDGE_BACK_RIGHT".equals(gesture.kind)) {
+            return "EDGE";
+        }
+        if (action != null && !action.isEmpty()) return "LABEL";
+
+        double xr = gesture.sx / (double) Math.max(1, width - 1);
+        double yr = gesture.sy / (double) Math.max(1, height - 1);
+
+        if ("SWIPE_UP".equals(gesture.kind) || "SWIPE_DOWN".equals(gesture.kind)) {
+            String band = yr < 0.34 ? "TOP" : (yr < 0.68 ? "MID" : "BOTTOM");
+            return "SCROLL_" + band;
+        }
+        if ("TAP".equals(gesture.kind) || "LONG_PRESS".equals(gesture.kind)) {
+            int bx = clampV412((int) Math.floor(xr * 4.0), 0, 3);
+            int by = clampV412((int) Math.floor(yr * 8.0), 0, 7);
+            return "T" + bx + ":" + by;
+        }
+        int bx = clampV412((int) Math.floor(xr * 3.0), 0, 2);
+        int by = clampV412((int) Math.floor(yr * 4.0), 0, 3);
+        return "G" + bx + ":" + by;
+    }
+
     private static final class LearningStoreV412 {
         private static final String INDEX = "__ids";
         private static final String NEXT_ID = "__next_id";
-        private static final int MAX_CASES = 300;
+        private static final int MAX_CASES = 220;
 
         static void record(
                 Context context,
@@ -840,29 +1173,28 @@ public final class TaskExecutor {
             SharedPreferences p = context.getApplicationContext()
                     .getSharedPreferences(LEARNING_PREFS_V412, Context.MODE_PRIVATE);
 
-            String preKind = before == null ? "UNKNOWN" : before.kind.name();
-            String postKind = after == null ? "UNKNOWN" : after.kind.name();
+            String preKind = learningPageKindV413(before);
+            String postKind = learningPageKindV413(after);
             String preFg = before == null ? "" : safe(before.fg);
             String postFg = after == null ? "" : safe(after.fg);
+            String preApp = learningAppKeyV413(preFg);
+            String postApp = learningAppKeyV413(postFg);
             String preMarker = before == null ? "" : safe(before.marker);
             String postMarker = after == null ? "" : safe(after.marker);
 
-            String actionLabel = learningActionLabelV412(
-                    before == null ? null : before.ocr,
-                    gesture.sx,
-                    gesture.sy,
-                    width,
-                    height);
-            String spatialBucket = learningSpatialBucketV412(
-                    gesture,
-                    width,
-                    height);
+            String actionLabel = learningSemanticActionV413(
+                    before, gesture, width, height);
+            String spatialBucket = learningSemanticSpatialV413(
+                    gesture, actionLabel, width, height);
 
-            String signature = preKind + "|" + preFg
+            // V4.13 semantic signature: no pixel-level coordinates and no raw
+            // OCR marker noise. Same page transition + same human action is one
+            // case; coordinates/timing are aggregated as statistics.
+            String signature = preKind + "|" + preApp
                     + "|" + gesture.kind
                     + "|" + actionLabel
                     + "|" + spatialBucket
-                    + "|" + postKind + "|" + postFg;
+                    + "|" + postKind + "|" + postApp;
 
             List<String> ids = splitLearningIndexV412(p.getString(INDEX, ""));
             String foundId = null;
@@ -905,15 +1237,21 @@ public final class TaskExecutor {
                     .putInt(b + "count", newCount)
                     .putString(b + "pre_kind", preKind)
                     .putString(b + "pre_fg", preFg)
+                    .putString(b + "pre_app", preApp)
                     .putString(b + "pre_marker", preMarker)
                     .putString(b + "gesture", gesture.kind)
                     .putString(b + "action_label", actionLabel)
                     .putString(b + "spatial_bucket", spatialBucket)
                     .putString(b + "post_kind", postKind)
                     .putString(b + "post_fg", postFg)
+                    .putString(b + "post_app", postApp)
                     .putString(b + "post_marker", postMarker)
                     .putLong(b + "avg_duration", avgDuration)
                     .putLong(b + "avg_idle", avgIdle)
+                    .putLong(b + "min_duration", oldCount <= 0
+                            ? durationMs : Math.min(p.getLong(b + "min_duration", durationMs), durationMs))
+                    .putLong(b + "max_duration", oldCount <= 0
+                            ? durationMs : Math.max(p.getLong(b + "max_duration", durationMs), durationMs))
                     .putInt(b + "sx", rollingIntAverageV412(
                             p.getInt(b + "sx", sx10000), sx10000, oldCount))
                     .putInt(b + "sy", rollingIntAverageV412(
@@ -939,23 +1277,35 @@ public final class TaskExecutor {
 
             e.putString(INDEX, joinLearningIndexV412(ids))
                     .putInt("__case_count", ids.size())
+                    .putInt("__schema", 413)
                     .apply();
 
+            int avgSx = rollingIntAverageV412(
+                    p.getInt(b + "sx", sx10000), sx10000, oldCount);
+            int avgSy = rollingIntAverageV412(
+                    p.getInt(b + "sy", sy10000), sy10000, oldCount);
+            int avgEx = rollingIntAverageV412(
+                    p.getInt(b + "ex", ex10000), ex10000, oldCount);
+            int avgEy = rollingIntAverageV412(
+                    p.getInt(b + "ey", ey10000), ey10000, oldCount);
+
             String summary = preKind
+                    + (preApp.isEmpty() ? "" : "(" + preApp + ")")
                     + " --" + gesture.kind
                     + (actionLabel.isEmpty() ? "" : "[" + actionLabel + "]")
                     + "--> " + postKind
+                    + (postApp.isEmpty() ? "" : "(" + postApp + ")")
                     + " count=" + newCount
                     + " idle≈" + avgIdle + "ms"
-                    + " gesture≈(" + ratioTextV412(
-                            p.getInt(b + "sx", sx10000), sx10000, oldCount)
-                    + "," + ratioTextV412(
-                            p.getInt(b + "sy", sy10000), sy10000, oldCount)
-                    + ")";
+                    + " duration≈" + avgDuration + "ms"
+                    + " gesture≈(" + String.format(Locale.US, "%.3f", avgSx / 10000.0)
+                    + "," + String.format(Locale.US, "%.3f", avgSy / 10000.0)
+                    + ")->(" + String.format(Locale.US, "%.3f", avgEx / 10000.0)
+                    + "," + String.format(Locale.US, "%.3f", avgEy / 10000.0) + ")";
 
             diagnostic(created
-                    ? "[学习库V4.12] 新增唯一案例：" + summary
-                    : "[学习库V4.12去重] 相同案例仅更新统计：" + summary);
+                    ? "[学习库V4.13] 新增语义案例：" + summary
+                    : "[学习库V4.13去重] 同案例仅更新统计：" + summary);
             appendLearningLogV412(context, summary);
         }
 
@@ -979,11 +1329,6 @@ public final class TaskExecutor {
                     10000);
         }
 
-        private static String ratioTextV412(int oldValue, int value, int oldCount) {
-            int avg = rollingIntAverageV412(oldValue, value, oldCount);
-            return String.format(Locale.US, "%.3f", avg / 10000.0);
-        }
-
         private static void removeLearningCaseV412(
                 SharedPreferences.Editor e,
                 String id
@@ -991,16 +1336,15 @@ public final class TaskExecutor {
             if (id == null || id.isEmpty()) return;
             String b = "c." + id + ".";
             String[] keys = {
-                    "sig", "count", "pre_kind", "pre_fg", "pre_marker",
+                    "sig", "count", "pre_kind", "pre_fg", "pre_app", "pre_marker",
                     "gesture", "action_label", "spatial_bucket",
-                    "post_kind", "post_fg", "post_marker",
-                    "avg_duration", "avg_idle", "sx", "sy", "ex", "ey",
-                    "first_at", "last_at"
+                    "post_kind", "post_fg", "post_app", "post_marker",
+                    "avg_duration", "min_duration", "max_duration", "avg_idle",
+                    "sx", "sy", "ex", "ey", "first_at", "last_at"
             };
             for (String key : keys) e.remove(b + key);
         }
     }
-
 
     private static String learningSpatialBucketV412(
             LearnedGestureV412 gesture,
@@ -1139,7 +1483,7 @@ public final class TaskExecutor {
             writer.write(System.currentTimeMillis() + " " + line + "\n");
             writer.flush();
         } catch (Throwable t) {
-            diagnostic("[学习模式V4.12] 写学习记录失败：" + t);
+            diagnostic("[学习模式V4.13] 写学习记录失败：" + t);
         } finally {
             if (writer != null) {
                 try { writer.close(); } catch (Throwable ignored) { }
@@ -5393,11 +5737,11 @@ public final class TaskExecutor {
 
         if (isUiMutationCommandV412(command)) {
             if (learningModeV412) {
-                diagnostic("[学习模式V4.12] 已拦截主动 UI 操作：" + command);
+                diagnostic("[学习模式V4.13] 已拦截主动 UI 操作：" + command);
                 return new RootResult(-3, "", "learning_mode_observation_only");
             }
             if (userAborted || physicalTouchDetected) {
-                diagnostic("[硬停止V4.12] 人工接管后拦截 UI 操作：" + command);
+                diagnostic("[硬停止V4.13] 人工接管后拦截 UI 操作：" + command);
                 return new RootResult(-4, "", "manual_takeover_hard_stop");
             }
         }
