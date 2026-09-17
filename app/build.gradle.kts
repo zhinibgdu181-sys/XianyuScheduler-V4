@@ -15,15 +15,40 @@ android {
         versionName = "4.42.1"
     }
 
+    // Stable signing support.
+    // Configure signing.properties locally or GitHub Actions secrets before release builds.
+    val signingPropsFile = rootProject.file("signing.properties")
+    val signingProps = java.util.Properties()
+    if (signingPropsFile.exists()) {
+        signingProps.load(signingPropsFile.inputStream())
+    }
+
+    signingConfigs {
+        create("stable") {
+            if (signingPropsFile.exists()) {
+                storeFile = file(signingProps["storeFile"] as String)
+                storePassword = signingProps["storePassword"] as String
+                keyAlias = signingProps["keyAlias"] as String
+                keyPassword = signingProps["keyPassword"] as String
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
             isShrinkResources = false
+            if (signingPropsFile.exists()) {
+                signingConfig = signingConfigs.getByName("stable")
+            }
         }
 
         release {
             isMinifyEnabled = false
             isShrinkResources = false
+            if (signingPropsFile.exists()) {
+                signingConfig = signingConfigs.getByName("stable")
+            }
         }
     }
 
