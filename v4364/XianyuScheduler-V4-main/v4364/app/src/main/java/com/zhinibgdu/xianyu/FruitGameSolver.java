@@ -213,10 +213,11 @@ final class FruitGameSolver {
 
             List<FruitObject> objects = detectFruitObjects(frame);
 
-            // V4.36.4：下落状态只作为评分因素，不再作为绝对过滤条件。
+            // V4.36.3：按“自由落体区→漏斗上沿”的真实几何判断可下落。
+            // 只有水果到底部坑洞的竖直扫掠通道没有被其它水果占据，才允许点击。
             DropAnalysis drop = analyzeDroppability(objects, frame.bitmap.getWidth(), frame.bitmap.getHeight());
             List<FruitObject> droppableObjects = drop.droppable;
-            host.log("[下落V4.36.4] 识别水果=" + objects.size()
+            host.log("[下落V4.36.3] 识别水果=" + objects.size()
                     + " / 可直接下落=" + droppableObjects.size()
                     + " / 被遮挡=" + drop.blocked.size()
                     + blockedSummary(drop, frame));
@@ -237,7 +238,7 @@ final class FruitGameSolver {
                 }
             }
 
-            host.log("[游戏V4.36.4] 可配对候选=" + droppableObjects.size()
+            host.log("[游戏V4.36.3] 可配对候选=" + droppableObjects.size()
                     + " / 总水果=" + objects.size()
                     + " / 顶部禁区<" + Math.round(frame.originalHeight * 0.115f)
                     + " / 漏斗外沿≈" + Math.round(frame.originalHeight * FUNNEL_OUTER_Y_FRAC)
@@ -348,9 +349,9 @@ final class FruitGameSolver {
                     + " / 被遮挡=" + afterDrop.blocked.size()
                     + " / 对象数变化=" + beforeObjectCount + "→" + afterObjects.size());
 
-            // B 不能只“长得像”；使用软评分判断下落风险，不再因为临时遮挡直接放弃。
+            // B 不能只“长得像”；它在 A 下落后的新局面里也必须仍然可以直接掉入坑洞。
             FruitMatch reacquired = findBestMatchingFruit(
-                    expectedB, afterObjects,
+                    expectedB, afterDrop.droppable,
                     afterA.bitmap.getWidth(), afterA.bitmap.getHeight());
             if (reacquired == null) {
                 FruitMatch existingB = findBestMatchingFruit(
@@ -360,7 +361,7 @@ final class FruitGameSolver {
                     FruitObject blocker = findNearestBlockingFruit(
                             existingB.fruit, afterObjects,
                             afterA.bitmap.getWidth(), afterA.bitmap.getHeight());
-                    host.log("[下落V4.36.4] B仍存在但路径风险较高"
+                    host.log("[下落V4.36.3] B仍存在但没有进入‘可直接下落’候选"
                             + (blocker == null ? "" : " / blocker=("
                             + mapX(afterA, blocker.centerX) + ","
                             + mapY(afterA, blocker.centerY) + ")")
