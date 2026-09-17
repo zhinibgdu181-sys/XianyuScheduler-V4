@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
 }
@@ -18,7 +20,7 @@ android {
     // Stable signing support.
     // Configure signing.properties locally or GitHub Actions secrets before release builds.
     val signingPropsFile = rootProject.file("signing.properties")
-    val signingProps = java.util.Properties()
+    val signingProps = Properties()
     if (signingPropsFile.exists()) {
         signingProps.load(signingPropsFile.inputStream())
     }
