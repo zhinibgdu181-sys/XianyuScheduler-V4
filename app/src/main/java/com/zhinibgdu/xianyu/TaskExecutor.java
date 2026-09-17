@@ -324,7 +324,7 @@ public final class TaskExecutor {
         diagnostic(
                 learning
                         ? "========== 真人示范学习开始 · V4.13 =========="
-                        : "========== 闲鱼任务开始 · V4.36.3 =========="
+                        : "========== 闲鱼任务开始 · V4.37.0 =========="
         );
 
         if (learning) {
@@ -354,8 +354,10 @@ public final class TaskExecutor {
                                 t
                         );
                     } finally {
+                        learningStopRequestedV412 = true;
                         stopPhysicalTouchMonitorV48();
                         stopLearningSamplerV412();
+                        ScreenOcr.close();
                         Process lp = learningInputProcessV412;
                         learningInputProcessV412 = null;
                         if (lp != null) {
@@ -366,7 +368,6 @@ public final class TaskExecutor {
                         boolean wasLearning = learningModeV412;
                         learningModeV412 = false;
                         learningStopRequestedV412 = false;
-                        running = false;
                         inBounceTask = false;
 
                         diagnostic(
@@ -390,6 +391,7 @@ public final class TaskExecutor {
                                 diagnostic("完成回调异常", callbackError);
                             }
                         }
+                        running = false;
                     }
                 },
                 learning ? "XianyuLearn-V413" : "XianyuTask-V415"
@@ -739,7 +741,8 @@ public final class TaskExecutor {
 
         Thread t = new Thread(() -> {
             long helperSince = 0L;
-            while (running && learningModeV412 && !learningStopRequestedV412) {
+            while (running && learningModeV412 && !learningStopRequestedV412
+                    && !Thread.currentThread().isInterrupted()) {
                 try {
                     String fg = getFg(suPath, false);
 
@@ -794,7 +797,7 @@ public final class TaskExecutor {
             String suPath,
             String reason
     ) {
-        if (!learningModeV412 || learningStopRequestedV412) {
+        if (!learningModeV412 || learningStopRequestedV412 || Thread.currentThread().isInterrupted()) {
             return learningLastPageV412;
         }
 
@@ -2010,7 +2013,8 @@ public final class TaskExecutor {
             return cached;
         }
 
-        ScreenOcr.Snapshot snapshot = ScreenOcr.capture(lastContext, suPath);
+        ScreenOcr.Snapshot snapshot = ScreenOcr.capture(lastContext, suPath,
+                () -> learningModeV412 ? learningStopRequestedV412 : (userAborted || physicalTouchDetected));
         if (snapshot != null && !snapshot.isEmpty()) {
             cachedOcrV411 = snapshot;
             cachedOcrAtV411 = now;
@@ -4146,7 +4150,7 @@ public final class TaskExecutor {
             String suPath,
             String taskName
     ) {
-        diagnostic("[水果V4.36.3] 启动水果配对求解器：" + taskName);
+        diagnostic("[水果V4.37.0] 启动水果配对求解器：" + taskName);
         if (!paceSleepV415(260L, 420L)) return false;
 
         gameIncompleteHoldV421 = false;
@@ -4164,67 +4168,26 @@ public final class TaskExecutor {
                         lastContext,
                         suPath,
                         new FruitGameSolver.Host() {
+                            private int observedWidth;
+                            private int observedHeight;
+
+                            @Override
+                            public void onFrameSize(int width, int height) {
+                                observedWidth = width;
+                                observedHeight = height;
+                            }
+
                             @Override
                             public boolean tap(int x, int y, String reason) {
                                 if (userAborted || physicalTouchDetected) return false;
-                                if (reason == null) {
-                                    diagnostic("[游戏限制V4.36] 拒绝无reason点击");
+                                if (!GameTapPolicy.allows(x, y, observedWidth, observedHeight, reason)) {
+                                    diagnostic("[水果V4.37.0] 拒绝越界/非白名单点击：" + reason
+                                            + " @" + x + "," + y + " / " + observedWidth + "x" + observedHeight);
                                     return false;
                                 }
-
-                                // V4.36：两个唯一允许的非水果点击：
-                                // 1) 开始游戏；2) 自动弹出的解锁/消除/打乱推荐弹窗右上角X。
-                                // 坐标必须同时落在极窄白名单，防止误点“使用/消除/打乱/解锁”。
-                                if ("水果游戏-开始游戏".equals(reason)) {
-                                    if (x < 560 || x > 880 || y < 2180 || y > 2500) {
-                                        diagnostic("[水果安全点击V4.36] BLOCK START " + x + "," + y);
-                                        return false;
-                                    }
-                                    RootResult r = rootWithPath(suPath,
-                                            "input tap " + x + " " + y);
-                                    diagnostic("[水果安全点击V4.36] ALLOW START → " + x + "," + y);
-                                    return r.exitCode == 0 && !userAborted;
-                                }
-
-                                if ("水果游戏-关闭道具弹窗".equals(reason)) {
-                                    if (x < 1160 || x > 1325 || y < 740 || y > 960) {
-                                        diagnostic("[水果安全点击V4.36] BLOCK POPUP_X " + x + "," + y);
-                                        return false;
-                                    }
-                                    RootResult r = rootWithPath(suPath,
-                                            "input tap " + x + " " + y);
-                                    diagnostic("[水果安全点击V4.36] ALLOW POPUP_X → " + x + "," + y);
-                                    return r.exitCode == 0 && !userAborted;
-                                }
-
-                                if (!reason.startsWith("水果游戏-配对")) {
-                                    diagnostic("[游戏限制V4.36] 拒绝非水果对象点击：" + reason);
-                                    return false;
-                                }
-
-                                int safeTop = 350;
-                                int safeBottom = 1920;
-                                if (y < safeTop) {
-                                    diagnostic("[水果安全点击V4.36] BLOCK " + x + "," + y
-                                            + " reason=TOP_NO_DROP_ZONE");
-                                    return false;
-                                }
-                                if (y > safeBottom) {
-                                    diagnostic("[水果安全点击V4.36] BLOCK " + x + "," + y
-                                            + " reason=BOTTOM_UI_FORBIDDEN");
-                                    return false;
-                                }
-                                int jx = x + ThreadLocalRandom.current().nextInt(-3, 4);
-                                int jy = y + ThreadLocalRandom.current().nextInt(-3, 4);
-                                if (jy < safeTop || jy > safeBottom) {
-                                    diagnostic("[水果安全点击V4.36] BLOCK jitter=" + jx + "," + jy);
-                                    return false;
-                                }
-                                RootResult r = rootWithPath(
-                                        suPath,
-                                        "input tap " + Math.max(1, jx) + " " + Math.max(1, jy)
-                                );
-                                diagnostic("[水果安全点击V4.36] ALLOW " + reason + " → " + jx + "," + jy);
+                                // Use the detected center exactly; jitter can cross narrow sprite boundaries.
+                                RootResult r = rootWithPath(suPath, "input tap " + x + " " + y);
+                                diagnostic("[水果V4.37.0] 点击 " + reason + " → " + x + "," + y);
                                 return r.exitCode == 0 && !userAborted;
                             }
 
@@ -4245,7 +4208,13 @@ public final class TaskExecutor {
 
                             @Override
                             public ScreenOcr.Snapshot ocr(String reason) {
-                                return captureOcrV45(suPath, reason);
+                                invalidateOcrCacheV411();
+                                ScreenOcr.Snapshot snapshot = captureOcrV45(suPath, reason);
+                                if (snapshot != null && snapshot.width > 0 && snapshot.height > 0) {
+                                    observedWidth = snapshot.width;
+                                    observedHeight = snapshot.height;
+                                }
+                                return snapshot;
                             }
                         }
                 );
@@ -6813,7 +6782,7 @@ public final class TaskExecutor {
                 if (!learningModeV412 && (userAborted || physicalTouchDetected)) {
                     process.destroy();
                     try { process.destroyForcibly(); } catch (Throwable ignored) {}
-                    return new RootResult(-4, stdout.toString(), "manual_takeover_hard_stop");
+                    return new RootResult(-4, snapshotOutput(stdout), "manual_takeover_hard_stop");
                 }
                 if (process.waitFor(100L, TimeUnit.MILLISECONDS)) {
                     finished = true;
@@ -6824,22 +6793,30 @@ public final class TaskExecutor {
             if (!finished) {
                 process.destroy();
                 try { process.destroyForcibly(); } catch (Throwable ignored) {}
-                return new RootResult(-2, stdout.toString(), "timeout");
+                return new RootResult(-2, snapshotOutput(stdout), "timeout");
             }
 
             outThread.join(300L);
             errThread.join(300L);
-            return new RootResult(process.exitValue(), stdout.toString(), stderr.toString());
+            return new RootResult(process.exitValue(), snapshotOutput(stdout), snapshotOutput(stderr));
 
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new RootResult(-4, snapshotOutput(stdout), "interrupted");
         } catch (Throwable t) {
-            return new RootResult(-1, stdout.toString(), t.toString());
+            return new RootResult(-1, snapshotOutput(stdout), t.toString());
         } finally {
             if (process != null) {
+                if (process.isAlive()) process.destroyForcibly();
                 try { process.getInputStream().close(); } catch (Throwable ignored) {}
                 try { process.getErrorStream().close(); } catch (Throwable ignored) {}
                 try { process.getOutputStream().close(); } catch (Throwable ignored) {}
             }
         }
+    }
+
+    private static String snapshotOutput(StringBuilder output) {
+        synchronized (output) { return output.toString(); }
     }
 
     private static final class StreamReader

@@ -22,11 +22,11 @@ public final class AppConfig {
     }
 
     public static int getHour(Context context) {
-        return prefs(context).getInt(KEY_HOUR, DEFAULT_HOUR);
+        return Math.max(0, Math.min(23, prefs(context).getInt(KEY_HOUR, DEFAULT_HOUR)));
     }
 
     public static int getMinute(Context context) {
-        return prefs(context).getInt(KEY_MINUTE, DEFAULT_MINUTE);
+        return Math.max(0, Math.min(59, prefs(context).getInt(KEY_MINUTE, DEFAULT_MINUTE)));
     }
 
     public static boolean isScheduleEnabled(Context context) {
@@ -34,6 +34,8 @@ public final class AppConfig {
     }
 
     public static void saveSchedule(Context context, int hour, int minute) {
+        if (hour < 0 || hour > 23 || minute < 0 || minute > 59)
+            throw new IllegalArgumentException("Invalid schedule time");
         prefs(context).edit()
                 .putInt(KEY_HOUR, hour)
                 .putInt(KEY_MINUTE, minute)

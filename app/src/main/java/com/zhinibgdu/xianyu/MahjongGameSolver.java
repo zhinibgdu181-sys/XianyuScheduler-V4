@@ -538,41 +538,7 @@ final class MahjongGameSolver {
     }
 
     private static boolean runRoot(String suPath, String command, long timeoutMs, Host host) {
-        Process process = null;
-        try {
-            process = Runtime.getRuntime().exec(new String[]{suPath, "-c", command});
-            long end = SystemClock.elapsedRealtime() + Math.max(400L, timeoutMs);
-            while (SystemClock.elapsedRealtime() < end) {
-                if (host.aborted()) {
-                    try { process.destroyForcibly(); } catch (Throwable ignored) {}
-                    return false;
-                }
-                if (process.waitFor(100L, TimeUnit.MILLISECONDS)) {
-                    drain(process.getInputStream());
-                    drain(process.getErrorStream());
-                    return process.exitValue() == 0;
-                }
-            }
-            try { process.destroyForcibly(); } catch (Throwable ignored) {}
-            return false;
-        } catch (Throwable ignored) {
-            return false;
-        } finally {
-            if (process != null) {
-                try { process.destroy(); } catch (Throwable ignored) {}
-            }
-        }
-    }
-
-    private static void drain(InputStream input) {
-        if (input == null) return;
-        try {
-            byte[] buffer = new byte[4096];
-            while (input.read(buffer) >= 0) { /* discard */ }
-        } catch (Throwable ignored) {
-        } finally {
-            try { input.close(); } catch (Throwable ignored) {}
-        }
+        return RootCommandRunner.run(suPath, command, timeoutMs, host::aborted);
     }
 
     private static String shellQuote(String value) {

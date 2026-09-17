@@ -10,6 +10,8 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.util.Log;
 
@@ -26,6 +28,16 @@ public class TaskForegroundService extends Service {
     private static final String MODE_LEARNING = "learning";
 
     private PowerManager.WakeLock wakeLock;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private boolean active;
+    private boolean destroyed;
+    private final Runnable renewWakeLock = new Runnable() {
+        @Override public void run() {
+            if (!active || destroyed) return;
+            acquireWakeLock();
+            mainHandler.postDelayed(this, 5L * 60L * 1000L);
+        }
+    };
 
     public static void start(Context context) {
         startWithMode(context, MODE_AUTO);
@@ -64,9 +76,11 @@ public class TaskForegroundService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        String mode = intent == null
-                ? MODE_AUTO
-                : intent.getStringExtra(EXTRA_MODE);
+        if (intent == null) {
+            if (!active) stopSelf(startId);
+            return START_NOT_STICKY;
+        }
+        String mode = intent.getStringExtra(EXTRA_MODE);
         boolean learning = MODE_LEARNING.equals(mode);
 
         TaskStatusReceiver.writeLog(
@@ -76,7 +90,7 @@ public class TaskForegroundService extends Service {
                 learning ? "前台服务收到真人示范学习请求" : "前台服务收到自动任务请求"
         );
 
-        if (TaskExecutor.isRunning()) {
+        if (active || TaskExecutor.isRunning()) {
             TaskStatusReceiver.writeLog(
                     this,
                     "INFO",
@@ -86,7 +100,12 @@ public class TaskForegroundService extends Service {
             return START_NOT_STICKY;
         }
 
-        Runnable complete = () -> {
+        active = true;
+        mainHandler.post(renewWakeLock);
+        Runnable complete = () -> mainHandler.post(() -> {
+            if (destroyed) return;
+            active = false;
+            mainHandler.removeCallbacks(renewWakeLock);
             TaskStatusReceiver.writeLog(
                     getApplicationContext(),
                     "INFO",
@@ -95,7 +114,7 @@ public class TaskForegroundService extends Service {
             );
             stopForegroundCompat();
             stopSelf();
-        };
+        });
 
         if (learning) {
             TaskExecutor.runLearning(getApplicationContext(), complete);
@@ -113,6 +132,10 @@ public class TaskForegroundService extends Service {
 
     @Override
     public void onDestroy() {
+        destroyed = true;
+        mainHandler.removeCallbacksAndMessages(null);
+        if (active) TaskExecutor.requestStop("前台服务已销毁");
+        active = false;
         try {
             if (wakeLock != null && wakeLock.isHeld()) {
                 wakeLock.release();
@@ -126,11 +149,12 @@ public class TaskForegroundService extends Service {
         try {
             PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
             if (pm == null) return;
-            wakeLock = pm.newWakeLock(
+            if (wakeLock == null) wakeLock = pm.newWakeLock(
                     PowerManager.PARTIAL_WAKE_LOCK,
                     "XianyuScheduler:TaskWakeLock"
             );
-            wakeLock.acquire(30L * 60L * 1000L);
+            wakeLock.setReferenceCounted(false);
+            wakeLock.acquire(10L * 60L * 1000L);
         } catch (Throwable t) {
             Log.e(TAG, "获取 WakeLock 失败", t);
         }

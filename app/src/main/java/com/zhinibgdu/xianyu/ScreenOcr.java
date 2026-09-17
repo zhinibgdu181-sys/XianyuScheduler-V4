@@ -5,7 +5,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Rect;
 
-import com.google.android.gms.tasks.Tasks;
+import com.google.android.gms.tasks.Task;
 import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.text.Text;
 import com.google.mlkit.vision.text.TextRecognition;
@@ -34,129 +34,75 @@ final class ScreenOcr {
     private ScreenOcr() {
     }
 
-    static Snapshot capture(Context context, String suPath) {
-        if (context == null || suPath == null || suPath.trim().isEmpty()) {
-            return Snapshot.empty();
+    private static TextRecognizer sharedRecognizer;
+
+    static synchronized void close() {
+        if (sharedRecognizer != null) {
+            try { sharedRecognizer.close(); } catch (Exception ignored) {}
+            sharedRecognizer = null;
         }
+    }
 
-        File dir = context.getExternalFilesDir(null);
-        if (dir == null) return Snapshot.empty();
-        if (!dir.exists() && !dir.mkdirs()) return Snapshot.empty();
-
-        File screenshot = new File(
-                dir,
-                "xianyu_ocr_" + android.os.Process.myPid() + ".png"
-        );
-
-        String path = screenshot.getAbsolutePath();
-        String command = "rm -f " + shellQuote(path)
-                + "; screencap -p " + shellQuote(path)
-                + "; chmod 0644 " + shellQuote(path);
-
-        if (!runRoot(suPath, command)) {
-            safeDelete(screenshot);
-            return Snapshot.empty();
-        }
-
-        Bitmap bitmap = BitmapFactory.decodeFile(path);
-        if (bitmap == null) {
-            safeDelete(screenshot);
-            return Snapshot.empty();
-        }
-
+    static synchronized Snapshot capture(Context context, String suPath,
+                                         RootCommandRunner.Cancellation cancellation) {
+        if (context == null || suPath == null || suPath.trim().isEmpty()) return Snapshot.empty();
+        File screenshot = null;
+        Bitmap bitmap = null;
         TextRecognizer recognizer = null;
+        Task<Text> pending = null;
         try {
-            InputImage image = InputImage.fromBitmap(bitmap, 0);
-            recognizer = TextRecognition.getClient(
-                    new ChineseTextRecognizerOptions.Builder().build()
-            );
-
-            Text result = Tasks.await(
-                    recognizer.process(image),
-                    OCR_TIMEOUT_MS,
-                    TimeUnit.MILLISECONDS
-            );
-
+            File dir = context.getExternalFilesDir(null);
+            if (dir == null || (!dir.exists() && !dir.mkdirs())) return Snapshot.empty();
+            screenshot = File.createTempFile("xianyu_ocr_", ".png", dir);
+            String path = shellQuote(screenshot.getAbsolutePath());
+            if (!RootCommandRunner.run(suPath, "screencap -p " + path + " && chmod 0644 " + path,
+                    ROOT_TIMEOUT_MS, cancellation)) return Snapshot.empty();
+            bitmap = BitmapFactory.decodeFile(screenshot.getAbsolutePath());
+            if (bitmap == null) return Snapshot.empty();
+            if (sharedRecognizer == null)
+                sharedRecognizer = TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
+            recognizer = sharedRecognizer;
+            pending = recognizer.process(InputImage.fromBitmap(bitmap, 0));
+            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(OCR_TIMEOUT_MS);
+            while (!pending.isComplete()) {
+                if (System.nanoTime() >= deadline || (cancellation != null && cancellation.cancelled()))
+                    return Snapshot.empty();
+                Thread.sleep(100L);
+            }
+            if (cancellation != null && cancellation.cancelled()) return Snapshot.empty();
+            Text result = pending.getResult();
             List<Item> items = new ArrayList<>();
             if (result != null) {
                 for (Text.TextBlock block : result.getTextBlocks()) {
                     for (Text.Line line : block.getLines()) {
                         String text = normalize(line.getText());
                         Rect bounds = line.getBoundingBox();
-                        if (!text.isEmpty() && bounds != null) {
-                            items.add(new Item(text, new Rect(bounds)));
-                        }
+                        if (!text.isEmpty() && bounds != null) items.add(new Item(text, new Rect(bounds)));
                     }
                 }
             }
-
-            String fullText = result == null ? "" : normalize(result.getText());
-            return new Snapshot(
-                    fullText,
-                    items,
-                    bitmap.getWidth(),
-                    bitmap.getHeight()
-            );
-
-        } catch (Throwable ignored) {
+            return new Snapshot(result == null ? "" : normalize(result.getText()), items,
+                    bitmap.getWidth(), bitmap.getHeight());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Snapshot.empty();
+        } catch (Exception e) {
             return Snapshot.empty();
         } finally {
-            if (recognizer != null) {
-                try {
-                    recognizer.close();
-                } catch (Throwable ignored) {
-                }
-            }
-            try {
+            if (pending != null && !pending.isComplete()) {
+                // ML Kit may still be reading the input after our timeout. It owns these
+                // resources until completion; the next request gets a new recognizer.
+                sharedRecognizer = null;
+                final Bitmap heldBitmap = bitmap;
+                final TextRecognizer heldRecognizer = recognizer;
+                pending.addOnCompleteListener(Runnable::run, done -> {
+                    if (heldBitmap != null) heldBitmap.recycle();
+                    if (heldRecognizer != null) heldRecognizer.close();
+                });
+            } else if (bitmap != null) {
                 bitmap.recycle();
-            } catch (Throwable ignored) {
             }
             safeDelete(screenshot);
-        }
-    }
-
-    private static boolean runRoot(String suPath, String command) {
-        Process process = null;
-        try {
-            process = Runtime.getRuntime().exec(
-                    new String[]{suPath, "-c", command}
-            );
-            boolean finished = process.waitFor(ROOT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-            if (!finished) {
-                try {
-                    process.destroyForcibly();
-                } catch (Throwable ignored) {
-                }
-                return false;
-            }
-            drain(process.getInputStream());
-            drain(process.getErrorStream());
-            return process.exitValue() == 0;
-        } catch (Throwable ignored) {
-            return false;
-        } finally {
-            if (process != null) {
-                try {
-                    process.destroy();
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-    }
-
-    private static void drain(InputStream input) {
-        if (input == null) return;
-        try {
-            byte[] buffer = new byte[4096];
-            while (input.read(buffer) >= 0) {
-                // discard
-            }
-        } catch (Throwable ignored) {
-        } finally {
-            try {
-                input.close();
-            } catch (Throwable ignored) {
-            }
         }
     }
 

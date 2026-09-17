@@ -1,0 +1,1207 @@
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -38,6 +38,9 @@
+           java -version
+           gradle --version
+ 
++      - name: Offline regression (JVM test doubles)
++        run: bash offline-tests/run.sh
++
+       - name: Build Debug APK
+         run: |
+           gradle assembleDebug --stacktrace --no-daemon
+@@ -49,6 +52,6 @@
+       - name: Upload APK
+         uses: actions/upload-artifact@v4
+         with:
+-          name: xianyu-v4-debug
++          name: xianyu-v4.37.0-debug
+           path: app/build/outputs/apk/**/*.apk
+           if-no-files-found: error
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -11,8 +11,8 @@
+         minSdk = 26
+         targetSdk = 35
+ 
+-        versionCode = 41
+-        versionName = "4.36.5"
++        versionCode = 42
++        versionName = "4.37.0"
+     }
+ 
+     buildTypes {
+--- a/app/src/main/java/com/zhinibgdu/xianyu/AlarmReceiver.java
++++ b/app/src/main/java/com/zhinibgdu/xianyu/AlarmReceiver.java
+@@ -10,6 +10,10 @@
+     public void onReceive(Context context, Intent intent) {
+         Context app = context.getApplicationContext();
+ 
++        if (!AppConfig.isScheduleEnabled(app)) {
++            TaskStatusReceiver.writeLog(app, "INFO", "调度", "定时已关闭，忽略旧闹钟");
++            return;
++        }
+         // Schedule tomorrow first so an executor crash cannot break the daily chain.
+         if (AppConfig.isScheduleEnabled(app)) {
+             boolean nextScheduled = MainActivity.schedule(
+--- a/app/src/main/java/com/zhinibgdu/xianyu/AppConfig.java
++++ b/app/src/main/java/com/zhinibgdu/xianyu/AppConfig.java
+@@ -22,11 +22,11 @@
+     }
+ 
+     public static int getHour(Context context) {
+-        return prefs(context).getInt(KEY_HOUR, DEFAULT_HOUR);
++        return Math.max(0, Math.min(23, prefs(context).getInt(KEY_HOUR, DEFAULT_HOUR)));
+     }
+ 
+     public static int getMinute(Context context) {
+-        return prefs(context).getInt(KEY_MINUTE, DEFAULT_MINUTE);
++        return Math.max(0, Math.min(59, prefs(context).getInt(KEY_MINUTE, DEFAULT_MINUTE)));
+     }
+ 
+     public static boolean isScheduleEnabled(Context context) {
+@@ -34,6 +34,8 @@
+     }
+ 
+     public static void saveSchedule(Context context, int hour, int minute) {
++        if (hour < 0 || hour > 23 || minute < 0 || minute > 59)
++            throw new IllegalArgumentException("Invalid schedule time");
+         prefs(context).edit()
+                 .putInt(KEY_HOUR, hour)
+                 .putInt(KEY_MINUTE, minute)
+--- a/app/src/main/java/com/zhinibgdu/xianyu/BootReceiver.java
++++ b/app/src/main/java/com/zhinibgdu/xianyu/BootReceiver.java
+@@ -8,7 +8,7 @@
+ public class BootReceiver extends BroadcastReceiver {
+     @Override
+     public void onReceive(Context context, Intent intent) {
+-        if (!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) return;
++        if (intent == null || !Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) return;
+         if (!AppConfig.isScheduleEnabled(context)) return;
+ 
+         boolean ok = MainActivity.schedule(
+--- a/app/src/main/java/com/zhinibgdu/xianyu/FruitGameSolver.java
++++ b/app/src/main/java/com/zhinibgdu/xianyu/FruitGameSolver.java
+@@ -17,28 +17,11 @@
+ import java.util.regex.Pattern;
+ 
+ /**
+- * V4.36.5 视觉小游戏模块："消了还想消"水果配对。
+- *
+- * 规则：点击水果会进入下方坑位；两个相同水果自动消除；坑位最多3个。
+- * 安全策略：只点击高置信度的完整同类对 A->A，一次只处理一对。
+- * 只允许点击水果对象本身。禁止点击“打乱”“消除”“解锁”等任何游戏功能按钮。
+- * 找不到高置信度对子时直接安全停止。
+- *
+- * V4.36.3 改进：
+- * 1. 决策引擎：视觉置信度只是硬门槛，在可靠对子中优先处理底层、低风险、高释放价值组合。
+- * 2. Observe→Evaluate→Act→Verify→Replan：点A后重新截图定位B，不使用已经失效的旧坐标。
+- * 3. 每一对都用“剩余 N→N-2”闭环验证；失败组合进入本局黑名单并安全停止。
+- * 4. 保留功能按钮禁区，不点击打乱/消除/解锁/使用。
+- * 5. SAFE_STOP 拆分 CLEAN/DIRTY；点击过水果但未验证成功时禁止外层二次求解。
+- * 6. 把长时间无操作自动出现的“解锁/消除/打乱”推广窗作为异步遮挡层处理。
+- * 7. 可下落性改成“竖直自由落体 + V形漏斗”模型：按水果当前 x 计算左右斜坡的真实接触高度；
+- *    中央开口直接通向坑洞，不再把整个底部简化成同一条水平线。
+- * 8. 检测 ROI 向漏斗方向延伸，完整保留贴着漏斗上沿的最底层水果；旧版恰好会裁掉这批最容易下落的水果。
+- * 9. 碰撞宽度改用 shape mask 主体分位宽度，忽略叶片/透明边的少量外扩，降低相邻列误判。
+- * 10. A 下落后重新计算整张棋盘的遮挡关系，B 必须在新局面中仍然可直接下落才允许点击。
+- *
+- * 这个实现不依赖 OpenCV。它把截图缩放到约720px宽，利用蓝色背景分割、
+- * 连通域、归一化图块颜色/形状相似度寻找重复水果。
++ * V4.37.0: screenshot-driven fruit pairing.
++ * Detect complete sprites, recover touching instances from current-frame templates,
++ * exclude modeled blockers, then choose the lowest reliable pair.
++ * Re-observe after each tap; only a verified remaining-count decrease of two
++ * permits the next pair. Physics and sprite completeness still require device tests.
+  */
+ final class FruitGameSolver {
+ 
+@@ -52,6 +35,7 @@
+ 
+     interface Host {
+         boolean tap(int x, int y, String reason);
++        default void onFrameSize(int width, int height) {}
+         boolean sleep(long minMs, long maxMs);
+         boolean aborted();
+         void log(String message);
+@@ -64,7 +48,7 @@
+     private static final long MAX_ROUND_MS = 30L * 60L * 1000L;
+     private static final int MAX_PAIR_ACTIONS = 130;
+ 
+-    // V4.36.5：截图回放中底部同类受采样/压缩影响约0.978~0.982。
++    // V4.37.0：截图回放中底部同类受采样/压缩影响约0.978~0.982。
+     // 总分与更严格的RGB、直方图、形状三个门槛共同判断；不逐轮降低阈值。
+     private static final double MIN_PAIR_SCORE = 0.975;
+     private static final double MAX_RGB_MAD = 0.035;
+@@ -167,6 +151,10 @@
+ 
+         int remaining = parseRemaining(firstText);
+         int progress = parsePercent(firstText);
++        if (remaining < 2) {
++            host.log("[水果V4.37.0] 未获得有效剩余数基线；不开始新对子");
++            return isRoundCompleted(firstText) ? Result.COMPLETED : Result.SAFE_STOP_CLEAN;
++        }
+         host.log("[游戏V4.36] ✅ 识别水果游戏"
+                 + (remaining >= 0 ? " / 剩余=" + remaining : "")
+                 + (progress >= 0 ? " / 进度=" + progress + "%" : ""));
+@@ -211,12 +199,15 @@
+                 continue;
+             }
+ 
++            long visionStarted = SystemClock.elapsedRealtime();
+             List<FruitObject> objects = detectFruitObjects(frame);
+-
+-            // V4.36.5：使用完整候选表检查障碍物；受阻对象不得点击。
++            host.log("[视觉V4.37.0] 检测耗时=" + (SystemClock.elapsedRealtime()-visionStarted)
++                    + "ms / 候选=" + objects.size());
++
++            // V4.37.0：使用完整候选表检查障碍物；受阻对象不得点击。
+             DropAnalysis drop = analyzeDroppability(objects, frame.bitmap.getWidth(), frame.bitmap.getHeight());
+             List<FruitObject> droppableObjects = drop.droppable;
+-            host.log("[下落V4.36.5] 识别水果=" + objects.size()
++            host.log("[下落V4.37.0] 识别水果=" + objects.size()
+                     + " / 可直接下落=" + droppableObjects.size()
+                     + " / 被遮挡=" + drop.blocked.size()
+                     + blockedSummary(drop, frame));
+@@ -236,7 +227,7 @@
+                 }
+             }
+ 
+-            host.log("[游戏V4.36.5] 可配对候选=" + objects.size()
++            host.log("[游戏V4.37.0] 参与分析对象=" + objects.size()
+                     + " / 总水果=" + objects.size()
+                     + " / 顶部禁区<" + Math.round(frame.originalHeight * 0.115f)
+                     + " / 漏斗外沿≈" + Math.round(frame.originalHeight * FUNNEL_OUTER_Y_FRAC)
+@@ -272,7 +263,7 @@
+                     return Result.COMPLETED;
+                 }
+ 
+-                host.log("[游戏V4.36.5] 当前没有‘可直接下落 + 高置信同类’对子"
++                host.log("[游戏V4.37.0] 当前没有‘可直接下落 + 高置信同类’对子"
+                         + (drop.blocked.isEmpty() ? "" : "；仍有被遮挡水果，暂不做单槽冒险试探")
+                         + "，CLEAN安全停止");
+                 return Result.SAFE_STOP_CLEAN;
+@@ -287,7 +278,7 @@
+             FruitObject expectedB = pair.b;
+             safeRecycle(frame.bitmap);
+ 
+-            host.log("[决策V4.36.5] 选择当前可下落动作 / A=(" + ax + "," + ay + ")"
++            host.log("[决策V4.37.0] 选择当前可下落动作 / A=(" + ax + "," + ay + ")"
+                     + " / 计划B=(" + plannedBx + "," + plannedBy + ")"
+                     + " / visual=" + format(pair.score)
+                     + " / decision=" + format(pair.decisionScore)
+@@ -322,7 +313,8 @@
+             DropAnalysis afterDrop = analyzeDroppability(afterObjects, afterA.bitmap.getWidth(), afterA.bitmap.getHeight());
+ 
+             // 先确认 A 这一击真的改变了棋盘。
+-            // 物理规则已经保证 A 点击前“下落通道畅通”，这里再用“原位目标 + 总对象数变化”
++            // 上一步只是视觉模型预测可下落；原位对象仍存在时不能证明进入坑位。
++            // 使用原位目标复核
+             // 做第二层验证。若原位仍是同一水果，不因其它对象漏检而继续点B。
+             FruitMatch stillA = findMatchingFruitNear(
+                     pair.a, afterObjects, pair.a.centerX, pair.a.centerY,
+@@ -333,15 +325,17 @@
+                 int stillAx = mapX(afterA, stillA.fruit.centerX);
+                 int stillAy = mapY(afterA, stillA.fruit.centerY);
+                 safeRecycle(afterA.bitmap);
+-                host.log("[点击验证V4.36.5] A点击后目标仍在原位附近 → ("
++                host.log("[点击验证V4.37.0] A点击后目标仍在原位附近 → ("
+                         + stillAx + "," + stillAy + ")"
+                         + " / sim=" + format(stillA.similarity.score)
+                         + " / 对象数变化=" + beforeObjectCount + "→" + afterObjects.size()
+-                        + " / 判定A未成功掉入坑洞；不点B，屏蔽该位置后重新规划");
+-                continue;
+-            }
+-
+-            host.log("[点击验证V4.36.5] A后重建遮挡图 / 水果=" + afterObjects.size()
++                        + " / 未确认A进入坑位；不点B，保留现场停止");
++                // A may have been selected without falling; never assume an empty slot.
++                host.log("[水果V4.37.0] A仍在原位，坑位状态无法确认；不继续点其它水果");
++                return Result.SAFE_STOP_DIRTY;
++            }
++
++            host.log("[点击验证V4.37.0] A后重建遮挡图 / 水果=" + afterObjects.size()
+                     + " / 可直接下落=" + afterDrop.droppable.size()
+                     + " / 被遮挡=" + afterDrop.blocked.size()
+                     + " / 对象数变化=" + beforeObjectCount + "→" + afterObjects.size());
+@@ -351,7 +345,7 @@
+                     expectedB, afterObjects,
+                     afterA.bitmap.getWidth(), afterA.bitmap.getHeight());
+             if (reacquired == null) {
+-                host.log("[水果V4.36.5] 未能重新定位路径畅通且视觉可靠的B；停止，不盲点");
++                host.log("[水果V4.37.0] 未能重新定位路径畅通且视觉可靠的B；停止，不盲点");
+                 safeRecycle(afterA.bitmap);
+                 return Result.SAFE_STOP_DIRTY;
+             }
+@@ -364,7 +358,7 @@
+                     / Math.max(1.0, afterA.bitmap.getHeight());
+             safeRecycle(afterA.bitmap);
+ 
+-            host.log("[决策V4.36.5] B可下落重定位 / 原计划=("
++            host.log("[决策V4.37.0] B可下落重定位 / 原计划=("
+                     + plannedBx + "," + plannedBy + ") → 新B=(" + bx + "," + by + ")"
+                     + " / sim=" + format(reacquired.similarity.score)
+                     + " rgb=" + format(1.0 - reacquired.similarity.rgbMad)
+@@ -397,7 +391,7 @@
+                             reacquiredB, postBObjects, reacquiredB.centerX, reacquiredB.centerY,
+                             postB.bitmap.getWidth(), postB.bitmap.getHeight(),
+                             0.025, 0.015, MIN_PAIR_SCORE);
+-                    host.log("[点击验证V4.36.5] B后对象数=" + afterObjects.size()
++                    host.log("[点击验证V4.37.0] B后对象数=" + afterObjects.size()
+                             + "→" + postBObjects.size()
+                             + (stillB == null ? " / B原位未检出"
+                             : " / B原位仍有同类 sim=" + format(stillB.similarity.score)));
+@@ -416,7 +410,7 @@
+             if (!isRoundCompleted(verifyText)
+                     && (afterRemaining < 0 || afterRemaining == beforeRemaining)) {
+                 if (!host.sleep(900L, 1200L)) return Result.ABORTED;
+-                ScreenOcr.Snapshot retry = host.ocr("水果V4.36.5/消除延迟复核");
++                ScreenOcr.Snapshot retry = host.ocr("水果V4.37.0/消除延迟复核");
+                 if (host.aborted()) return Result.ABORTED;
+                 verifyText = normalize(retry == null ? "" : retry.fullText);
+                 afterRemaining = parseRemaining(verifyText);
+@@ -425,62 +419,17 @@
+                 host.log("[验证V4.36] ✅ 第1关完成");
+                 return Result.COMPLETED;
+             }
+-            if (afterRemaining >= 0) {
+-                if (beforeRemaining >= 0 && afterRemaining == beforeRemaining - 2) {
+-                    host.log("[验证V4.36] ✅ 配对确认：" + beforeRemaining + "→" + afterRemaining
+-                            + " / 本次决策有效，重新分析新局面");
+-                    remaining = afterRemaining;
+-                    // 棋盘已经重排，旧的“不可点击位置”坐标不再有意义。
+-                    blockedPositions.clear();
+-                } else if (beforeRemaining >= 0 && afterRemaining >= beforeRemaining) {
+-                    failedPairs.add(pairKeyV435(pair.a, pair.b));
+-                    host.log("[验证V4.36] ❌ 未确认消除：" + beforeRemaining + "→" + afterRemaining
+-                            + " / 当前视觉组合加入黑名单；坑位可能已有异类水果，DIRTY安全停止");
+-                    saveCurrentFrameDiagnostic(context, suPath, host,
+-                            "pair_fail_" + beforeRemaining + "_to_" + afterRemaining
+-                                    + "_score_" + format(pair.score).replace('.', '_'));
+-                    return Result.SAFE_STOP_DIRTY;
+-                } else {
+-                    host.log("[验证V4.36] 状态发生变化：" + beforeRemaining + "→" + afterRemaining
+-                            + " / 重新建图");
+-                    remaining = afterRemaining;
+-                }
+-            } else {
+-                host.log("[验证V4.36] OCR未读到剩余数；保留视觉结果并重新建图");
+-            }
+-
+-            // OCR is intentionally sparse; screenshot vision handles most pairs.
+-            // Every few pairs verify that the game is still progressing / ended.
+-            if (pairActions % 6 == 0) {
+-                ScreenOcr.Snapshot checkpoint = host.ocr(
+-                        "水果游戏V4.36/进度检查#" + pairActions);
+-                if (host.aborted()) return Result.ABORTED;
+-                String text = normalize(checkpoint == null ? "" : checkpoint.fullText);
+-
+-                int nowRemaining = parseRemaining(text);
+-                int nowProgress = parsePercent(text);
+-                host.log("[游戏V4.36] 进度检查 pair=" + pairActions
+-                        + (nowRemaining >= 0 ? " / 剩余=" + nowRemaining : "")
+-                        + (nowProgress >= 0 ? " / " + nowProgress + "%" : ""));
+-
+-                if (isRoundCompleted(text)) {
+-                    host.log("[游戏V4.36] ✅ 第1关完成");
+-                    return Result.COMPLETED;
+-                }
+-
+-                // If we unexpectedly left the fruit game, do not continue tapping.
+-                if (!text.isEmpty() && !looksLikeFruitGame(text)) {
+-                    if (looksLikeTaskPanel(text)) {
+-                        host.log("[游戏V4.36] 已自动返回任务面板，按完成流程交给外层验证");
+-                        return Result.COMPLETED;
+-                    }
+-                    host.log("[游戏V4.36] 页面已离开水果游戏，停止继续点击");
+-                    return Result.SAFE_STOP_CLEAN;
+-                }
+-
+-                if (nowRemaining >= 0) remaining = nowRemaining;
+-                if (nowProgress >= 0) progress = nowProgress;
+-            }
++            if (!PairVerification.confirmed(beforeRemaining, afterRemaining)) {
++                failedPairs.add(pairKeyV435(pair.a, pair.b));
++                host.log("[水果V4.37.0] 未确认完整消除：" + beforeRemaining + "→" + afterRemaining
++                        + "；停止，不把OCR缺失/减少1个当作成功");
++                saveCurrentFrameDiagnostic(context, suPath, host, "pair_unverified");
++                return Result.SAFE_STOP_DIRTY;
++            }
++            host.log("[水果V4.37.0] 配对确认：" + beforeRemaining + "→" + afterRemaining);
++            remaining = afterRemaining;
++            blockedPositions.clear();
++
+         }
+ 
+         if (host.aborted()) return Result.ABORTED;
+@@ -664,44 +613,39 @@
+     }
+ 
+     private static GameFrame captureFrame(Context context, String suPath, Host host) {
+-        File dir = context.getExternalFilesDir(null);
+-        if (dir == null) return null;
+-        if (!dir.exists() && !dir.mkdirs()) return null;
+-
+-        File file = new File(dir, "xianyu_fruit_v436_" + android.os.Process.myPid() + ".png");
+-        String path = file.getAbsolutePath();
+-        String cmd = "rm -f " + shellQuote(path)
+-                + "; screencap -p " + shellQuote(path)
+-                + "; chmod 0644 " + shellQuote(path);
+-
+-        if (!runRoot(suPath, cmd, SCREENSHOT_TIMEOUT_MS, host)) {
++        File file = null;
++        Bitmap original = null;
++        Bitmap analysis = null;
++        try {
++            File dir = context.getExternalFilesDir(null);
++            if (dir == null || (!dir.exists() && !dir.mkdirs())) return null;
++            file = File.createTempFile("xianyu_fruit_", ".png", dir);
++            String path = shellQuote(file.getAbsolutePath());
++            if (!runRoot(suPath, "screencap -p " + path + " && chmod 0644 " + path,
++                    SCREENSHOT_TIMEOUT_MS, host) || host.aborted()) return null;
++            original = BitmapFactory.decodeFile(file.getAbsolutePath());
++            if (original == null) return null;
++            int ow = original.getWidth(), oh = original.getHeight();
++            if (ow <= 0 || oh <= 0) return null;
++            analysis = original;
++            if (ow > ANALYSIS_WIDTH) {
++                int ah = Math.max(1, Math.round((float)oh * ANALYSIS_WIDTH / ow));
++                analysis = Bitmap.createScaledBitmap(original, ANALYSIS_WIDTH, ah, true);
++                if (analysis != original) safeRecycle(original);
++            }
++            host.onFrameSize(ow, oh);
++            GameFrame result = new GameFrame(analysis, ow, oh);
++            original = null;
++            analysis = null; // ownership transferred to caller
++            return result;
++        } catch (Exception e) {
++            host.log("[水果V4.37.0] 截图失败：" + e.getClass().getSimpleName());
++            return null;
++        } finally {
+             safeDelete(file);
+-            return null;
+-        }
+-        if (host.aborted()) {
+-            safeDelete(file);
+-            return null;
+-        }
+-
+-        Bitmap original = BitmapFactory.decodeFile(path);
+-        safeDelete(file);
+-        if (original == null) return null;
+-
+-        int ow = original.getWidth();
+-        int oh = original.getHeight();
+-        if (ow <= 0 || oh <= 0) {
++            if (analysis != original) safeRecycle(analysis);
+             safeRecycle(original);
+-            return null;
+-        }
+-
+-        Bitmap analysis = original;
+-        if (ow > ANALYSIS_WIDTH) {
+-            int ah = Math.max(1, Math.round((float) oh * ANALYSIS_WIDTH / ow));
+-            analysis = Bitmap.createScaledBitmap(original, ANALYSIS_WIDTH, ah, true);
+-            if (analysis != original) safeRecycle(original);
+-        }
+-
+-        return new GameFrame(analysis, ow, oh);
++        }
+     }
+ 
+     private static List<FruitObject> detectFruitObjects(GameFrame frame) {
+@@ -893,6 +837,8 @@
+             sum += Math.abs(((c>>16)&255)/255f - t.rgb[k*3]);
+             sum += Math.abs(((c>>8)&255)/255f - t.rgb[k*3+1]);
+             sum += Math.abs((c&255)/255f - t.rgb[k*3+2]);
++            double cutoff = requested == 24 ? .080 : .048;
++            if (sum > cutoff * n * 3) return 1.0;
+         }
+         return sum / (n * 3);
+     }
+@@ -1150,33 +1096,7 @@
+     }
+ 
+     /**
+-     * V4.36.4 下落路径软评分。
+-     * 返回0~1，不再简单使用BLOCKED/可掉二分类。
+-     */
+-    private static double dropPathScore(FruitObject fruit,
+-                                        List<FruitObject> objects,
+-                                        int frameWidth,
+-                                        int frameHeight) {
+-        FruitObject blocker = findNearestBlockingFruit(
+-                fruit, objects, frameWidth, frameHeight);
+-        if (blocker == null) {
+-            return 1.0;
+-        }
+-
+-        double gap = blocker.centerY - fruit.centerY;
+-        double h = Math.max(1.0, fruit.height());
+-
+-        // 很近的正面阻挡风险最高；较远阻挡允许后续下落/滑入。
+-        double risk = Math.max(0.0, Math.min(1.0, gap / (h * 5.0)));
+-        return 0.25 + 0.55 * risk;
+-    }
+-
+-    private static PairChoice chooseBestPair(List<FruitObject> objects) {
+-        return chooseBestPairWithThreshold(objects, 1080, 2400, MIN_PAIR_SCORE, null, null);
+-    }
+-
+-    /**
+-     * V4.36.5 决策引擎：对全量对象检查阻挡；这里不是单纯找
++     * V4.37.0 决策引擎：对全量对象检查阻挡；这里不是单纯找
+      * “最像的一对”，而是在所有“可直接掉入坑洞”的可靠对子中综合考虑视觉置信度、
+      * 底层优先、两颗水果都处于低位和纵向跨度。
+      * 视觉阈值仍然是硬门槛，决策分只负责在“已经可靠”的对子之间排序。
+@@ -1194,8 +1114,13 @@
+         float maxY = 1f;
+         for (FruitObject f : objects) maxY = Math.max(maxY, f.centerY);
+ 
++        Set<FruitObject> clear = new HashSet<>();
++        for (FruitObject f : objects) {
++            if (findNearestBlockingFruit(f, objects, frameWidth, frameHeight) == null) clear.add(f);
++        }
+         for (int i = 0; i < objects.size(); i++) {
+             FruitObject a = objects.get(i);
++            if (!clear.contains(a)) continue;
+             for (int j = i + 1; j < objects.size(); j++) {
+                 FruitObject b = objects.get(j);
+ 
+@@ -1211,8 +1136,7 @@
+                     if (blacklist.contains(key)) continue;
+                 }
+ 
+-                if (findNearestBlockingFruit(a, objects, frameWidth, frameHeight) != null
+-                        || findNearestBlockingFruit(b, objects, frameWidth, frameHeight) != null) continue;
++                if (!clear.contains(b)) continue;
+                 Similarity sim = similarity(a, b);
+                 if (sim.rgbMad > MAX_RGB_MAD
+                         || sim.histCos < MIN_HIST_COS
+@@ -1226,9 +1150,7 @@
+                 double compactness = 1.0 - Math.min(1.0, verticalGap);
+ 
+                 // 受阻对象已在上方硬性排除，路径分用于记录。
+-                double dropA = dropPathScore(a, objects, frameWidth, frameHeight);
+-                double dropB = dropPathScore(b, objects, frameWidth, frameHeight);
+-                double dropScore = Math.min(dropA, dropB);
++                double dropScore = 1.0;
+ 
+                 double decision = 0.50 * sim.score
+                         + 0.18 * lowerBoth
+@@ -1507,49 +1429,8 @@
+         for (int i = 0; i < values.length; i++) values[i] *= inv;
+     }
+ 
+-    private static boolean runRoot(
+-            String suPath,
+-            String command,
+-            long timeoutMs,
+-            Host host
+-    ) {
+-        Process process = null;
+-        try {
+-            process = Runtime.getRuntime().exec(new String[]{suPath, "-c", command});
+-            long end = SystemClock.elapsedRealtime() + Math.max(400L, timeoutMs);
+-            while (SystemClock.elapsedRealtime() < end) {
+-                if (host.aborted()) {
+-                    try { process.destroyForcibly(); } catch (Throwable ignored) {}
+-                    return false;
+-                }
+-                if (process.waitFor(100L, TimeUnit.MILLISECONDS)) {
+-                    drain(process.getInputStream());
+-                    drain(process.getErrorStream());
+-                    return process.exitValue() == 0;
+-                }
+-            }
+-            try { process.destroyForcibly(); } catch (Throwable ignored) {}
+-            return false;
+-        } catch (Throwable ignored) {
+-            return false;
+-        } finally {
+-            if (process != null) {
+-                try { process.destroy(); } catch (Throwable ignored) {}
+-            }
+-        }
+-    }
+-
+-    private static void drain(InputStream input) {
+-        if (input == null) return;
+-        try {
+-            byte[] buffer = new byte[4096];
+-            while (input.read(buffer) >= 0) {
+-                // discard
+-            }
+-        } catch (Throwable ignored) {
+-        } finally {
+-            try { input.close(); } catch (Throwable ignored) {}
+-        }
++    private static boolean runRoot(String suPath, String command, long timeoutMs, Host host) {
++        return RootCommandRunner.run(suPath, command, timeoutMs, host::aborted);
+     }
+ 
+     private static String shellQuote(String value) {
+--- a/app/src/main/java/com/zhinibgdu/xianyu/GameTapPolicy.java
++++ b/app/src/main/java/com/zhinibgdu/xianyu/GameTapPolicy.java
+@@ -0,0 +1,16 @@
++package com.zhinibgdu.xianyu;
++
++/** Coordinates are normalized to the screenshot dimensions, never a device model. */
++final class GameTapPolicy {
++    private GameTapPolicy() {}
++    static boolean allows(int x, int y, int width, int height, String reason) {
++        if (width <= 0 || height <= 0 || x < 0 || y < 0 || x >= width || y >= height) return false;
++        double nx = x / (double) width, ny = y / (double) height;
++        if ("水果游戏-开始游戏".equals(reason))
++            return nx >= 560.0/1440 && nx <= 880.0/1440 && ny >= 2180.0/3120 && ny <= 2500.0/3120;
++        if ("水果游戏-关闭道具弹窗".equals(reason))
++            return nx >= 1160.0/1440 && nx <= 1325.0/1440 && ny >= 740.0/3120 && ny <= 960.0/3120;
++        if (!"水果游戏-配对A".equals(reason) && !"水果游戏-配对B".equals(reason)) return false;
++        return ny >= .115 && ny <= .625;
++    }
++}
+--- a/app/src/main/java/com/zhinibgdu/xianyu/MahjongGameSolver.java
++++ b/app/src/main/java/com/zhinibgdu/xianyu/MahjongGameSolver.java
+@@ -538,41 +538,7 @@
+     }
+ 
+     private static boolean runRoot(String suPath, String command, long timeoutMs, Host host) {
+-        Process process = null;
+-        try {
+-            process = Runtime.getRuntime().exec(new String[]{suPath, "-c", command});
+-            long end = SystemClock.elapsedRealtime() + Math.max(400L, timeoutMs);
+-            while (SystemClock.elapsedRealtime() < end) {
+-                if (host.aborted()) {
+-                    try { process.destroyForcibly(); } catch (Throwable ignored) {}
+-                    return false;
+-                }
+-                if (process.waitFor(100L, TimeUnit.MILLISECONDS)) {
+-                    drain(process.getInputStream());
+-                    drain(process.getErrorStream());
+-                    return process.exitValue() == 0;
+-                }
+-            }
+-            try { process.destroyForcibly(); } catch (Throwable ignored) {}
+-            return false;
+-        } catch (Throwable ignored) {
+-            return false;
+-        } finally {
+-            if (process != null) {
+-                try { process.destroy(); } catch (Throwable ignored) {}
+-            }
+-        }
+-    }
+-
+-    private static void drain(InputStream input) {
+-        if (input == null) return;
+-        try {
+-            byte[] buffer = new byte[4096];
+-            while (input.read(buffer) >= 0) { /* discard */ }
+-        } catch (Throwable ignored) {
+-        } finally {
+-            try { input.close(); } catch (Throwable ignored) {}
+-        }
++        return RootCommandRunner.run(suPath, command, timeoutMs, host::aborted);
+     }
+ 
+     private static String shellQuote(String value) {
+--- a/app/src/main/java/com/zhinibgdu/xianyu/PairVerification.java
++++ b/app/src/main/java/com/zhinibgdu/xianyu/PairVerification.java
+@@ -0,0 +1,9 @@
++package com.zhinibgdu.xianyu;
++
++/** An OCR miss or an unexpected count change is not evidence of a cleared slot. */
++final class PairVerification {
++    private PairVerification() {}
++    static boolean confirmed(int before, int after) {
++        return before >= 2 && after >= 0 && before - after == 2;
++    }
++}
+--- a/app/src/main/java/com/zhinibgdu/xianyu/RootCommandRunner.java
++++ b/app/src/main/java/com/zhinibgdu/xianyu/RootCommandRunner.java
+@@ -0,0 +1,40 @@
++package com.zhinibgdu.xianyu;
++
++import java.io.File;
++import java.util.concurrent.TimeUnit;
++
++/** Bounded execution for screenshot commands whose output is deliberately unused. */
++final class RootCommandRunner {
++    interface Cancellation { boolean cancelled(); }
++    private RootCommandRunner() {}
++    static boolean run(String executable, String command, long timeoutMs, Cancellation cancellation) {
++        Process process = null;
++        try {
++            if (cancellation != null && cancellation.cancelled()) return false;
++            // Redirect before waiting: a full stdout/stderr pipe cannot deadlock the child.
++            process = new ProcessBuilder(executable, "-c", command)
++                    .redirectErrorStream(true).redirectOutput(new File("/dev/null")).start();
++            process.getOutputStream().close();
++            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(1L, timeoutMs));
++            while (System.nanoTime() < deadline) {
++                if (cancellation != null && cancellation.cancelled()) return false;
++                long leftMs = Math.max(1L, TimeUnit.NANOSECONDS.toMillis(deadline-System.nanoTime()));
++                if (process.waitFor(Math.min(100L, leftMs), TimeUnit.MILLISECONDS))
++                    return process.exitValue() == 0 && (cancellation == null || !cancellation.cancelled());
++            }
++            return false;
++        } catch (InterruptedException e) {
++            Thread.currentThread().interrupt();
++            return false;
++        } catch (Exception e) {
++            return false;
++        } finally {
++            if (process != null) {
++                if (process.isAlive()) process.destroyForcibly();
++                try { process.getInputStream().close(); } catch (Exception ignored) {}
++                try { process.getErrorStream().close(); } catch (Exception ignored) {}
++                try { process.getOutputStream().close(); } catch (Exception ignored) {}
++            }
++        }
++    }
++}
+--- a/app/src/main/java/com/zhinibgdu/xianyu/ScreenOcr.java
++++ b/app/src/main/java/com/zhinibgdu/xianyu/ScreenOcr.java
+@@ -5,7 +5,7 @@
+ import android.graphics.BitmapFactory;
+ import android.graphics.Rect;
+ 
+-import com.google.android.gms.tasks.Tasks;
++import com.google.android.gms.tasks.Task;
+ import com.google.mlkit.vision.common.InputImage;
+ import com.google.mlkit.vision.text.Text;
+ import com.google.mlkit.vision.text.TextRecognition;
+@@ -34,129 +34,75 @@
+     private ScreenOcr() {
+     }
+ 
+-    static Snapshot capture(Context context, String suPath) {
+-        if (context == null || suPath == null || suPath.trim().isEmpty()) {
+-            return Snapshot.empty();
+-        }
+-
+-        File dir = context.getExternalFilesDir(null);
+-        if (dir == null) return Snapshot.empty();
+-        if (!dir.exists() && !dir.mkdirs()) return Snapshot.empty();
+-
+-        File screenshot = new File(
+-                dir,
+-                "xianyu_ocr_" + android.os.Process.myPid() + ".png"
+-        );
+-
+-        String path = screenshot.getAbsolutePath();
+-        String command = "rm -f " + shellQuote(path)
+-                + "; screencap -p " + shellQuote(path)
+-                + "; chmod 0644 " + shellQuote(path);
+-
+-        if (!runRoot(suPath, command)) {
+-            safeDelete(screenshot);
+-            return Snapshot.empty();
+-        }
+-
+-        Bitmap bitmap = BitmapFactory.decodeFile(path);
+-        if (bitmap == null) {
+-            safeDelete(screenshot);
+-            return Snapshot.empty();
+-        }
+-
++    private static TextRecognizer sharedRecognizer;
++
++    static synchronized void close() {
++        if (sharedRecognizer != null) {
++            try { sharedRecognizer.close(); } catch (Exception ignored) {}
++            sharedRecognizer = null;
++        }
++    }
++
++    static synchronized Snapshot capture(Context context, String suPath,
++                                         RootCommandRunner.Cancellation cancellation) {
++        if (context == null || suPath == null || suPath.trim().isEmpty()) return Snapshot.empty();
++        File screenshot = null;
++        Bitmap bitmap = null;
+         TextRecognizer recognizer = null;
++        Task<Text> pending = null;
+         try {
+-            InputImage image = InputImage.fromBitmap(bitmap, 0);
+-            recognizer = TextRecognition.getClient(
+-                    new ChineseTextRecognizerOptions.Builder().build()
+-            );
+-
+-            Text result = Tasks.await(
+-                    recognizer.process(image),
+-                    OCR_TIMEOUT_MS,
+-                    TimeUnit.MILLISECONDS
+-            );
+-
++            File dir = context.getExternalFilesDir(null);
++            if (dir == null || (!dir.exists() && !dir.mkdirs())) return Snapshot.empty();
++            screenshot = File.createTempFile("xianyu_ocr_", ".png", dir);
++            String path = shellQuote(screenshot.getAbsolutePath());
++            if (!RootCommandRunner.run(suPath, "screencap -p " + path + " && chmod 0644 " + path,
++                    ROOT_TIMEOUT_MS, cancellation)) return Snapshot.empty();
++            bitmap = BitmapFactory.decodeFile(screenshot.getAbsolutePath());
++            if (bitmap == null) return Snapshot.empty();
++            if (sharedRecognizer == null)
++                sharedRecognizer = TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
++            recognizer = sharedRecognizer;
++            pending = recognizer.process(InputImage.fromBitmap(bitmap, 0));
++            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(OCR_TIMEOUT_MS);
++            while (!pending.isComplete()) {
++                if (System.nanoTime() >= deadline || (cancellation != null && cancellation.cancelled()))
++                    return Snapshot.empty();
++                Thread.sleep(100L);
++            }
++            if (cancellation != null && cancellation.cancelled()) return Snapshot.empty();
++            Text result = pending.getResult();
+             List<Item> items = new ArrayList<>();
+             if (result != null) {
+                 for (Text.TextBlock block : result.getTextBlocks()) {
+                     for (Text.Line line : block.getLines()) {
+                         String text = normalize(line.getText());
+                         Rect bounds = line.getBoundingBox();
+-                        if (!text.isEmpty() && bounds != null) {
+-                            items.add(new Item(text, new Rect(bounds)));
+-                        }
++                        if (!text.isEmpty() && bounds != null) items.add(new Item(text, new Rect(bounds)));
+                     }
+                 }
+             }
+-
+-            String fullText = result == null ? "" : normalize(result.getText());
+-            return new Snapshot(
+-                    fullText,
+-                    items,
+-                    bitmap.getWidth(),
+-                    bitmap.getHeight()
+-            );
+-
+-        } catch (Throwable ignored) {
++            return new Snapshot(result == null ? "" : normalize(result.getText()), items,
++                    bitmap.getWidth(), bitmap.getHeight());
++        } catch (InterruptedException e) {
++            Thread.currentThread().interrupt();
++            return Snapshot.empty();
++        } catch (Exception e) {
+             return Snapshot.empty();
+         } finally {
+-            if (recognizer != null) {
+-                try {
+-                    recognizer.close();
+-                } catch (Throwable ignored) {
+-                }
+-            }
+-            try {
++            if (pending != null && !pending.isComplete()) {
++                // ML Kit may still be reading the input after our timeout. It owns these
++                // resources until completion; the next request gets a new recognizer.
++                sharedRecognizer = null;
++                final Bitmap heldBitmap = bitmap;
++                final TextRecognizer heldRecognizer = recognizer;
++                pending.addOnCompleteListener(Runnable::run, done -> {
++                    if (heldBitmap != null) heldBitmap.recycle();
++                    if (heldRecognizer != null) heldRecognizer.close();
++                });
++            } else if (bitmap != null) {
+                 bitmap.recycle();
+-            } catch (Throwable ignored) {
+             }
+             safeDelete(screenshot);
+-        }
+-    }
+-
+-    private static boolean runRoot(String suPath, String command) {
+-        Process process = null;
+-        try {
+-            process = Runtime.getRuntime().exec(
+-                    new String[]{suPath, "-c", command}
+-            );
+-            boolean finished = process.waitFor(ROOT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+-            if (!finished) {
+-                try {
+-                    process.destroyForcibly();
+-                } catch (Throwable ignored) {
+-                }
+-                return false;
+-            }
+-            drain(process.getInputStream());
+-            drain(process.getErrorStream());
+-            return process.exitValue() == 0;
+-        } catch (Throwable ignored) {
+-            return false;
+-        } finally {
+-            if (process != null) {
+-                try {
+-                    process.destroy();
+-                } catch (Throwable ignored) {
+-                }
+-            }
+-        }
+-    }
+-
+-    private static void drain(InputStream input) {
+-        if (input == null) return;
+-        try {
+-            byte[] buffer = new byte[4096];
+-            while (input.read(buffer) >= 0) {
+-                // discard
+-            }
+-        } catch (Throwable ignored) {
+-        } finally {
+-            try {
+-                input.close();
+-            } catch (Throwable ignored) {
+-            }
+         }
+     }
+ 
+--- a/app/src/main/java/com/zhinibgdu/xianyu/TaskExecutor.java
++++ b/app/src/main/java/com/zhinibgdu/xianyu/TaskExecutor.java
+@@ -324,7 +324,7 @@
+         diagnostic(
+                 learning
+                         ? "========== 真人示范学习开始 · V4.13 =========="
+-                        : "========== 闲鱼任务开始 · V4.36.5 =========="
++                        : "========== 闲鱼任务开始 · V4.37.0 =========="
+         );
+ 
+         if (learning) {
+@@ -354,8 +354,10 @@
+                                 t
+                         );
+                     } finally {
++                        learningStopRequestedV412 = true;
+                         stopPhysicalTouchMonitorV48();
+                         stopLearningSamplerV412();
++                        ScreenOcr.close();
+                         Process lp = learningInputProcessV412;
+                         learningInputProcessV412 = null;
+                         if (lp != null) {
+@@ -366,7 +368,6 @@
+                         boolean wasLearning = learningModeV412;
+                         learningModeV412 = false;
+                         learningStopRequestedV412 = false;
+-                        running = false;
+                         inBounceTask = false;
+ 
+                         diagnostic(
+@@ -390,6 +391,7 @@
+                                 diagnostic("完成回调异常", callbackError);
+                             }
+                         }
++                        running = false;
+                     }
+                 },
+                 learning ? "XianyuLearn-V413" : "XianyuTask-V415"
+@@ -739,7 +741,8 @@
+ 
+         Thread t = new Thread(() -> {
+             long helperSince = 0L;
+-            while (running && learningModeV412 && !learningStopRequestedV412) {
++            while (running && learningModeV412 && !learningStopRequestedV412
++                    && !Thread.currentThread().isInterrupted()) {
+                 try {
+                     String fg = getFg(suPath, false);
+ 
+@@ -794,7 +797,7 @@
+             String suPath,
+             String reason
+     ) {
+-        if (!learningModeV412 || learningStopRequestedV412) {
++        if (!learningModeV412 || learningStopRequestedV412 || Thread.currentThread().isInterrupted()) {
+             return learningLastPageV412;
+         }
+ 
+@@ -2010,7 +2013,8 @@
+             return cached;
+         }
+ 
+-        ScreenOcr.Snapshot snapshot = ScreenOcr.capture(lastContext, suPath);
++        ScreenOcr.Snapshot snapshot = ScreenOcr.capture(lastContext, suPath,
++                () -> learningModeV412 ? learningStopRequestedV412 : (userAborted || physicalTouchDetected));
+         if (snapshot != null && !snapshot.isEmpty()) {
+             cachedOcrV411 = snapshot;
+             cachedOcrAtV411 = now;
+@@ -4146,7 +4150,7 @@
+             String suPath,
+             String taskName
+     ) {
+-        diagnostic("[水果V4.36.5] 启动水果配对求解器：" + taskName);
++        diagnostic("[水果V4.37.0] 启动水果配对求解器：" + taskName);
+         if (!paceSleepV415(260L, 420L)) return false;
+ 
+         gameIncompleteHoldV421 = false;
+@@ -4164,67 +4168,26 @@
+                         lastContext,
+                         suPath,
+                         new FruitGameSolver.Host() {
++                            private int observedWidth;
++                            private int observedHeight;
++
++                            @Override
++                            public void onFrameSize(int width, int height) {
++                                observedWidth = width;
++                                observedHeight = height;
++                            }
++
+                             @Override
+                             public boolean tap(int x, int y, String reason) {
+                                 if (userAborted || physicalTouchDetected) return false;
+-                                if (reason == null) {
+-                                    diagnostic("[游戏限制V4.36] 拒绝无reason点击");
++                                if (!GameTapPolicy.allows(x, y, observedWidth, observedHeight, reason)) {
++                                    diagnostic("[水果V4.37.0] 拒绝越界/非白名单点击：" + reason
++                                            + " @" + x + "," + y + " / " + observedWidth + "x" + observedHeight);
+                                     return false;
+                                 }
+-
+-                                // V4.36：两个唯一允许的非水果点击：
+-                                // 1) 开始游戏；2) 自动弹出的解锁/消除/打乱推荐弹窗右上角X。
+-                                // 坐标必须同时落在极窄白名单，防止误点“使用/消除/打乱/解锁”。
+-                                if ("水果游戏-开始游戏".equals(reason)) {
+-                                    if (x < 560 || x > 880 || y < 2180 || y > 2500) {
+-                                        diagnostic("[水果安全点击V4.36] BLOCK START " + x + "," + y);
+-                                        return false;
+-                                    }
+-                                    RootResult r = rootWithPath(suPath,
+-                                            "input tap " + x + " " + y);
+-                                    diagnostic("[水果安全点击V4.36] ALLOW START → " + x + "," + y);
+-                                    return r.exitCode == 0 && !userAborted;
+-                                }
+-
+-                                if ("水果游戏-关闭道具弹窗".equals(reason)) {
+-                                    if (x < 1160 || x > 1325 || y < 740 || y > 960) {
+-                                        diagnostic("[水果安全点击V4.36] BLOCK POPUP_X " + x + "," + y);
+-                                        return false;
+-                                    }
+-                                    RootResult r = rootWithPath(suPath,
+-                                            "input tap " + x + " " + y);
+-                                    diagnostic("[水果安全点击V4.36] ALLOW POPUP_X → " + x + "," + y);
+-                                    return r.exitCode == 0 && !userAborted;
+-                                }
+-
+-                                if (!reason.startsWith("水果游戏-配对")) {
+-                                    diagnostic("[游戏限制V4.36] 拒绝非水果对象点击：" + reason);
+-                                    return false;
+-                                }
+-
+-                                int safeTop = 350;
+-                                int safeBottom = 1920;
+-                                if (y < safeTop) {
+-                                    diagnostic("[水果安全点击V4.36] BLOCK " + x + "," + y
+-                                            + " reason=TOP_NO_DROP_ZONE");
+-                                    return false;
+-                                }
+-                                if (y > safeBottom) {
+-                                    diagnostic("[水果安全点击V4.36] BLOCK " + x + "," + y
+-                                            + " reason=BOTTOM_UI_FORBIDDEN");
+-                                    return false;
+-                                }
+-                                int jx = x + ThreadLocalRandom.current().nextInt(-3, 4);
+-                                int jy = y + ThreadLocalRandom.current().nextInt(-3, 4);
+-                                if (jy < safeTop || jy > safeBottom) {
+-                                    diagnostic("[水果安全点击V4.36] BLOCK jitter=" + jx + "," + jy);
+-                                    return false;
+-                                }
+-                                RootResult r = rootWithPath(
+-                                        suPath,
+-                                        "input tap " + Math.max(1, jx) + " " + Math.max(1, jy)
+-                                );
+-                                diagnostic("[水果安全点击V4.36] ALLOW " + reason + " → " + jx + "," + jy);
++                                // Use the detected center exactly; jitter can cross narrow sprite boundaries.
++                                RootResult r = rootWithPath(suPath, "input tap " + x + " " + y);
++                                diagnostic("[水果V4.37.0] 点击 " + reason + " → " + x + "," + y);
+                                 return r.exitCode == 0 && !userAborted;
+                             }
+ 
+@@ -4245,7 +4208,13 @@
+ 
+                             @Override
+                             public ScreenOcr.Snapshot ocr(String reason) {
+-                                return captureOcrV45(suPath, reason);
++                                invalidateOcrCacheV411();
++                                ScreenOcr.Snapshot snapshot = captureOcrV45(suPath, reason);
++                                if (snapshot != null && snapshot.width > 0 && snapshot.height > 0) {
++                                    observedWidth = snapshot.width;
++                                    observedHeight = snapshot.height;
++                                }
++                                return snapshot;
+                             }
+                         }
+                 );
+@@ -6813,7 +6782,7 @@
+                 if (!learningModeV412 && (userAborted || physicalTouchDetected)) {
+                     process.destroy();
+                     try { process.destroyForcibly(); } catch (Throwable ignored) {}
+-                    return new RootResult(-4, stdout.toString(), "manual_takeover_hard_stop");
++                    return new RootResult(-4, snapshotOutput(stdout), "manual_takeover_hard_stop");
+                 }
+                 if (process.waitFor(100L, TimeUnit.MILLISECONDS)) {
+                     finished = true;
+@@ -6824,22 +6793,30 @@
+             if (!finished) {
+                 process.destroy();
+                 try { process.destroyForcibly(); } catch (Throwable ignored) {}
+-                return new RootResult(-2, stdout.toString(), "timeout");
++                return new RootResult(-2, snapshotOutput(stdout), "timeout");
+             }
+ 
+             outThread.join(300L);
+             errThread.join(300L);
+-            return new RootResult(process.exitValue(), stdout.toString(), stderr.toString());
+-
++            return new RootResult(process.exitValue(), snapshotOutput(stdout), snapshotOutput(stderr));
++
++        } catch (InterruptedException e) {
++            Thread.currentThread().interrupt();
++            return new RootResult(-4, snapshotOutput(stdout), "interrupted");
+         } catch (Throwable t) {
+-            return new RootResult(-1, stdout.toString(), t.toString());
++            return new RootResult(-1, snapshotOutput(stdout), t.toString());
+         } finally {
+             if (process != null) {
++                if (process.isAlive()) process.destroyForcibly();
+                 try { process.getInputStream().close(); } catch (Throwable ignored) {}
+                 try { process.getErrorStream().close(); } catch (Throwable ignored) {}
+                 try { process.getOutputStream().close(); } catch (Throwable ignored) {}
+             }
+         }
++    }
++
++    private static String snapshotOutput(StringBuilder output) {
++        synchronized (output) { return output.toString(); }
+     }
+ 
+     private static final class StreamReader
+--- a/app/src/main/java/com/zhinibgdu/xianyu/TaskForegroundService.java
++++ b/app/src/main/java/com/zhinibgdu/xianyu/TaskForegroundService.java
+@@ -10,6 +10,8 @@
+ import android.content.pm.ServiceInfo;
+ import android.os.Build;
+ import android.os.IBinder;
++import android.os.Handler;
++import android.os.Looper;
+ import android.os.PowerManager;
+ import android.util.Log;
+ 
+@@ -26,6 +28,16 @@
+     private static final String MODE_LEARNING = "learning";
+ 
+     private PowerManager.WakeLock wakeLock;
++    private final Handler mainHandler = new Handler(Looper.getMainLooper());
++    private boolean active;
++    private boolean destroyed;
++    private final Runnable renewWakeLock = new Runnable() {
++        @Override public void run() {
++            if (!active || destroyed) return;
++            acquireWakeLock();
++            mainHandler.postDelayed(this, 5L * 60L * 1000L);
++        }
++    };
+ 
+     public static void start(Context context) {
+         startWithMode(context, MODE_AUTO);
+@@ -64,9 +76,11 @@
+ 
+     @Override
+     public int onStartCommand(Intent intent, int flags, int startId) {
+-        String mode = intent == null
+-                ? MODE_AUTO
+-                : intent.getStringExtra(EXTRA_MODE);
++        if (intent == null) {
++            if (!active) stopSelf(startId);
++            return START_NOT_STICKY;
++        }
++        String mode = intent.getStringExtra(EXTRA_MODE);
+         boolean learning = MODE_LEARNING.equals(mode);
+ 
+         TaskStatusReceiver.writeLog(
+@@ -76,7 +90,7 @@
+                 learning ? "前台服务收到真人示范学习请求" : "前台服务收到自动任务请求"
+         );
+ 
+-        if (TaskExecutor.isRunning()) {
++        if (active || TaskExecutor.isRunning()) {
+             TaskStatusReceiver.writeLog(
+                     this,
+                     "INFO",
+@@ -86,7 +100,12 @@
+             return START_NOT_STICKY;
+         }
+ 
+-        Runnable complete = () -> {
++        active = true;
++        mainHandler.post(renewWakeLock);
++        Runnable complete = () -> mainHandler.post(() -> {
++            if (destroyed) return;
++            active = false;
++            mainHandler.removeCallbacks(renewWakeLock);
+             TaskStatusReceiver.writeLog(
+                     getApplicationContext(),
+                     "INFO",
+@@ -95,7 +114,7 @@
+             );
+             stopForegroundCompat();
+             stopSelf();
+-        };
++        });
+ 
+         if (learning) {
+             TaskExecutor.runLearning(getApplicationContext(), complete);
+@@ -113,6 +132,10 @@
+ 
+     @Override
+     public void onDestroy() {
++        destroyed = true;
++        mainHandler.removeCallbacksAndMessages(null);
++        if (active) TaskExecutor.requestStop("前台服务已销毁");
++        active = false;
+         try {
+             if (wakeLock != null && wakeLock.isHeld()) {
+                 wakeLock.release();
+@@ -126,11 +149,12 @@
+         try {
+             PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+             if (pm == null) return;
+-            wakeLock = pm.newWakeLock(
++            if (wakeLock == null) wakeLock = pm.newWakeLock(
+                     PowerManager.PARTIAL_WAKE_LOCK,
+                     "XianyuScheduler:TaskWakeLock"
+             );
+-            wakeLock.acquire(30L * 60L * 1000L);
++            wakeLock.setReferenceCounted(false);
++            wakeLock.acquire(10L * 60L * 1000L);
+         } catch (Throwable t) {
+             Log.e(TAG, "获取 WakeLock 失败", t);
+         }
+--- a/app/src/main/java/com/zhinibgdu/xianyu/TaskStatusReceiver.java
++++ b/app/src/main/java/com/zhinibgdu/xianyu/TaskStatusReceiver.java
+@@ -113,7 +113,7 @@
+                         for (File f : files) {
+                             if (f == null) continue;
+                             try {
+-                                if (f.isFile()) f.delete();
++                                if (f.isFile() && !f.delete()) ok = false;
+                             } catch (Throwable ignored) {
+                             }
+                         }
+@@ -126,7 +126,7 @@
+             try {
+                 File learnLog = new File(dir, LEARNING_LOG_FILE_NAME);
+                 if (learnLog.exists()) {
+-                    try { learnLog.delete(); } catch (Throwable ignored) {}
++                    try { if (!learnLog.delete()) ok = false; } catch (Throwable ignored) { ok = false; }
+                 }
+             } catch (Throwable ignored) {
+             }
+@@ -221,7 +221,10 @@
+             if (read > 0) {
+                 try (FileOutputStream out = new FileOutputStream(file, false)) {
+                     out.write("===== 日志自动截断 =====\n".getBytes(StandardCharsets.UTF_8));
+-                    out.write(data, 0, read);
++                    int start = 0;
++                    while (start < read && data[start] != '\n') start++;
++                    if (start < read) start++;
++                    out.write(data, start, read - start);
+                 }
+             }
+         } catch (Throwable ignored) {

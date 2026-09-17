@@ -113,7 +113,7 @@ public final class TaskStatusReceiver {
                         for (File f : files) {
                             if (f == null) continue;
                             try {
-                                if (f.isFile()) f.delete();
+                                if (f.isFile() && !f.delete()) ok = false;
                             } catch (Throwable ignored) {
                             }
                         }
@@ -126,7 +126,7 @@ public final class TaskStatusReceiver {
             try {
                 File learnLog = new File(dir, LEARNING_LOG_FILE_NAME);
                 if (learnLog.exists()) {
-                    try { learnLog.delete(); } catch (Throwable ignored) {}
+                    try { if (!learnLog.delete()) ok = false; } catch (Throwable ignored) { ok = false; }
                 }
             } catch (Throwable ignored) {
             }
@@ -221,7 +221,10 @@ public final class TaskStatusReceiver {
             if (read > 0) {
                 try (FileOutputStream out = new FileOutputStream(file, false)) {
                     out.write("===== 日志自动截断 =====\n".getBytes(StandardCharsets.UTF_8));
-                    out.write(data, 0, read);
+                    int start = 0;
+                    while (start < read && data[start] != '\n') start++;
+                    if (start < read) start++;
+                    out.write(data, start, read - start);
                 }
             }
         } catch (Throwable ignored) {

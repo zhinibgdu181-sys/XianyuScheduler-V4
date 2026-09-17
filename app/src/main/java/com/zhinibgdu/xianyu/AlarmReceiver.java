@@ -10,6 +10,10 @@ public class AlarmReceiver extends BroadcastReceiver {
     public void onReceive(Context context, Intent intent) {
         Context app = context.getApplicationContext();
 
+        if (!AppConfig.isScheduleEnabled(app)) {
+            TaskStatusReceiver.writeLog(app, "INFO", "调度", "定时已关闭，忽略旧闹钟");
+            return;
+        }
         // Schedule tomorrow first so an executor crash cannot break the daily chain.
         if (AppConfig.isScheduleEnabled(app)) {
             boolean nextScheduled = MainActivity.schedule(
