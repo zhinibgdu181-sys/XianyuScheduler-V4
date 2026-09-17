@@ -17,20 +17,22 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * V4.36.1 视觉小游戏模块："消了还想消"水果配对。
+ * V4.36.2 视觉小游戏模块："消了还想消"水果配对。
  *
  * 规则：点击水果会进入下方坑位；两个相同水果自动消除；坑位最多3个。
  * 安全策略：只点击高置信度的完整同类对 A->A，一次只处理一对。
  * 只允许点击水果对象本身。禁止点击“打乱”“消除”“解锁”等任何游戏功能按钮。
  * 找不到高置信度对子时直接安全停止。
  *
- * V4.36.1 改进：
+ * V4.36.2 改进：
  * 1. 决策引擎：视觉置信度只是硬门槛，在可靠对子中优先处理底层、低风险、高释放价值组合。
  * 2. Observe→Evaluate→Act→Verify→Replan：点A后重新截图定位B，不使用已经失效的旧坐标。
  * 3. 每一对都用“剩余 N→N-2”闭环验证；失败组合进入本局黑名单并安全停止。
  * 4. 保留功能按钮禁区，不点击打乱/消除/解锁/使用。
  * 5. SAFE_STOP 拆分 CLEAN/DIRTY；点击过水果但未验证成功时禁止外层二次求解。
  * 6. 把长时间无操作自动出现的“解锁/消除/打乱”推广窗作为异步遮挡层处理。
+ * 7. 新增真实“可下落性”建模：水果只有到下方坑洞的竖直通道没有被其它水果挡住，才允许进入点击候选。
+ * 8. A 下落后重新计算整张棋盘的遮挡关系，B 必须在新局面中仍然可直接下落才允许点击。
  *
  * 这个实现不依赖 OpenCV。它把截图缩放到约720px宽，利用蓝色背景分割、
  * 连通域、归一化图块颜色/形状相似度寻找重复水果。
@@ -194,21 +196,33 @@ final class FruitGameSolver {
 
             List<FruitObject> objects = detectFruitObjects(frame);
 
-            // V4.36 保守阈值：不再向 0.93/0.88/0.83 降级
+            // V4.36.2：真正按游戏物理规则判断“可下落”。
+            // 只有水果到底部坑洞的竖直扫掠通道没有被其它水果占据，才允许点击。
+            DropAnalysis drop = analyzeDroppability(objects);
+            List<FruitObject> droppableObjects = drop.droppable;
+            host.log("[下落V4.36.2] 识别水果=" + objects.size()
+                    + " / 可直接下落=" + droppableObjects.size()
+                    + " / 被遮挡=" + drop.blocked.size()
+                    + blockedSummary(drop, frame));
+
+            // V4.36 保守阈值：不再向 0.93/0.88/0.83 降级。
+            // V4.36.2 更进一步：只在物理上可直接掉入坑洞的水果中寻找对子。
             PairChoice pair = null;
             double hitThreshold = MIN_PAIR_SCORE;
             for (double t : FALLBACK_THRESHOLDS_V436) {
-                pair = chooseBestPairWithThreshold(objects, t, failedPairs, blockedPositions);
+                pair = chooseBestPairWithThreshold(
+                        droppableObjects, t, failedPairs, blockedPositions);
                 if (pair != null) {
                     hitThreshold = t;
                     break;
                 }
             }
 
-            host.log("[游戏V4.36] 可下落候选水果=" + objects.size()
+            host.log("[游戏V4.36.2] 可配对候选=" + droppableObjects.size()
+                    + " / 总水果=" + objects.size()
                     + " / 顶部禁区<" + Math.round(frame.originalHeight * 0.115f)
                     + " / 底部禁区>" + Math.round(frame.originalHeight * 0.615f)
-                    + (pair == null ? " / 无高置信对子" :
+                    + (pair == null ? " / 无可下落高置信对子" :
                     " / 最佳对子=" + format(pair.score)
                             + " rgb=" + format(pair.rgbSimilarity)
                             + " hist=" + format(pair.histCos)
@@ -239,11 +253,14 @@ final class FruitGameSolver {
                     return Result.COMPLETED;
                 }
 
-                host.log("[游戏V4.36] 高置信阈值下无可靠对子，CLEAN安全停止");
+                host.log("[游戏V4.36.2] 当前没有‘可直接下落 + 高置信同类’对子"
+                        + (drop.blocked.isEmpty() ? "" : "；仍有被遮挡水果，暂不做单槽冒险试探")
+                        + "，CLEAN安全停止");
                 return Result.SAFE_STOP_CLEAN;
             }
 
             int beforeRemaining = remaining;
+            int beforeObjectCount = objects.size();
             int ax = mapX(frame, pair.a.centerX);
             int ay = mapY(frame, pair.a.centerY);
             int plannedBx = mapX(frame, pair.b.centerX);
@@ -251,12 +268,12 @@ final class FruitGameSolver {
             FruitObject expectedB = pair.b;
             safeRecycle(frame.bitmap);
 
-            host.log("[决策V4.36.1] 选择当前动作 / A=(" + ax + "," + ay + ")"
+            host.log("[决策V4.36.2] 选择当前可下落动作 / A=(" + ax + "," + ay + ")"
                     + " / 计划B=(" + plannedBx + "," + plannedBy + ")"
                     + " / visual=" + format(pair.score)
                     + " / decision=" + format(pair.decisionScore)
                     + " / lower=" + format(pair.lowerBoth)
-                    + " / 原因=可靠同类+底层优先+释放空间");
+                    + " / 原因=下落通道畅通+可靠同类+底层优先");
 
             // 只执行一步，然后重新观察。A 下落后旧的 B 坐标立即作废。
             if (!host.tap(ax, ay, "水果游戏-配对A")) {
@@ -283,34 +300,54 @@ final class FruitGameSolver {
             }
 
             List<FruitObject> afterObjects = detectFruitObjects(afterA);
+            DropAnalysis afterDrop = analyzeDroppability(afterObjects);
 
-            // 先确认 A 这一击真的改变了棋盘。此前日志只知道“发出了 tap”，
-            // 无法区分“水果被点走”和“水果被遮挡/不可点，仍停在原位”。
-            // 若 A 仍在原位置附近，则本次没有污染坑位：只屏蔽这个位置并重新规划，
-            // 绝不继续点 B。
+            // 先确认 A 这一击真的改变了棋盘。
+            // 物理规则已经保证 A 点击前“下落通道畅通”，这里再用“原位目标 + 总对象数变化”
+            // 做第二层验证。若原位仍是同一水果且对象数没有减少，则认为 A 没有掉入坑洞。
             FruitMatch stillA = findMatchingFruitNear(
                     pair.a, afterObjects, pair.a.centerX, pair.a.centerY,
                     afterA.bitmap.getWidth(), afterA.bitmap.getHeight(),
                     0.060, 0.050, 0.990);
-            if (stillA != null) {
+            int objectDeltaAfterA = beforeObjectCount - afterObjects.size();
+            if (stillA != null && objectDeltaAfterA <= 0) {
                 blockedPositions.add(positionKeyV4361(pair.a));
                 int stillAx = mapX(afterA, stillA.fruit.centerX);
                 int stillAy = mapY(afterA, stillA.fruit.centerY);
                 safeRecycle(afterA.bitmap);
-                host.log("[点击验证V4.36.1] A点击后目标仍在原位附近 → ("
+                host.log("[点击验证V4.36.2] A点击后目标仍在原位附近 → ("
                         + stillAx + "," + stillAy + ")"
                         + " / sim=" + format(stillA.similarity.score)
-                        + " / 判定A未成功下落；不点B，屏蔽该位置后重新规划");
+                        + " / 对象数变化=" + beforeObjectCount + "→" + afterObjects.size()
+                        + " / 判定A未成功掉入坑洞；不点B，屏蔽该位置后重新规划");
                 continue;
             }
 
+            host.log("[点击验证V4.36.2] A后重建遮挡图 / 水果=" + afterObjects.size()
+                    + " / 可直接下落=" + afterDrop.droppable.size()
+                    + " / 被遮挡=" + afterDrop.blocked.size()
+                    + " / 对象数变化=" + beforeObjectCount + "→" + afterObjects.size());
+
+            // B 不能只“长得像”；它在 A 下落后的新局面里也必须仍然可以直接掉入坑洞。
             FruitMatch reacquired = findBestMatchingFruit(
-                    expectedB, afterObjects,
+                    expectedB, afterDrop.droppable,
                     afterA.bitmap.getWidth(), afterA.bitmap.getHeight());
             if (reacquired == null) {
+                FruitMatch existingB = findBestMatchingFruit(
+                        expectedB, afterObjects,
+                        afterA.bitmap.getWidth(), afterA.bitmap.getHeight());
+                if (existingB != null) {
+                    FruitObject blocker = findNearestBlockingFruit(existingB.fruit, afterObjects);
+                    host.log("[下落V4.36.2] B仍存在但没有进入‘可直接下落’候选"
+                            + (blocker == null ? "" : " / blocker=("
+                            + mapX(afterA, blocker.centerX) + ","
+                            + mapY(afterA, blocker.centerY) + ")")
+                            + "；A可能已进入坑位，DIRTY安全停止");
+                } else {
+                    host.log("[游戏V4.36.2] A已离开原位，但无法在合理范围重新定位可下落B；"
+                            + "A可能已占用坑位，DIRTY安全停止");
+                }
                 safeRecycle(afterA.bitmap);
-                host.log("[游戏V4.36.1] A已离开原位，但无法在合理下落范围内重新定位B；"
-                        + "A可能已占用坑位，DIRTY安全停止");
                 return Result.SAFE_STOP_DIRTY;
             }
             FruitObject reacquiredB = reacquired.fruit;
@@ -322,7 +359,7 @@ final class FruitGameSolver {
                     / Math.max(1.0, afterA.bitmap.getHeight());
             safeRecycle(afterA.bitmap);
 
-            host.log("[决策V4.36.1] B空间约束重定位 / 原计划=("
+            host.log("[决策V4.36.2] B可下落重定位 / 原计划=("
                     + plannedBx + "," + plannedBy + ") → 新B=(" + bx + "," + by + ")"
                     + " / sim=" + format(reacquired.similarity.score)
                     + " rgb=" + format(1.0 - reacquired.similarity.rgbMad)
@@ -350,6 +387,15 @@ final class FruitGameSolver {
                     }
                     host.log("[弹窗V4.36] B后弹窗已关闭；继续用剩余数验证本对子");
                 } else {
+                    List<FruitObject> postBObjects = detectFruitObjects(postB);
+                    FruitMatch stillB = findMatchingFruitNear(
+                            reacquiredB, postBObjects, reacquiredB.centerX, reacquiredB.centerY,
+                            postB.bitmap.getWidth(), postB.bitmap.getHeight(),
+                            0.060, 0.050, 0.990);
+                    host.log("[点击验证V4.36.2] B后对象数=" + afterObjects.size()
+                            + "→" + postBObjects.size()
+                            + (stillB == null ? " / B原位未检出"
+                            : " / B原位仍有同类 sim=" + format(stillB.similarity.score)));
                     safeRecycle(postB.bitmap);
                 }
             } else {
@@ -803,9 +849,96 @@ final class FruitGameSolver {
         if (foregroundSamples < GRID * GRID * 0.30) return null;
         normalizeL2(hist);
 
-        float centerX = (c.minX + c.maxX) * 0.5f;
-        float centerY = roiTop + (c.minY + c.maxY) * 0.5f;
-        return new FruitObject(centerX, centerY, rgb, shape, hist);
+        float left = c.minX;
+        float right = c.maxX;
+        float top = roiTop + c.minY;
+        float bottom = roiTop + c.maxY;
+        float centerX = (left + right) * 0.5f;
+        float centerY = (top + bottom) * 0.5f;
+        return new FruitObject(centerX, centerY, left, top, right, bottom,
+                rgb, shape, hist);
+    }
+
+    /**
+     * V4.36.2 物理可达性：点击后水果只会向下掉入坑洞。
+     * 如果它的竖直扫掠通道内存在另一颗更靠下的水果，就判定为 BLOCKED。
+     * 这里使用真实连通域 bbox，而不是仅按 y 坐标“底层优先”。
+     */
+    private static DropAnalysis analyzeDroppability(List<FruitObject> objects) {
+        List<FruitObject> droppable = new ArrayList<>();
+        List<BlockingRelation> blocked = new ArrayList<>();
+        if (objects == null || objects.isEmpty()) {
+            return new DropAnalysis(droppable, blocked);
+        }
+
+        for (FruitObject fruit : objects) {
+            FruitObject blocker = findNearestBlockingFruit(fruit, objects);
+            if (blocker == null) {
+                droppable.add(fruit);
+            } else {
+                blocked.add(new BlockingRelation(fruit, blocker));
+            }
+        }
+        return new DropAnalysis(droppable, blocked);
+    }
+
+    /**
+     * 返回 fruit 正下方最先会碰到的水果。返回 null 表示到坑洞的竖直通道畅通。
+     *
+     * 横向判断采用“收窄后的水果 bbox 扫掠通道 + 最小重叠量”，避免把明显相邻的
+     * 两列水果误判成互相阻挡；同时保留一个中心距约束，适配圆形/椭圆形水果。
+     */
+    private static FruitObject findNearestBlockingFruit(
+            FruitObject fruit,
+            List<FruitObject> objects
+    ) {
+        if (fruit == null || objects == null) return null;
+
+        FruitObject nearest = null;
+        double nearestY = Double.MAX_VALUE;
+        double fruitWidth = Math.max(1.0, fruit.width());
+        double corridorInset = fruitWidth * 0.14;
+        double corridorLeft = fruit.left + corridorInset;
+        double corridorRight = fruit.right - corridorInset;
+
+        for (FruitObject other : objects) {
+            if (other == null || other == fruit) continue;
+
+            double minVerticalSeparation = Math.max(4.0,
+                    Math.min(fruit.height(), other.height()) * 0.20);
+            if (other.centerY <= fruit.centerY + minVerticalSeparation) continue;
+
+            double overlap = Math.min(corridorRight, other.right)
+                    - Math.max(corridorLeft, other.left);
+            double minOverlap = Math.min(fruitWidth, Math.max(1.0, other.width())) * 0.12;
+            double centerDx = Math.abs(other.centerX - fruit.centerX);
+            double centerCollisionLimit = ((fruitWidth + other.width()) * 0.5) * 0.72;
+
+            if (overlap < minOverlap || centerDx > centerCollisionLimit) continue;
+
+            if (other.centerY < nearestY) {
+                nearest = other;
+                nearestY = other.centerY;
+            }
+        }
+        return nearest;
+    }
+
+    private static String blockedSummary(DropAnalysis drop, GameFrame frame) {
+        if (drop == null || drop.blocked.isEmpty() || frame == null) return "";
+        StringBuilder sb = new StringBuilder(" / 示例阻挡=");
+        int shown = Math.min(3, drop.blocked.size());
+        for (int i = 0; i < shown; i++) {
+            BlockingRelation r = drop.blocked.get(i);
+            if (i > 0) sb.append(";");
+            sb.append("(")
+                    .append(mapX(frame, r.fruit.centerX)).append(",")
+                    .append(mapY(frame, r.fruit.centerY)).append(")<-(")
+                    .append(mapX(frame, r.blocker.centerX)).append(",")
+                    .append(mapY(frame, r.blocker.centerY)).append(")");
+        }
+        if (drop.blocked.size() > shown) sb.append("...");
+        return sb.toString();
     }
 
     private static PairChoice chooseBestPair(List<FruitObject> objects) {
@@ -813,8 +946,9 @@ final class FruitGameSolver {
     }
 
     /**
-     * V4.36 决策引擎：不是单纯找“最像的一对”，而是在所有可靠对子中
-     * 综合考虑视觉置信度、底层优先、两颗水果都处于低位、纵向跨度和释放空间。
+     * V4.36.2 决策引擎：调用方已经先过滤掉 BLOCKED 水果；这里不是单纯找
+     * “最像的一对”，而是在所有“可直接掉入坑洞”的可靠对子中综合考虑视觉置信度、
+     * 底层优先、两颗水果都处于低位和纵向跨度。
      * 视觉阈值仍然是硬门槛，决策分只负责在“已经可靠”的对子之间排序。
      */
     private static PairChoice chooseBestPairWithThreshold(
@@ -1261,16 +1395,54 @@ final class FruitGameSolver {
     private static final class FruitObject {
         final float centerX;
         final float centerY;
+        final float left;
+        final float top;
+        final float right;
+        final float bottom;
         final float[] rgb;
         final boolean[] shape;
         final float[] hist;
 
-        FruitObject(float centerX, float centerY, float[] rgb, boolean[] shape, float[] hist) {
+        FruitObject(float centerX, float centerY,
+                    float left, float top, float right, float bottom,
+                    float[] rgb, boolean[] shape, float[] hist) {
             this.centerX = centerX;
             this.centerY = centerY;
+            this.left = left;
+            this.top = top;
+            this.right = right;
+            this.bottom = bottom;
             this.rgb = rgb;
             this.shape = shape;
             this.hist = hist;
+        }
+
+        float width() {
+            return Math.max(1f, right - left + 1f);
+        }
+
+        float height() {
+            return Math.max(1f, bottom - top + 1f);
+        }
+    }
+
+    private static final class BlockingRelation {
+        final FruitObject fruit;
+        final FruitObject blocker;
+
+        BlockingRelation(FruitObject fruit, FruitObject blocker) {
+            this.fruit = fruit;
+            this.blocker = blocker;
+        }
+    }
+
+    private static final class DropAnalysis {
+        final List<FruitObject> droppable;
+        final List<BlockingRelation> blocked;
+
+        DropAnalysis(List<FruitObject> droppable, List<BlockingRelation> blocked) {
+            this.droppable = droppable;
+            this.blocked = blocked;
         }
     }
 
