@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Debug APK
+    name: Build Fixed-Signature Debug APK
     runs-on: ubuntu-latest
 
     steps:
@@ -33,13 +33,31 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
-      - name: Check Gradle
+      - name: Check signing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" || { echo "Missing ANDROID_KEYSTORE_BASE64"; exit 1; }
+          test -n "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" || { echo "Missing ANDROID_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "${{ secrets.ANDROID_KEY_ALIAS }}" || { echo "Missing ANDROID_KEY_ALIAS"; exit 1; }
+          test -n "${{ secrets.ANDROID_KEY_PASSWORD }}" || { echo "Missing ANDROID_KEY_PASSWORD"; exit 1; }
+
+      - name: Restore persistent signing keystore
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' '${{ secrets.ANDROID_KEYSTORE_BASE64 }}' | base64 --decode > "$RUNNER_TEMP/xianyu-release.jks"
+          test -s "$RUNNER_TEMP/xianyu-release.jks"
+
+      - name: Build signed Debug APK
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/xianyu-release.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           java -version
           gradle --version
-
-      - name: Build Debug APK
-        run: |
           gradle assembleDebug --stacktrace --no-daemon
 
       - name: List APK
@@ -49,6 +67,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: xianyu-v4-debug
-          path: app/build/outputs/apk/**/*.apk
+          name: xianyu-v4-debug-fixed-signature
+          path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error

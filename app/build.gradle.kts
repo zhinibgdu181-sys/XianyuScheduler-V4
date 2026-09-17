@@ -15,15 +15,34 @@ android {
         versionName = "4.29.0"
     }
 
+    signingConfigs {
+        create("persistent") {
+            val keystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+            if (!keystorePath.isNullOrBlank()) {
+                storeFile = file(keystorePath)
+            }
+            storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+            keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
             isShrinkResources = false
+            // CI 使用固定 keystore；以后每次 app-debug.apk 都保持同一签名。
+            if (!System.getenv("ANDROID_KEYSTORE_PATH").isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("persistent")
+            }
         }
 
         release {
             isMinifyEnabled = false
             isShrinkResources = false
+            if (!System.getenv("ANDROID_KEYSTORE_PATH").isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("persistent")
+            }
         }
     }
 

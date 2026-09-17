@@ -1,0 +1,8 @@
+# Android / Gradle
+.gradle/
+**/build/
+
+# Signing material - NEVER commit these
+*.jks
+*.keystore
+*xianyu-release-base64.txt
