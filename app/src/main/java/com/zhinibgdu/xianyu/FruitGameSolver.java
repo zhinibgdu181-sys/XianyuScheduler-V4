@@ -333,6 +333,14 @@ final class FruitGameSolver {
                         : " / 无安全动作"));
 
                 if (trayChoice == null && pair == null && safePush == null) {
+                    // Log the original decision frame, before recycling or OCR can change it.
+                    // Keep diagnostics bounded; do not change matching or retry decisions.
+                    if (noActionRetry == 0 || noActionRetry == MAX_NO_ACTION_RETRY) {
+                        logNoActionTrayDiagnostics(host, frame, tray, objects, drop, blockedPositions);
+                    }
+                    if (noActionRetry == MAX_NO_ACTION_RETRY) {
+                        saveVisionDiagnostic(context, frame.bitmap, "no_action_tray_" + tray.count);
+                    }
                     safeRecycle(frame.bitmap);
                     ScreenOcr.Snapshot checkpoint = requireOcr(host,"水果游戏V4.38.0/无安全动作检查");
                     if (host.aborted()) return Result.ABORTED;
@@ -899,6 +907,45 @@ final class FruitGameSolver {
         }
 
         return best;
+    }
+
+    /** Read-only evidence for missed TOP matches; uses the existing descriptors and drop analysis. */
+    private static void logNoActionTrayDiagnostics(
+            Host host, GameFrame frame, TrayState tray, List<FruitObject> objects,
+            DropAnalysis drop, Set<String> blockedPositions) {
+        host.log("[候选诊断V4.42.1] objects=" + objects.size()
+                + " / " + traySummary(tray)
+                + " / TOP直配门槛=" + String.format(Locale.US, "%.6f", TRAY_HIST_MATCH_MIN));
+        if (tray.items.isEmpty() || tray.items.get(0).hist == null) {
+            host.log("[候选诊断V4.42.1] 无TOP描述，不能检查槽位直配");
+            return;
+        }
+        TrayItem top = tray.items.get(0);
+        int shown = 0;
+        for (FruitObject fruit : objects) {
+            if (fruit == null) continue;
+            if (shown++ >= 80) {
+                host.log("[候选诊断V4.42.1] 候选超过80个，后续省略");
+                break;
+            }
+            FruitObject blocker = null;
+            for (BlockingRelation relation : drop.blocked) {
+                if (relation.fruit == fruit) {
+                    blocker = relation.blocker;
+                    break;
+                }
+            }
+            double hist = histogramCos(top.hist, fruit.hist);
+            host.log("[候选诊断V4.42.1] 中心=(" + mapX(frame, fruit.centerX)
+                    + "," + mapY(frame, fruit.centerY) + ")"
+                    + " / TOP=" + top.slotName
+                    + " / hist=" + String.format(Locale.US, "%.6f", hist)
+                    + " / 颜色门槛=" + (hist >= TRAY_HIST_MATCH_MIN ? "通过" : "未通过")
+                    + " / 位置黑名单=" + blockedPositions.contains(positionKeyV4361(fruit))
+                    + " / 下落=" + (blocker == null ? "畅通"
+                    : "受阻于(" + mapX(frame, blocker.centerX) + ","
+                            + mapY(frame, blocker.centerY) + ")"));
+        }
     }
 
     private static double histogramCos(float[] a, float[] b) {
