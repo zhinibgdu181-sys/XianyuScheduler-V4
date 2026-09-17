@@ -17,11 +17,17 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * V4.37.0: screenshot-driven fruit pairing.
- * Detect complete sprites, recover touching instances from current-frame templates,
- * exclude modeled blockers, then choose the lowest reliable pair.
- * Re-observe after each tap; only a verified remaining-count decrease of two
- * permits the next pair. Physics and sprite completeness still require device tests.
+ * V4.38.0: screenshot-driven fruit pairing with a real three-slot tray model.
+ *
+ * Confirmed game rules used by this solver:
+ * 1) two equal fruits eliminate each other;
+ * 2) the center-bottom tray can hold at most three unmatched fruits;
+ * 3) a clicked fruit must physically reach the tray before the next dependent click.
+ *
+ * The solver therefore treats the tray as first-class state. A tray fruit is matched
+ * before starting a new board-board pair. With two unmatched fruits, a new type is
+ * introduced only when a complete high-confidence A/B pair is already available;
+ * with all three slots occupied, only a direct match to a tray fruit is permitted.
  */
 final class FruitGameSolver {
 
@@ -47,6 +53,23 @@ final class FruitGameSolver {
     private static final long SCREENSHOT_TIMEOUT_MS = 4200L;
     private static final long MAX_ROUND_MS = 30L * 60L * 1000L;
     private static final int MAX_PAIR_ACTIONS = 130;
+
+    // V4.38.0：三槽二消模型。槽位在中央竖井中从下往上堆叠。
+    // 这些比例来自用户提供的 709x1536 连续实机截图，并按屏幕尺寸归一化。
+    private static final int TRAY_CAPACITY = 3;
+    private static final float TRAY_X0_FRAC = 0.445f;
+    private static final float TRAY_X1_FRAC = 0.555f;
+    private static final float TRAY_TOP_Y0_FRAC = 0.710f;
+    private static final float TRAY_TOP_Y1_FRAC = 0.765f;
+    private static final float TRAY_MID_Y0_FRAC = 0.765f;
+    private static final float TRAY_MID_Y1_FRAC = 0.815f;
+    private static final float TRAY_BOTTOM_Y0_FRAC = 0.815f;
+    private static final float TRAY_BOTTOM_Y1_FRAC = 0.855f;
+    private static final double TRAY_OCCUPIED_RATIO_MIN = 0.20;
+    // 槽中水果与棋盘水果只比较HSV直方图；槽内相邻水果会发生局部遮挡，
+    // 因此不能沿用完整sprite的shape IoU门槛。实机回放同类通常 >0.99。
+    private static final double TRAY_HIST_MATCH_MIN = 0.985;
+    private static final int TRAY_OBSERVE_RETRIES = 4;
 
     // V4.37.0：截图回放中底部同类受采样/压缩影响约0.978~0.982。
     // 总分与更严格的RGB、直方图、形状三个门槛共同判断；不逐轮降低阈值。
@@ -152,7 +175,7 @@ final class FruitGameSolver {
         int remaining = parseRemaining(firstText);
         int progress = parsePercent(firstText);
         if (remaining < 2) {
-            host.log("[水果V4.37.0] 未获得有效剩余数基线；不开始新对子");
+            host.log("[水果V4.38.0] 未获得有效剩余数基线；不开始新对子");
             return isRoundCompleted(firstText) ? Result.COMPLETED : Result.SAFE_STOP_CLEAN;
         }
         host.log("[游戏V4.36] ✅ 识别水果游戏"
@@ -201,39 +224,62 @@ final class FruitGameSolver {
 
             long visionStarted = SystemClock.elapsedRealtime();
             List<FruitObject> objects = detectFruitObjects(frame);
-            host.log("[视觉V4.37.0] 检测耗时=" + (SystemClock.elapsedRealtime()-visionStarted)
+            host.log("[视觉V4.38.0] 检测耗时=" + (SystemClock.elapsedRealtime()-visionStarted)
                     + "ms / 候选=" + objects.size());
 
-            // V4.37.0：使用完整候选表检查障碍物；受阻对象不得点击。
+            // V4.38.0：棋盘可下落性与三槽状态同时进入决策层。
             DropAnalysis drop = analyzeDroppability(objects, frame.bitmap.getWidth(), frame.bitmap.getHeight());
-            List<FruitObject> droppableObjects = drop.droppable;
-            host.log("[下落V4.37.0] 识别水果=" + objects.size()
-                    + " / 可直接下落=" + droppableObjects.size()
+            host.log("[下落V4.38.0] 识别水果=" + objects.size()
+                    + " / 可直接下落=" + drop.droppable.size()
                     + " / 被遮挡=" + drop.blocked.size()
                     + blockedSummary(drop, frame));
 
-            // V4.36 保守阈值：不再向 0.93/0.88/0.83 降级。
-            // V4.36.3 更进一步：只在物理上可直接掉入坑洞的水果中寻找对子。
+            TrayState tray = detectTrayState(frame);
+            host.log("[槽位V4.38.0] " + traySummary(tray));
+            if (!tray.stable) {
+                safeRecycle(frame.bitmap);
+                host.log("[槽位V4.38.0] 槽位仍处于掉落/碰撞动画，暂不点击，重新观察");
+                if (!host.sleep(300L, 480L)) return Result.ABORTED;
+                continue;
+            }
+
+            if (objects.size() < 10) {
+                saveVisionDiagnostic(context, frame.bitmap, "low_objects_" + objects.size());
+                host.log("[游戏V4.38.0] 检测数量异常偏少，已保存视觉诊断图；不点击功能按钮");
+            }
+
+            // 第一优先级永远是“槽内已有水果 + 棋盘同类水果”。
+            // 尤其三槽已满时，只允许这种一步即可二消的动作。
+            TrayMatchChoice trayChoice = chooseBestTrayMatch(
+                    tray, objects, frame.bitmap.getWidth(), frame.bitmap.getHeight(), blockedPositions);
+
             PairChoice pair = null;
             double hitThreshold = MIN_PAIR_SCORE;
-            for (double t : FALLBACK_THRESHOLDS_V436) {
-                // 传入全量对象，配对函数内部硬性排除被阻挡对象。
-                pair = chooseBestPairWithThreshold(
-                        objects, frame.bitmap.getWidth(), frame.bitmap.getHeight(),
-                        t, failedPairs, blockedPositions);
-                if (pair != null) {
-                    hitThreshold = t;
-                    break;
+            // 0/1/2 个槽位时都可以启动一个“已锁定完整A/B”的新对子：
+            // count=2 时 A 会暂时填满第3槽，但 B 与 A 同类，随后立即二消回到2槽。
+            // count=3 时绝不允许新类型，只能先消掉槽中已有水果。
+            if (trayChoice == null && tray.count < TRAY_CAPACITY) {
+                for (double t : FALLBACK_THRESHOLDS_V436) {
+                    pair = chooseBestPairWithThreshold(
+                            objects, frame.bitmap.getWidth(), frame.bitmap.getHeight(),
+                            t, failedPairs, blockedPositions);
+                    if (pair != null) {
+                        hitThreshold = t;
+                        break;
+                    }
                 }
             }
 
-            host.log("[游戏V4.37.0] 参与分析对象=" + objects.size()
-                    + " / 总水果=" + objects.size()
+            host.log("[游戏V4.38.0] 参与分析对象=" + objects.size()
+                    + " / 槽位=" + tray.count + "/" + TRAY_CAPACITY
                     + " / 顶部禁区<" + Math.round(frame.originalHeight * 0.115f)
                     + " / 漏斗外沿≈" + Math.round(frame.originalHeight * FUNNEL_OUTER_Y_FRAC)
                     + " / 中央入口≈" + Math.round(frame.originalHeight * FUNNEL_INNER_Y_FRAC)
-                    + (pair == null ? " / 无可下落高置信对子" :
-                    " / 最佳对子=" + format(pair.score)
+                    + (trayChoice != null
+                    ? " / 槽位直配 hist=" + format(trayChoice.histCos)
+                            + " rank=" + format(trayChoice.rank)
+                    : pair == null ? " / 无安全动作"
+                    : " / 棋盘对子=" + format(pair.score)
                             + " rgb=" + format(pair.rgbSimilarity)
                             + " hist=" + format(pair.histCos)
                             + " shape=" + format(pair.shapeIou)
@@ -241,35 +287,106 @@ final class FruitGameSolver {
                             + " lower=" + format(pair.lowerBoth)
                             + " threshold=" + format(hitThreshold)));
 
-            if (pair != null && hitThreshold < MIN_PAIR_SCORE) {
-                host.log("[游戏V4.36] ⚠️ 阈值降级命中 " + format(hitThreshold)
-                        + " / score=" + format(pair.score)
-                        + " / 剩余水果=" + objects.size());
-            }
-
-            if (objects.size() < 10) {
-                saveVisionDiagnostic(context, frame.bitmap, "low_objects_" + objects.size());
-                host.log("[游戏V4.36] 检测数量异常偏少，已保存视觉诊断图；本轮不会点击功能按钮");
-            }
-
-            if (pair == null) {
+            if (trayChoice == null && pair == null) {
                 safeRecycle(frame.bitmap);
-
-                ScreenOcr.Snapshot checkpoint = host.ocr("水果游戏V4.36/无对子检查");
+                ScreenOcr.Snapshot checkpoint = host.ocr("水果游戏V4.38.0/无安全动作检查");
                 if (host.aborted()) return Result.ABORTED;
                 String text = normalize(checkpoint == null ? "" : checkpoint.fullText);
                 if (isRoundCompleted(text)) {
-                    host.log("[游戏V4.36] ✅ 已检测到一关完成状态");
+                    host.log("[游戏V4.38.0] ✅ 已检测到一关完成状态");
                     return Result.COMPLETED;
                 }
 
-                host.log("[游戏V4.37.0] 当前没有‘可直接下落 + 高置信同类’对子"
-                        + (drop.blocked.isEmpty() ? "" : "；仍有被遮挡水果，暂不做单槽冒险试探")
-                        + "，CLEAN安全停止");
+                if (tray.count >= TRAY_CAPACITY) {
+                    host.log("[槽位保护V4.38.0] 三槽已满且没有可直接二消的同类水果；"
+                            + "禁止点击任何新类型，CLEAN安全停止");
+                } else if (tray.count == 2) {
+                    host.log("[槽位保护V4.38.0] 当前2槽占用，但既没有槽位直配，"
+                            + "也没有可锁定的完整棋盘对子；不做单水果冒险，CLEAN安全停止");
+                } else {
+                    host.log("[游戏V4.38.0] 当前没有‘可直接下落 + 高置信同类’安全对子，CLEAN安全停止");
+                }
                 return Result.SAFE_STOP_CLEAN;
             }
 
-            int beforeRemaining = remaining;
+            final int beforeRemaining = remaining;
+            final int beforeTrayCount = tray.count;
+
+            // ------------------------------------------------------------
+            // 路径1：槽位优先匹配。只点击一个棋盘水果即可与槽中同类二消。
+            // ------------------------------------------------------------
+            if (trayChoice != null) {
+                FruitObject target = trayChoice.boardFruit;
+                int tx = mapX(frame, target.centerX);
+                int ty = mapY(frame, target.centerY);
+                safeRecycle(frame.bitmap);
+
+                host.log("[决策V4.38.0] 槽位优先二消 / 槽=" + trayChoice.trayItem.slotName
+                        + " / 点击=(" + tx + "," + ty + ")"
+                        + " / hist=" + format(trayChoice.histCos)
+                        + " / 槽位=" + beforeTrayCount + "→期望" + Math.max(0, beforeTrayCount - 1));
+
+                if (!host.tap(tx, ty, "水果游戏-槽位匹配")) {
+                    return host.aborted() ? Result.ABORTED : Result.SAFE_STOP_DIRTY;
+                }
+                if (!host.sleep(850L, 1050L)) return Result.ABORTED;
+
+                PostTapObservation after = observeTrayAfterTap(
+                        context, suPath, host, Math.max(0, beforeTrayCount - 1), "槽位匹配后");
+                if (after == null) {
+                    return host.aborted() ? Result.ABORTED : Result.SAFE_STOP_DIRTY;
+                }
+                int afterTrayCount = after.tray.count;
+                safeRecycle(after.frame.bitmap);
+
+                if (afterTrayCount == Math.max(0, beforeTrayCount - 1)) {
+                    RemainingVerification verify = verifyPairRemaining(
+                            host, beforeRemaining, pairActions + 1, "槽位直配");
+                    if (verify.aborted) return Result.ABORTED;
+                    if (verify.completed) return Result.COMPLETED;
+                    if (!verify.confirmed) {
+                        host.log("[水果V4.38.0] 槽位视觉已发生二消，但剩余数未闭环："
+                                + beforeRemaining + "→" + verify.afterRemaining + "；停止复核");
+                        saveCurrentFrameDiagnostic(context, suPath, host, "tray_pair_unverified");
+                        return Result.SAFE_STOP_DIRTY;
+                    }
+                    pairActions++;
+                    remaining = verify.afterRemaining;
+                    blockedPositions.clear();
+                    host.log("[水果V4.38.0] ✅ 槽位二消确认：剩余 "
+                            + beforeRemaining + "→" + remaining
+                            + " / 槽位 " + beforeTrayCount + "→" + afterTrayCount);
+                    continue;
+                }
+
+                // 如果高置信槽位分类仍然判错，但新水果只是安全进入了槽位，
+                // 不再追加任何点击，交给下一轮从真实槽位重新决策。
+                if (afterTrayCount == beforeTrayCount + 1 && afterTrayCount <= TRAY_CAPACITY) {
+                    host.log("[槽位V4.38.0] 目标未形成二消而是进入槽位："
+                            + beforeTrayCount + "→" + afterTrayCount
+                            + "；立即重新建模，不再连点");
+                    continue;
+                }
+                if (afterTrayCount == beforeTrayCount) {
+                    blockedPositions.add(positionKeyV4361(target));
+                    host.log("[槽位V4.38.0] 点击后槽位未变化；该位置加入本轮黑名单，不连续点击");
+                    if (beforeTrayCount >= TRAY_CAPACITY) {
+                        // 满槽状态下一次错误点击可能已经触发失败界面，不做第二次尝试。
+                        return Result.SAFE_STOP_DIRTY;
+                    }
+                    continue;
+                }
+
+                host.log("[槽位V4.38.0] 点击后槽位变化异常："
+                        + beforeTrayCount + "→" + afterTrayCount + "，DIRTY安全停止");
+                return Result.SAFE_STOP_DIRTY;
+            }
+
+            // ------------------------------------------------------------
+            // 路径2：槽位为0/1/2时，只要已经锁定一个完整高置信棋盘对子，
+            // 就允许启动新的二消。count=2时A会暂时占满第3槽，随后B必须与A二消。
+            // A必须先被视觉确认进入槽位，才允许点B。
+            // ------------------------------------------------------------
             int beforeObjectCount = objects.size();
             int ax = mapX(frame, pair.a.centerX);
             int ay = mapY(frame, pair.a.centerY);
@@ -278,157 +395,144 @@ final class FruitGameSolver {
             FruitObject expectedB = pair.b;
             safeRecycle(frame.bitmap);
 
-            host.log("[决策V4.37.0] 选择当前可下落动作 / A=(" + ax + "," + ay + ")"
+            host.log("[决策V4.38.0] 新对子 / A=(" + ax + "," + ay + ")"
                     + " / 计划B=(" + plannedBx + "," + plannedBy + ")"
                     + " / visual=" + format(pair.score)
                     + " / decision=" + format(pair.decisionScore)
-                    + " / lower=" + format(pair.lowerBoth)
-                    + " / 原因=下落通道畅通+可靠同类+底层优先");
+                    + " / 槽位=" + beforeTrayCount
+                    + " / 原因=槽位未满且完整A/B均已锁定可直接下落");
 
-            // 只执行一步，然后重新观察。A 下落后旧的 B 坐标立即作废。
             if (!host.tap(ax, ay, "水果游戏-配对A")) {
-                // 已经尝试发送 A 点击，无法确认设备是否实际接收；按 DIRTY 处理最安全。
                 return host.aborted() ? Result.ABORTED : Result.SAFE_STOP_DIRTY;
             }
-            if (!host.sleep(900L, 1100L)) return Result.ABORTED;
+            if (!host.sleep(850L, 1050L)) return Result.ABORTED;
 
-            GameFrame afterA = captureFrame(context, suPath, host);
-            if (afterA == null) {
-                host.log("[游戏V4.36] A点击后无法重新观察；坑位状态未知，DIRTY安全停止");
-                return Result.SAFE_STOP_DIRTY;
+            PostTapObservation afterAObs = observeTrayAfterTap(
+                    context, suPath, host, beforeTrayCount + 1, "A点击后");
+            if (afterAObs == null) {
+                host.log("[槽位V4.38.0] A后无法稳定观察槽位，DIRTY安全停止");
+                return host.aborted() ? Result.ABORTED : Result.SAFE_STOP_DIRTY;
             }
 
-            // A 后也要检查异步空闲弹窗。若此时弹窗存在，无法确认 A 是进入坑位
-            // 还是点在遮挡层上；关闭后旧对子全部作废，按 DIRTY 退出本段。
-            if (looksLikeBlockingFunctionPopup(afterA)) {
-                PopupDismissResult popup = dismissBlockingFunctionPopup(
-                        context, suPath, host, afterA, "A点击后");
-                safeRecycle(afterA.bitmap);
-                if (popup == PopupDismissResult.ABORTED) return Result.ABORTED;
-                host.log("[弹窗V4.36] A阶段出现异步弹窗；A是否进入坑位不可确认，DIRTY安全停止");
-                return Result.SAFE_STOP_DIRTY;
+            int afterATrayCount = afterAObs.tray.count;
+
+            // 边界恢复：若A其实与原槽中的水果同类，它会直接完成二消，
+            // 此时不应该继续点原计划B。
+            if (beforeTrayCount > 0 && afterATrayCount == beforeTrayCount - 1) {
+                safeRecycle(afterAObs.frame.bitmap);
+                RemainingVerification verify = verifyPairRemaining(
+                        host, beforeRemaining, pairActions + 1, "A直接命中槽位");
+                if (verify.aborted) return Result.ABORTED;
+                if (verify.completed) return Result.COMPLETED;
+                if (!verify.confirmed) return Result.SAFE_STOP_DIRTY;
+                pairActions++;
+                remaining = verify.afterRemaining;
+                blockedPositions.clear();
+                host.log("[水果V4.38.0] ✅ A直接与原槽水果二消；取消计划B");
+                continue;
             }
 
-            List<FruitObject> afterObjects = detectFruitObjects(afterA);
-            DropAnalysis afterDrop = analyzeDroppability(afterObjects, afterA.bitmap.getWidth(), afterA.bitmap.getHeight());
-
-            // 先确认 A 这一击真的改变了棋盘。
-            // 上一步只是视觉模型预测可下落；原位对象仍存在时不能证明进入坑位。
-            // 使用原位目标复核
-            // 做第二层验证。若原位仍是同一水果，不因其它对象漏检而继续点B。
-            FruitMatch stillA = findMatchingFruitNear(
-                    pair.a, afterObjects, pair.a.centerX, pair.a.centerY,
-                    afterA.bitmap.getWidth(), afterA.bitmap.getHeight(),
-                    0.025, 0.015, MIN_PAIR_SCORE);
-            if (stillA != null) {
+            if (afterATrayCount == beforeTrayCount) {
                 blockedPositions.add(positionKeyV4361(pair.a));
-                int stillAx = mapX(afterA, stillA.fruit.centerX);
-                int stillAy = mapY(afterA, stillA.fruit.centerY);
-                safeRecycle(afterA.bitmap);
-                host.log("[点击验证V4.37.0] A点击后目标仍在原位附近 → ("
-                        + stillAx + "," + stillAy + ")"
-                        + " / sim=" + format(stillA.similarity.score)
-                        + " / 对象数变化=" + beforeObjectCount + "→" + afterObjects.size()
-                        + " / 未确认A进入坑位；不点B，保留现场停止");
-                // A may have been selected without falling; never assume an empty slot.
-                host.log("[水果V4.37.0] A仍在原位，坑位状态无法确认；不继续点其它水果");
+                safeRecycle(afterAObs.frame.bitmap);
+                host.log("[点击验证V4.38.0] A未进入槽位 / 槽位仍=" + beforeTrayCount
+                        + " / 对象基线=" + beforeObjectCount
+                        + "；不点B，重新规划其它可下落水果");
+                continue;
+            }
+
+            if (afterATrayCount != beforeTrayCount + 1) {
+                safeRecycle(afterAObs.frame.bitmap);
+                host.log("[槽位V4.38.0] A后槽位变化异常："
+                        + beforeTrayCount + "→" + afterATrayCount + "，DIRTY安全停止");
                 return Result.SAFE_STOP_DIRTY;
             }
 
-            host.log("[点击验证V4.37.0] A后重建遮挡图 / 水果=" + afterObjects.size()
-                    + " / 可直接下落=" + afterDrop.droppable.size()
-                    + " / 被遮挡=" + afterDrop.blocked.size()
-                    + " / 对象数变化=" + beforeObjectCount + "→" + afterObjects.size());
+            List<FruitObject> afterObjects = detectFruitObjects(afterAObs.frame);
+            DropAnalysis afterDrop = analyzeDroppability(
+                    afterObjects, afterAObs.frame.bitmap.getWidth(), afterAObs.frame.bitmap.getHeight());
+            host.log("[点击验证V4.38.0] A已确认进入槽位 / 槽位="
+                    + beforeTrayCount + "→" + afterATrayCount
+                    + " / 水果=" + afterObjects.size()
+                    + " / 可直接下落=" + afterDrop.droppable.size());
 
-            // B 重新定位后必须通过当前棋盘的路径检查。
-            FruitMatch reacquired = findBestMatchingFruit(
+            // A进入槽后，B使用“全棋盘同类 + 当前可下落”重新定位，
+            // 不再把旧B限制在原坐标附近。
+            FruitMatch reacquired = findBestMatchingFruitGlobal(
                     expectedB, afterObjects,
-                    afterA.bitmap.getWidth(), afterA.bitmap.getHeight());
+                    afterAObs.frame.bitmap.getWidth(), afterAObs.frame.bitmap.getHeight(),
+                    blockedPositions);
             if (reacquired == null) {
-                host.log("[水果V4.37.0] 未能重新定位路径畅通且视觉可靠的B；停止，不盲点");
-                safeRecycle(afterA.bitmap);
-                return Result.SAFE_STOP_DIRTY;
+                host.log("[水果V4.38.0] A已安全进入槽位，但当前没有可直接下落的同类B；"
+                        + "保留真实槽位状态，下一轮优先找槽位匹配，不盲点");
+                safeRecycle(afterAObs.frame.bitmap);
+                continue;
             }
-            FruitObject reacquiredB = reacquired.fruit;
-            int bx = mapX(afterA, reacquiredB.centerX);
-            int by = mapY(afterA, reacquiredB.centerY);
-            double dxRatio = Math.abs(reacquiredB.centerX - expectedB.centerX)
-                    / Math.max(1.0, afterA.bitmap.getWidth());
-            double dyRatio = (reacquiredB.centerY - expectedB.centerY)
-                    / Math.max(1.0, afterA.bitmap.getHeight());
-            safeRecycle(afterA.bitmap);
 
-            host.log("[决策V4.37.0] B可下落重定位 / 原计划=("
+            FruitObject reacquiredB = reacquired.fruit;
+            int bx = mapX(afterAObs.frame, reacquiredB.centerX);
+            int by = mapY(afterAObs.frame, reacquiredB.centerY);
+            safeRecycle(afterAObs.frame.bitmap);
+
+            host.log("[决策V4.38.0] B全局重定位 / 原计划=("
                     + plannedBx + "," + plannedBy + ") → 新B=(" + bx + "," + by + ")"
                     + " / sim=" + format(reacquired.similarity.score)
                     + " rgb=" + format(1.0 - reacquired.similarity.rgbMad)
                     + " hist=" + format(reacquired.similarity.histCos)
-                    + " shape=" + format(reacquired.similarity.shapeIou)
-                    + " / dx=" + format(dxRatio) + " dy=" + format(dyRatio));
+                    + " shape=" + format(reacquired.similarity.shapeIou));
+
             if (!host.tap(bx, by, "水果游戏-配对B")) {
                 return host.aborted() ? Result.ABORTED : Result.SAFE_STOP_DIRTY;
             }
-            pairActions++;
-            if (!host.sleep(1000L, 1300L)) return Result.ABORTED;
+            if (!host.sleep(900L, 1150L)) return Result.ABORTED;
 
-            // B 后先检查异步空闲弹窗。若它抢占页面，先只点右上角 X 关闭，
-            // 再通过 remaining 的闭环结果判断这对是否真的成功。
-            GameFrame postB = captureFrame(context, suPath, host);
-            if (postB != null) {
-                if (looksLikeBlockingFunctionPopup(postB)) {
-                    PopupDismissResult popup = dismissBlockingFunctionPopup(
-                            context, suPath, host, postB, "B点击后");
-                    safeRecycle(postB.bitmap);
-                    if (popup == PopupDismissResult.ABORTED) return Result.ABORTED;
-                    if (popup != PopupDismissResult.DISMISSED) {
-                        host.log("[弹窗V4.36] B后弹窗无法确认关闭；坑位状态未知，DIRTY安全停止");
-                        return Result.SAFE_STOP_DIRTY;
-                    }
-                    host.log("[弹窗V4.36] B后弹窗已关闭；继续用剩余数验证本对子");
-                } else {
-                    List<FruitObject> postBObjects = detectFruitObjects(postB);
-                    FruitMatch stillB = findMatchingFruitNear(
-                            reacquiredB, postBObjects, reacquiredB.centerX, reacquiredB.centerY,
-                            postB.bitmap.getWidth(), postB.bitmap.getHeight(),
-                            0.025, 0.015, MIN_PAIR_SCORE);
-                    host.log("[点击验证V4.37.0] B后对象数=" + afterObjects.size()
-                            + "→" + postBObjects.size()
-                            + (stillB == null ? " / B原位未检出"
-                            : " / B原位仍有同类 sim=" + format(stillB.similarity.score)));
-                    safeRecycle(postB.bitmap);
+            PostTapObservation afterBObs = observeTrayAfterTap(
+                    context, suPath, host, beforeTrayCount, "B点击后");
+            if (afterBObs == null) {
+                return host.aborted() ? Result.ABORTED : Result.SAFE_STOP_DIRTY;
+            }
+            int afterBTrayCount = afterBObs.tray.count;
+            safeRecycle(afterBObs.frame.bitmap);
+
+            if (afterBTrayCount == beforeTrayCount) {
+                RemainingVerification verify = verifyPairRemaining(
+                        host, beforeRemaining, pairActions + 1, "棋盘对子");
+                if (verify.aborted) return Result.ABORTED;
+                if (verify.completed) return Result.COMPLETED;
+                if (!verify.confirmed) {
+                    failedPairs.add(pairKeyV435(pair.a, pair.b));
+                    host.log("[水果V4.38.0] 槽位已回到基线，但剩余数未确认完整二消："
+                            + beforeRemaining + "→" + verify.afterRemaining);
+                    saveCurrentFrameDiagnostic(context, suPath, host, "pair_unverified");
+                    return Result.SAFE_STOP_DIRTY;
                 }
-            } else {
-                host.log("[弹窗V4.36] B后弹窗守卫截图失败；继续进入OCR闭环验证");
+                pairActions++;
+                remaining = verify.afterRemaining;
+                blockedPositions.clear();
+                host.log("[水果V4.38.0] ✅ 棋盘对子确认：剩余 "
+                        + beforeRemaining + "→" + remaining
+                        + " / 槽位 " + beforeTrayCount + "→" + afterBTrayCount);
+                continue;
             }
 
-            // 每一对都闭环验证，不再等到第6对才发现整局没有进展。
-            ScreenOcr.Snapshot verifyOcr = host.ocr("水果游戏V4.36/逐对验证#" + pairActions);
-            if (host.aborted()) return Result.ABORTED;
-            String verifyText = normalize(verifyOcr == null ? "" : verifyOcr.fullText);
-            int afterRemaining = parseRemaining(verifyText);
-            // Animation/OCR latency is not proof of failure. Re-observe once without another tap.
-            if (!isRoundCompleted(verifyText)
-                    && (afterRemaining < 0 || afterRemaining == beforeRemaining)) {
-                if (!host.sleep(900L, 1200L)) return Result.ABORTED;
-                ScreenOcr.Snapshot retry = host.ocr("水果V4.37.0/消除延迟复核");
-                if (host.aborted()) return Result.ABORTED;
-                verifyText = normalize(retry == null ? "" : retry.fullText);
-                afterRemaining = parseRemaining(verifyText);
+            if (afterBTrayCount == beforeTrayCount + 1) {
+                blockedPositions.add(positionKeyV4361(reacquiredB));
+                host.log("[槽位V4.38.0] B未完成二消，A仍留在槽中；"
+                        + "不再追点，下一轮按真实槽位继续");
+                continue;
             }
-            if (isRoundCompleted(verifyText)) {
-                host.log("[验证V4.36] ✅ 第1关完成");
-                return Result.COMPLETED;
+
+            if (afterBTrayCount > beforeTrayCount
+                    && afterBTrayCount <= TRAY_CAPACITY) {
+                host.log("[槽位V4.38.0] B后出现额外未配对槽位："
+                        + beforeTrayCount + "→" + afterBTrayCount
+                        + "；停止连点并重新建模");
+                continue;
             }
-            if (!PairVerification.confirmed(beforeRemaining, afterRemaining)) {
-                failedPairs.add(pairKeyV435(pair.a, pair.b));
-                host.log("[水果V4.37.0] 未确认完整消除：" + beforeRemaining + "→" + afterRemaining
-                        + "；停止，不把OCR缺失/减少1个当作成功");
-                saveCurrentFrameDiagnostic(context, suPath, host, "pair_unverified");
-                return Result.SAFE_STOP_DIRTY;
-            }
-            host.log("[水果V4.37.0] 配对确认：" + beforeRemaining + "→" + afterRemaining);
-            remaining = afterRemaining;
-            blockedPositions.clear();
+
+            host.log("[槽位V4.38.0] B后槽位变化异常："
+                    + beforeTrayCount + "→" + afterBTrayCount + "，DIRTY安全停止");
+            return Result.SAFE_STOP_DIRTY;
 
         }
 
@@ -492,6 +596,275 @@ final class FruitGameSolver {
         if (frame == null) return;
         saveVisionDiagnostic(context, frame.bitmap, suffix);
         safeRecycle(frame.bitmap);
+    }
+
+    /**
+     * V4.38.0 三槽检测。
+     *
+     * 实机槽位是中央竖井，从下往上依次堆叠。我们不把三个水果当作独立连通域，
+     * 因为它们相互接触后经常会粘成一个大连通域；改为检测三个固定纵向带中的
+     * “水果前景占比”。稳定状态必须满足 bottom-up 连续占用：
+     * 0=[]，1=[bottom]，2=[mid,bottom]，3=[top,mid,bottom]。
+     */
+    private static TrayState detectTrayState(GameFrame frame) {
+        if (frame == null || frame.bitmap == null) return TrayState.invalid();
+        Bitmap bitmap = frame.bitmap;
+
+        BandObservation top = observeTrayBand(
+                bitmap, "TOP", TRAY_TOP_Y0_FRAC, TRAY_TOP_Y1_FRAC);
+        BandObservation mid = observeTrayBand(
+                bitmap, "MID", TRAY_MID_Y0_FRAC, TRAY_MID_Y1_FRAC);
+        BandObservation bottom = observeTrayBand(
+                bitmap, "BOTTOM", TRAY_BOTTOM_Y0_FRAC, TRAY_BOTTOM_Y1_FRAC);
+
+        boolean topOccupied = top.ratio >= TRAY_OCCUPIED_RATIO_MIN;
+        boolean midOccupied = mid.ratio >= TRAY_OCCUPIED_RATIO_MIN;
+        boolean bottomOccupied = bottom.ratio >= TRAY_OCCUPIED_RATIO_MIN;
+
+        // 槽位从下往上堆叠。出现“上层有、下层空”说明水果仍在动画途中。
+        boolean stable = (!topOccupied || midOccupied)
+                && (!midOccupied || bottomOccupied);
+
+        int count = (topOccupied ? 1 : 0)
+                + (midOccupied ? 1 : 0)
+                + (bottomOccupied ? 1 : 0);
+
+        List<TrayItem> items = new ArrayList<>();
+        if (topOccupied) items.add(new TrayItem("TOP", top.hist, top.ratio));
+        if (midOccupied) items.add(new TrayItem("MID", mid.hist, mid.ratio));
+        if (bottomOccupied) items.add(new TrayItem("BOTTOM", bottom.hist, bottom.ratio));
+
+        return new TrayState(count, stable, items, top.ratio, mid.ratio, bottom.ratio);
+    }
+
+    private static BandObservation observeTrayBand(
+            Bitmap bitmap,
+            String name,
+            float y0Frac,
+            float y1Frac
+    ) {
+        if (bitmap == null) return new BandObservation(name, 0.0, new float[72]);
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        if (width <= 0 || height <= 0) {
+            return new BandObservation(name, 0.0, new float[72]);
+        }
+
+        int x0 = clamp(Math.round(width * TRAY_X0_FRAC), 0, width - 1);
+        int x1 = clamp(Math.round(width * TRAY_X1_FRAC), x0 + 1, width);
+        int y0 = clamp(Math.round(height * y0Frac), 0, height - 1);
+        int y1 = clamp(Math.round(height * y1Frac), y0 + 1, height);
+
+        int foreground = 0;
+        int total = 0;
+        float[] hist = new float[72];
+
+        for (int y = y0; y < y1; y++) {
+            for (int x = x0; x < x1; x++) {
+                int c = bitmap.getPixel(x, y);
+                int r = (c >> 16) & 0xff;
+                int g = (c >> 8) & 0xff;
+                int b = c & 0xff;
+                total++;
+                if (!isFruitForeground(r, g, b)) continue;
+
+                foreground++;
+                float[] hsv = rgbToHsv(r, g, b);
+                int hBin = clamp((int) (hsv[0] / 360f * 12f), 0, 11);
+                int sBin = clamp((int) (hsv[1] * 6f), 0, 5);
+                hist[hBin * 6 + sBin] += 1f;
+            }
+        }
+
+        normalizeL2(hist);
+        double ratio = total <= 0 ? 0.0 : foreground / (double) total;
+        return new BandObservation(name, ratio, hist);
+    }
+
+    private static String traySummary(TrayState tray) {
+        if (tray == null) return "invalid";
+        return "count=" + tray.count + "/" + TRAY_CAPACITY
+                + " stable=" + tray.stable
+                + " ratios(T/M/B)=" + format(tray.topRatio)
+                + "/" + format(tray.midRatio)
+                + "/" + format(tray.bottomRatio);
+    }
+
+    /**
+     * 从当前槽位中寻找一个可与棋盘直接二消的水果。
+     * 槽内sprite会被上下相邻水果遮挡，因此这里只用HSV直方图做类型匹配；
+     * 棋盘目标仍必须通过完整的物理可下落检查。
+     */
+    private static TrayMatchChoice chooseBestTrayMatch(
+            TrayState tray,
+            List<FruitObject> objects,
+            int frameWidth,
+            int frameHeight,
+            Set<String> blockedPositions
+    ) {
+        if (tray == null || !tray.stable || tray.count <= 0
+                || objects == null || objects.isEmpty()) return null;
+
+        TrayMatchChoice best = null;
+        double denomY = Math.max(1.0, frameHeight);
+
+        for (TrayItem item : tray.items) {
+            if (item == null || item.hist == null) continue;
+            for (FruitObject fruit : objects) {
+                if (fruit == null) continue;
+                if (blockedPositions != null
+                        && blockedPositions.contains(positionKeyV4361(fruit))) continue;
+                if (findNearestBlockingFruit(fruit, objects, frameWidth, frameHeight) != null) continue;
+
+                double hist = histogramCos(item.hist, fruit.hist);
+                if (hist < TRAY_HIST_MATCH_MIN) continue;
+
+                double lower = clamp01(fruit.centerY / denomY);
+                double rank = 0.84 * hist + 0.16 * lower;
+                TrayMatchChoice candidate = new TrayMatchChoice(item, fruit, hist, rank);
+                if (best == null || candidate.rank > best.rank) best = candidate;
+            }
+        }
+        return best;
+    }
+
+    private static double histogramCos(float[] a, float[] b) {
+        if (a == null || b == null || a.length == 0 || a.length != b.length) return 0.0;
+        double dot = 0.0;
+        double na = 0.0;
+        double nb = 0.0;
+        for (int i = 0; i < a.length; i++) {
+            dot += a[i] * b[i];
+            na += a[i] * a[i];
+            nb += b[i] * b[i];
+        }
+        if (na <= 0.0 || nb <= 0.0) return 0.0;
+        return clamp01(dot / Math.sqrt(na * nb));
+    }
+
+    /**
+     * 点击后等待槽位动画稳定。优先等待 expectedCount；若最终稳定在其它合法数量，
+     * 也返回真实状态，让上层决定“继续建模”还是“DIRTY停止”，不再凭原位水果猜测。
+     */
+    private static PostTapObservation observeTrayAfterTap(
+            Context context,
+            String suPath,
+            Host host,
+            int expectedCount,
+            String stage
+    ) {
+        PostTapObservation lastStable = null;
+        for (int attempt = 1; attempt <= TRAY_OBSERVE_RETRIES && !host.aborted(); attempt++) {
+            GameFrame frame = captureFrame(context, suPath, host);
+            if (frame == null) {
+                if (!host.sleep(220L, 360L)) return null;
+                continue;
+            }
+
+            if (looksLikeBlockingFunctionPopup(frame)) {
+                PopupDismissResult popup = dismissBlockingFunctionPopup(
+                        context, suPath, host, frame, stage + "/槽位观察");
+                safeRecycle(frame.bitmap);
+                if (popup == PopupDismissResult.ABORTED) return null;
+                if (popup != PopupDismissResult.DISMISSED) return null;
+                if (lastStable != null) {
+                    safeRecycle(lastStable.frame.bitmap);
+                    lastStable = null;
+                }
+                if (!host.sleep(220L, 360L)) return null;
+                continue;
+            }
+
+            TrayState tray = detectTrayState(frame);
+            host.log("[槽位观察V4.38.0] " + stage + " #" + attempt
+                    + " / expected=" + expectedCount + " / " + traySummary(tray));
+
+            if (!tray.stable) {
+                safeRecycle(frame.bitmap);
+                if (!host.sleep(220L, 360L)) return null;
+                continue;
+            }
+
+            if (tray.count == expectedCount) {
+                if (lastStable != null) safeRecycle(lastStable.frame.bitmap);
+                return new PostTapObservation(frame, tray);
+            }
+
+            if (lastStable != null) safeRecycle(lastStable.frame.bitmap);
+            lastStable = new PostTapObservation(frame, tray);
+            if (attempt < TRAY_OBSERVE_RETRIES && !host.sleep(260L, 420L)) {
+                safeRecycle(lastStable.frame.bitmap);
+                return null;
+            }
+        }
+        return lastStable;
+    }
+
+    /**
+     * A落入槽位以后，棋盘可能重新排列。B不再限制在旧坐标附近；只要是当前帧中
+     * 与原B视觉同类且可以直接下落的实例，都可以作为新的B。
+     */
+    private static FruitMatch findBestMatchingFruitGlobal(
+            FruitObject expected,
+            List<FruitObject> objects,
+            int frameWidth,
+            int frameHeight,
+            Set<String> blockedPositions
+    ) {
+        if (expected == null || objects == null || objects.isEmpty()) return null;
+        FruitMatch best = null;
+        double denomY = Math.max(1.0, frameHeight);
+        for (FruitObject candidate : objects) {
+            if (candidate == null) continue;
+            if (blockedPositions != null
+                    && blockedPositions.contains(positionKeyV4361(candidate))) continue;
+            if (findNearestBlockingFruit(candidate, objects, frameWidth, frameHeight) != null) continue;
+
+            Similarity sim = similarity(expected, candidate);
+            if (sim.rgbMad > MAX_RGB_MAD
+                    || sim.histCos < MIN_HIST_COS
+                    || sim.shapeIou < MIN_SHAPE_IOU
+                    || sim.score < MIN_PAIR_SCORE) continue;
+
+            double lower = clamp01(candidate.centerY / denomY);
+            double rank = 0.90 * sim.score + 0.10 * lower;
+            if (best == null || rank > best.rank) {
+                best = new FruitMatch(candidate, sim, rank);
+            }
+        }
+        return best;
+    }
+
+    private static RemainingVerification verifyPairRemaining(
+            Host host,
+            int beforeRemaining,
+            int actionIndex,
+            String stage
+    ) {
+        ScreenOcr.Snapshot verifyOcr = host.ocr(
+                "水果游戏V4.38.0/" + stage + "验证#" + actionIndex);
+        if (host.aborted()) return RemainingVerification.aborted();
+
+        String text = normalize(verifyOcr == null ? "" : verifyOcr.fullText);
+        int afterRemaining = parseRemaining(text);
+        if (!isRoundCompleted(text)
+                && (afterRemaining < 0 || afterRemaining == beforeRemaining)) {
+            if (!host.sleep(850L, 1150L)) return RemainingVerification.aborted();
+            ScreenOcr.Snapshot retry = host.ocr("水果游戏V4.38.0/二消延迟复核");
+            if (host.aborted()) return RemainingVerification.aborted();
+            text = normalize(retry == null ? "" : retry.fullText);
+            afterRemaining = parseRemaining(text);
+        }
+
+        if (isRoundCompleted(text)) {
+            host.log("[验证V4.38.0] ✅ 第1关完成");
+            return RemainingVerification.completed(afterRemaining);
+        }
+        return new RemainingVerification(
+                PairVerification.confirmed(beforeRemaining, afterRemaining),
+                false,
+                false,
+                afterRemaining);
     }
 
     private static boolean looksLikeFruitStartScreen(String text) {
@@ -639,7 +1012,7 @@ final class FruitGameSolver {
             analysis = null; // ownership transferred to caller
             return result;
         } catch (Exception e) {
-            host.log("[水果V4.37.0] 截图失败：" + e.getClass().getSimpleName());
+            host.log("[水果V4.38.0] 截图失败：" + e.getClass().getSimpleName());
             return null;
         } finally {
             safeDelete(file);
@@ -1547,6 +1920,110 @@ final class FruitGameSolver {
 
         float height() {
             return Math.max(1f, bottom - top + 1f);
+        }
+    }
+
+    private static final class BandObservation {
+        final String name;
+        final double ratio;
+        final float[] hist;
+
+        BandObservation(String name, double ratio, float[] hist) {
+            this.name = name;
+            this.ratio = ratio;
+            this.hist = hist;
+        }
+    }
+
+    private static final class TrayItem {
+        final String slotName;
+        final float[] hist;
+        final double foregroundRatio;
+
+        TrayItem(String slotName, float[] hist, double foregroundRatio) {
+            this.slotName = slotName;
+            this.hist = hist;
+            this.foregroundRatio = foregroundRatio;
+        }
+    }
+
+    private static final class TrayState {
+        final int count;
+        final boolean stable;
+        final List<TrayItem> items;
+        final double topRatio;
+        final double midRatio;
+        final double bottomRatio;
+
+        TrayState(
+                int count,
+                boolean stable,
+                List<TrayItem> items,
+                double topRatio,
+                double midRatio,
+                double bottomRatio
+        ) {
+            this.count = count;
+            this.stable = stable;
+            this.items = items;
+            this.topRatio = topRatio;
+            this.midRatio = midRatio;
+            this.bottomRatio = bottomRatio;
+        }
+
+        static TrayState invalid() {
+            return new TrayState(0, false, new ArrayList<>(), 0.0, 0.0, 0.0);
+        }
+    }
+
+    private static final class TrayMatchChoice {
+        final TrayItem trayItem;
+        final FruitObject boardFruit;
+        final double histCos;
+        final double rank;
+
+        TrayMatchChoice(TrayItem trayItem, FruitObject boardFruit, double histCos, double rank) {
+            this.trayItem = trayItem;
+            this.boardFruit = boardFruit;
+            this.histCos = histCos;
+            this.rank = rank;
+        }
+    }
+
+    private static final class PostTapObservation {
+        final GameFrame frame;
+        final TrayState tray;
+
+        PostTapObservation(GameFrame frame, TrayState tray) {
+            this.frame = frame;
+            this.tray = tray;
+        }
+    }
+
+    private static final class RemainingVerification {
+        final boolean confirmed;
+        final boolean completed;
+        final boolean aborted;
+        final int afterRemaining;
+
+        RemainingVerification(
+                boolean confirmed,
+                boolean completed,
+                boolean aborted,
+                int afterRemaining
+        ) {
+            this.confirmed = confirmed;
+            this.completed = completed;
+            this.aborted = aborted;
+            this.afterRemaining = afterRemaining;
+        }
+
+        static RemainingVerification completed(int afterRemaining) {
+            return new RemainingVerification(true, true, false, afterRemaining);
+        }
+
+        static RemainingVerification aborted() {
+            return new RemainingVerification(false, false, true, -1);
         }
     }
 

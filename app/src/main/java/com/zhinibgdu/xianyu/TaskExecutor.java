@@ -324,7 +324,7 @@ public final class TaskExecutor {
         diagnostic(
                 learning
                         ? "========== 真人示范学习开始 · V4.13 =========="
-                        : "========== 闲鱼任务开始 · V4.37.0 =========="
+                        : "========== 闲鱼任务开始 · V4.38.0 =========="
         );
 
         if (learning) {
@@ -4150,7 +4150,7 @@ public final class TaskExecutor {
             String suPath,
             String taskName
     ) {
-        diagnostic("[水果V4.37.0] 启动水果配对求解器：" + taskName);
+        diagnostic("[水果V4.38.0] 启动三槽二消求解器：" + taskName);
         if (!paceSleepV415(260L, 420L)) return false;
 
         gameIncompleteHoldV421 = false;
@@ -4181,13 +4181,13 @@ public final class TaskExecutor {
                             public boolean tap(int x, int y, String reason) {
                                 if (userAborted || physicalTouchDetected) return false;
                                 if (!GameTapPolicy.allows(x, y, observedWidth, observedHeight, reason)) {
-                                    diagnostic("[水果V4.37.0] 拒绝越界/非白名单点击：" + reason
+                                    diagnostic("[水果V4.38.0] 拒绝越界/非白名单点击：" + reason
                                             + " @" + x + "," + y + " / " + observedWidth + "x" + observedHeight);
                                     return false;
                                 }
                                 // Use the detected center exactly; jitter can cross narrow sprite boundaries.
                                 RootResult r = rootWithPath(suPath, "input tap " + x + " " + y);
-                                diagnostic("[水果V4.37.0] 点击 " + reason + " → " + x + "," + y);
+                                diagnostic("[水果V4.38.0] 点击 " + reason + " → " + x + "," + y);
                                 return r.exitCode == 0 && !userAborted;
                             }
 

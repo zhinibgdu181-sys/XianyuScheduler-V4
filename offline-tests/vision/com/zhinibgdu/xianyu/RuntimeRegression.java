@@ -6,6 +6,7 @@ public class RuntimeRegression {
  public static void main(String[] args){
   for(int[] size:new int[][]{{720,1560},{1080,2340},{1440,3120}}){int w=size[0],h=size[1];
    check(GameTapPolicy.allows(w/2,(int)(h*.58),w,h,"水果游戏-配对A"),"bottom fruit");
+   check(GameTapPolicy.allows(w/2,(int)(h*.58),w,h,"水果游戏-槽位匹配"),"tray match fruit");
    check(!GameTapPolicy.allows(w/2,(int)(h*.95),w,h,"水果游戏-配对A"),"bottom button");
    check(!GameTapPolicy.allows(w/2,(int)(h*.05),w,h,"水果游戏-配对B"),"top menu");
    check(GameTapPolicy.allows(w/2,(int)(h*.75),w,h,"水果游戏-开始游戏"),"start");

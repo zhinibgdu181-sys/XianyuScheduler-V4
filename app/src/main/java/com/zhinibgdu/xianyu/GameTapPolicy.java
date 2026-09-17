@@ -10,7 +10,9 @@ final class GameTapPolicy {
             return nx >= 560.0/1440 && nx <= 880.0/1440 && ny >= 2180.0/3120 && ny <= 2500.0/3120;
         if ("水果游戏-关闭道具弹窗".equals(reason))
             return nx >= 1160.0/1440 && nx <= 1325.0/1440 && ny >= 740.0/3120 && ny <= 960.0/3120;
-        if (!"水果游戏-配对A".equals(reason) && !"水果游戏-配对B".equals(reason)) return false;
+        if (!"水果游戏-配对A".equals(reason)
+                && !"水果游戏-配对B".equals(reason)
+                && !"水果游戏-槽位匹配".equals(reason)) return false;
         return ny >= .115 && ny <= .625;
     }
 }

@@ -13,6 +13,9 @@ mapfile -t vision_sources < <(find "$tests/vision" -name '*.java' -print)
  "$src/PairVerification.java" "$src/GameTapPolicy.java"
 "$test_java_bin" -cp "$test_classes_dir/vision" com.zhinibgdu.xianyu.RuntimeRegression
 "$test_java_bin" -cp "$test_classes_dir/vision" com.zhinibgdu.xianyu.Replay "$tests/11873.jpg"
+"$test_java_bin" -cp "$test_classes_dir/vision" com.zhinibgdu.xianyu.TrayRegression \
+ "$tests/tray_0.jpg" "$tests/tray_1.jpg" "$tests/tray_2.jpg" "$tests/tray_3.jpg" \
+ "$tests/tray_anim_pair2.jpg" "$tests/tray_anim_peach.jpg" "$tests/tray_anim_banana.jpg"
 mapfile -t ocr_sources < <(find "$tests/ocr" -name '*.java' -print)
 "$test_java_bin" com.sun.tools.javac.Main -d "$test_classes_dir/ocr" "${ocr_sources[@]}" \
  "$tests/vision/android/graphics/Bitmap.java" "$tests/vision/android/content/Context.java" \
