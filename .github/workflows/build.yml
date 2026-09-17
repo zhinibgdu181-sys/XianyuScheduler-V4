@@ -40,7 +40,7 @@ jobs:
 
       - name: Build Debug APK
         run: |
-          gradle assembleDebug --stacktrace --no-daemon
+          gradle testDebugUnitTest assembleDebug --stacktrace --no-daemon
 
       - name: List APK
         run: |
@@ -49,6 +49,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: xianyu-v4.41.0-debug
+          name: xianyu-v4.42.0-debug
           path: app/build/outputs/apk/**/*.apk
           if-no-files-found: error
