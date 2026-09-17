@@ -613,6 +613,39 @@ final class FruitGameSolver {
     }
 
     /**
+     * A 下落后重新定位原计划中的 B。不能继续使用旧坐标，因为棋盘会发生下落重排。
+     * 这里只在当前重新检测到的水果中寻找与 expected 最相似、且达到可靠门槛的实例。
+     */
+    private static FruitObject findBestMatchingFruit(
+            FruitObject expected,
+            List<FruitObject> objects
+    ) {
+        if (expected == null || objects == null || objects.isEmpty()) return null;
+
+        FruitObject best = null;
+        double bestScore = -1.0;
+        for (FruitObject candidate : objects) {
+            if (candidate == null) continue;
+            Similarity sim = similarity(expected, candidate);
+
+            // 重新定位比初始配对稍宽松，但仍保持颜色/直方图/形状三重门槛，
+            // 防止 A 下落后误把别的水果当成 B。
+            if (sim.rgbMad > 0.075
+                    || sim.histCos < 0.94
+                    || sim.shapeIou < 0.72
+                    || sim.score < 0.90) {
+                continue;
+            }
+
+            if (sim.score > bestScore) {
+                bestScore = sim.score;
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    /**
      * V4.34 水果视觉特征指纹。用 RGB 采样 + HSV 直方图粗量化得到稳定哈希，
      * 同一水果的不同实例会得到相同 key，用于黑名单去重。
      */
