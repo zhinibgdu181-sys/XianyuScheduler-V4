@@ -17,14 +17,14 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * V4.34 视觉小游戏模块："消了还想消"水果配对。
+ * V4.35 视觉小游戏模块："消了还想消"水果配对。
  *
  * 规则：点击水果会进入下方坑位；两个相同水果自动消除；坑位最多3个。
  * 安全策略：只点击高置信度的完整同类对 A->A，一次只处理一对。
  * 只允许点击水果对象本身。禁止点击“打乱”“消除”“解锁”等任何游戏功能按钮。
  * 找不到高置信度对子时直接安全停止。
  *
- * V4.34 改进：
+ * V4.35 改进：
  * 1. 决策引擎：视觉置信度只是硬门槛，在可靠对子中优先处理底层、低风险、高释放价值组合。
  * 2. Observe→Evaluate→Act→Verify→Replan：点A后重新截图定位B，不使用已经失效的旧坐标。
  * 3. 每一对都用“剩余 N→N-2”闭环验证；失败组合进入本局黑名单并安全停止。
@@ -64,8 +64,8 @@ final class FruitGameSolver {
     private static final double MIN_HIST_COS = 0.900;
     private static final double MIN_SHAPE_IOU = 0.64;
 
-    // V4.34 动态阈值降级：水果越少，遮挡/光影导致相似度下降，需要放宽阈值。
-    private static final double[] FALLBACK_THRESHOLDS_V434 = {
+    // V4.35 动态阈值降级：水果越少，遮挡/光影导致相似度下降，需要放宽阈值。
+    private static final double[] FALLBACK_THRESHOLDS_V435 = {
             0.958, 0.93, 0.88, 0.83
     };
 
@@ -87,18 +87,67 @@ final class FruitGameSolver {
         }
 
         if (!host.sleep(420L, 720L)) return Result.ABORTED;
-        ScreenOcr.Snapshot firstOcr = host.ocr("水果游戏V4.34/进入确认");
-        if (host.aborted()) return Result.ABORTED;
 
-        String firstText = normalize(firstOcr == null ? "" : firstOcr.fullText);
-        if (!looksLikeFruitGame(firstText)) {
-            host.log("[游戏V4.34] 当前页面不是水果配对游戏，停止视觉求解");
+        // V4.35：进入水果任务后可能经历 loading / “开始游戏”首页。
+        // 不再只看一帧就判死刑；最多等待 8 秒，并在出现开始页时主动点“开始游戏”。
+        String firstText = "";
+        boolean confirmed = false;
+        long enterWaitStart = SystemClock.elapsedRealtime();
+
+        while (!host.aborted()
+                && SystemClock.elapsedRealtime() - enterWaitStart < 8000L) {
+            ScreenOcr.Snapshot firstOcr = host.ocr(
+                    firstText.isEmpty()
+                            ? "水果游戏V4.35/进入确认"
+                            : "水果游戏V4.35/加载等待");
+            if (host.aborted()) return Result.ABORTED;
+
+            firstText = normalize(firstOcr == null ? "" : firstOcr.fullText);
+
+            if (looksLikeFruitGame(firstText)) {
+                confirmed = true;
+                break;
+            }
+
+            if (looksLikeFruitStartScreen(firstText)) {
+                GameFrame startFrame = captureFrame(context, suPath, host);
+                if (startFrame == null) {
+                    host.log("[游戏V4.35] 检测到‘开始游戏’页，但截图失败，安全停止");
+                    return Result.SAFE_STOP;
+                }
+                int startX = Math.round(startFrame.originalWidth * 0.50f);
+                int startY = Math.round(startFrame.originalHeight * 0.75f);
+                safeRecycle(startFrame.bitmap);
+
+                host.log("[游戏V4.35] 检测到‘开始游戏’页，点击开始 → "
+                        + startX + "," + startY);
+                if (host.aborted()) return Result.ABORTED;
+                if (!runRoot(suPath, "input tap " + startX + " " + startY, 1600L, host)) {
+                    host.log("[开始页V4.35] 点击‘开始游戏’失败，安全停止");
+                    return host.aborted() ? Result.ABORTED : Result.SAFE_STOP;
+                }
+                host.log("[开始页V4.35] ✅ 已点击‘开始游戏’");
+                if (!host.sleep(420L, 680L)) return Result.ABORTED;
+                continue;
+            }
+
+            if (looksLikeTaskPanel(firstText)) {
+                host.log("[游戏V4.35] 已回到任务面板，判定未进入水果游戏");
+                return Result.NOT_FRUIT_GAME;
+            }
+
+            host.log("[游戏V4.35] 页面仍在加载/登录，继续等待");
+            if (!host.sleep(600L, 900L)) return Result.ABORTED;
+        }
+
+        if (!confirmed) {
+            host.log("[游戏V4.35] 等待 8 秒后仍未进入正式水果关卡，安全停止");
             return Result.NOT_FRUIT_GAME;
         }
 
         int remaining = parseRemaining(firstText);
         int progress = parsePercent(firstText);
-        host.log("[游戏V4.34] ✅ 识别水果游戏"
+        host.log("[游戏V4.35] ✅ 识别水果游戏"
                 + (remaining >= 0 ? " / 剩余=" + remaining : "")
                 + (progress >= 0 ? " / 进度=" + progress + "%" : ""));
 
@@ -106,7 +155,7 @@ final class FruitGameSolver {
         int pairActions = 0;
         int consecutiveCaptureFail = 0;
 
-        // V4.34 本轮降级点击失败过的对子，进入黑名单不再重复尝试
+        // V4.35 本轮降级点击失败过的对子，进入黑名单不再重复尝试
         Set<String> failedPairs = new HashSet<>();
 
         while (!host.aborted()
@@ -116,19 +165,40 @@ final class FruitGameSolver {
             GameFrame frame = captureFrame(context, suPath, host);
             if (frame == null) {
                 consecutiveCaptureFail++;
-                host.log("[游戏V4.34] 截图失败 " + consecutiveCaptureFail + "/3");
+                host.log("[游戏V4.35] 截图失败 " + consecutiveCaptureFail + "/3");
                 if (consecutiveCaptureFail >= 3) return Result.SAFE_STOP;
                 if (!host.sleep(250L, 420L)) return Result.ABORTED;
                 continue;
             }
             consecutiveCaptureFail = 0;
 
+            // V4.35：功能弹窗（解锁/消除/打乱）会遮住大半棋盘，
+            // 旧版会因此只检测到 6~8 个水果并误判死局。
+            // 这里直接用画面结构识别“大块暖白色弹窗”，只点击弹窗右上角 X，
+            // 绝不点击“使用/消除/打乱/解锁”按钮。
+            if (looksLikeBlockingFunctionPopup(frame)) {
+                int closeX = Math.round(frame.originalWidth * 0.862f);
+                int closeY = Math.round(frame.originalHeight * 0.277f);
+                safeRecycle(frame.bitmap);
+
+                host.log("[弹窗V4.35] 检测到功能弹窗，立即关闭 X → "
+                        + closeX + "," + closeY);
+                if (host.aborted()) return Result.ABORTED;
+                if (!runRoot(suPath, "input tap " + closeX + " " + closeY, 1600L, host)) {
+                    host.log("[弹窗V4.35] 关闭 X 失败，安全停止");
+                    return host.aborted() ? Result.ABORTED : Result.SAFE_STOP;
+                }
+                host.log("[弹窗V4.35] ✅ 已关闭功能弹窗");
+                if (!host.sleep(180L, 300L)) return Result.ABORTED;
+                continue;
+            }
+
             List<FruitObject> objects = detectFruitObjects(frame);
 
-            // V4.34 动态阈值降级搜索：0.958 → 0.93 → 0.88 → 0.83
+            // V4.35 动态阈值降级搜索：0.958 → 0.93 → 0.88 → 0.83
             PairChoice pair = null;
             double hitThreshold = MIN_PAIR_SCORE;
-            for (double t : FALLBACK_THRESHOLDS_V434) {
+            for (double t : FALLBACK_THRESHOLDS_V435) {
                 pair = chooseBestPairWithThreshold(objects, t, failedPairs);
                 if (pair != null) {
                     hitThreshold = t;
@@ -136,7 +206,7 @@ final class FruitGameSolver {
                 }
             }
 
-            host.log("[游戏V4.34] 可下落候选水果=" + objects.size()
+            host.log("[游戏V4.35] 可下落候选水果=" + objects.size()
                     + " / 顶部禁区<" + Math.round(frame.originalHeight * 0.115f)
                     + " / 底部禁区>" + Math.round(frame.originalHeight * 0.615f)
                     + (pair == null ? " / 无高置信对子" :
@@ -149,28 +219,28 @@ final class FruitGameSolver {
                             + " threshold=" + format(hitThreshold)));
 
             if (pair != null && hitThreshold < MIN_PAIR_SCORE) {
-                host.log("[游戏V4.34] ⚠️ 阈值降级命中 " + format(hitThreshold)
+                host.log("[游戏V4.35] ⚠️ 阈值降级命中 " + format(hitThreshold)
                         + " / score=" + format(pair.score)
                         + " / 剩余水果=" + objects.size());
             }
 
             if (objects.size() < 10) {
                 saveVisionDiagnostic(context, frame.bitmap, "low_objects_" + objects.size());
-                host.log("[游戏V4.34] 检测数量异常偏少，已保存视觉诊断图；本轮不会点击功能按钮");
+                host.log("[游戏V4.35] 检测数量异常偏少，已保存视觉诊断图；本轮不会点击功能按钮");
             }
 
             if (pair == null) {
                 safeRecycle(frame.bitmap);
 
-                ScreenOcr.Snapshot checkpoint = host.ocr("水果游戏V4.34/无对子检查");
+                ScreenOcr.Snapshot checkpoint = host.ocr("水果游戏V4.35/无对子检查");
                 if (host.aborted()) return Result.ABORTED;
                 String text = normalize(checkpoint == null ? "" : checkpoint.fullText);
                 if (isRoundCompleted(text)) {
-                    host.log("[游戏V4.34] ✅ 已检测到一关完成状态");
+                    host.log("[游戏V4.35] ✅ 已检测到一关完成状态");
                     return Result.COMPLETED;
                 }
 
-                host.log("[游戏V4.34] 所有阈值(0.958→0.83)均无对子，确认死局，安全停止");
+                host.log("[游戏V4.35] 所有阈值(0.958→0.83)均无对子，确认死局，安全停止");
                 return Result.SAFE_STOP;
             }
 
@@ -180,7 +250,7 @@ final class FruitGameSolver {
             FruitObject expectedB = pair.b;
             safeRecycle(frame.bitmap);
 
-            host.log("[决策V4.34] 选择当前动作 / A=(" + ax + "," + ay + ")"
+            host.log("[决策V4.35] 选择当前动作 / A=(" + ax + "," + ay + ")"
                     + " / visual=" + format(pair.score)
                     + " / decision=" + format(pair.decisionScore)
                     + " / lower=" + format(pair.lowerBoth)
@@ -194,21 +264,21 @@ final class FruitGameSolver {
 
             GameFrame afterA = captureFrame(context, suPath, host);
             if (afterA == null) {
-                host.log("[游戏V4.34] A下落后无法重新观察，安全停止");
+                host.log("[游戏V4.35] A下落后无法重新观察，安全停止");
                 return Result.SAFE_STOP;
             }
             List<FruitObject> afterObjects = detectFruitObjects(afterA);
             FruitObject reacquiredB = findBestMatchingFruit(expectedB, afterObjects);
             if (reacquiredB == null) {
                 safeRecycle(afterA.bitmap);
-                host.log("[游戏V4.34] A下落后无法重新定位同类B；不盲点第三颗水果，安全停止");
+                host.log("[游戏V4.35] A下落后无法重新定位同类B；不盲点第三颗水果，安全停止");
                 return Result.SAFE_STOP;
             }
             int bx = mapX(afterA, reacquiredB.centerX);
             int by = mapY(afterA, reacquiredB.centerY);
             safeRecycle(afterA.bitmap);
 
-            host.log("[决策V4.34] A下落后重新分析 → B=(" + bx + "," + by + ")");
+            host.log("[决策V4.35] A下落后重新分析 → B=(" + bx + "," + by + ")");
             if (!host.tap(bx, by, "水果游戏-配对B")) {
                 return host.aborted() ? Result.ABORTED : Result.SAFE_STOP;
             }
@@ -216,59 +286,59 @@ final class FruitGameSolver {
             if (!host.sleep(520L, 820L)) return Result.ABORTED;
 
             // 每一对都闭环验证，不再等到第6对才发现整局没有进展。
-            ScreenOcr.Snapshot verifyOcr = host.ocr("水果游戏V4.34/逐对验证#" + pairActions);
+            ScreenOcr.Snapshot verifyOcr = host.ocr("水果游戏V4.35/逐对验证#" + pairActions);
             if (host.aborted()) return Result.ABORTED;
             String verifyText = normalize(verifyOcr == null ? "" : verifyOcr.fullText);
             int afterRemaining = parseRemaining(verifyText);
             if (isRoundCompleted(verifyText)) {
-                host.log("[验证V4.34] ✅ 第1关完成");
+                host.log("[验证V4.35] ✅ 第1关完成");
                 return Result.COMPLETED;
             }
             if (afterRemaining >= 0) {
                 if (beforeRemaining >= 0 && afterRemaining == beforeRemaining - 2) {
-                    host.log("[验证V4.34] ✅ 配对确认：" + beforeRemaining + "→" + afterRemaining
+                    host.log("[验证V4.35] ✅ 配对确认：" + beforeRemaining + "→" + afterRemaining
                             + " / 本次决策有效，重新分析新局面");
                     remaining = afterRemaining;
                 } else if (beforeRemaining >= 0 && afterRemaining >= beforeRemaining) {
-                    failedPairs.add(pairKeyV434(pair.a, pair.b));
-                    host.log("[验证V4.34] ❌ 未确认消除：" + beforeRemaining + "→" + afterRemaining
+                    failedPairs.add(pairKeyV435(pair.a, pair.b));
+                    host.log("[验证V4.35] ❌ 未确认消除：" + beforeRemaining + "→" + afterRemaining
                             + " / 当前视觉组合加入黑名单；为避免填满坑位安全停止");
                     return Result.SAFE_STOP;
                 } else {
-                    host.log("[验证V4.34] 状态发生变化：" + beforeRemaining + "→" + afterRemaining
+                    host.log("[验证V4.35] 状态发生变化：" + beforeRemaining + "→" + afterRemaining
                             + " / 重新建图");
                     remaining = afterRemaining;
                 }
             } else {
-                host.log("[验证V4.34] OCR未读到剩余数；保留视觉结果并重新建图");
+                host.log("[验证V4.35] OCR未读到剩余数；保留视觉结果并重新建图");
             }
 
             // OCR is intentionally sparse; screenshot vision handles most pairs.
             // Every few pairs verify that the game is still progressing / ended.
             if (pairActions % 6 == 0) {
                 ScreenOcr.Snapshot checkpoint = host.ocr(
-                        "水果游戏V4.34/进度检查#" + pairActions);
+                        "水果游戏V4.35/进度检查#" + pairActions);
                 if (host.aborted()) return Result.ABORTED;
                 String text = normalize(checkpoint == null ? "" : checkpoint.fullText);
 
                 int nowRemaining = parseRemaining(text);
                 int nowProgress = parsePercent(text);
-                host.log("[游戏V4.34] 进度检查 pair=" + pairActions
+                host.log("[游戏V4.35] 进度检查 pair=" + pairActions
                         + (nowRemaining >= 0 ? " / 剩余=" + nowRemaining : "")
                         + (nowProgress >= 0 ? " / " + nowProgress + "%" : ""));
 
                 if (isRoundCompleted(text)) {
-                    host.log("[游戏V4.34] ✅ 第1关完成");
+                    host.log("[游戏V4.35] ✅ 第1关完成");
                     return Result.COMPLETED;
                 }
 
                 // If we unexpectedly left the fruit game, do not continue tapping.
                 if (!text.isEmpty() && !looksLikeFruitGame(text)) {
                     if (looksLikeTaskPanel(text)) {
-                        host.log("[游戏V4.34] 已自动返回任务面板，按完成流程交给外层验证");
+                        host.log("[游戏V4.35] 已自动返回任务面板，按完成流程交给外层验证");
                         return Result.COMPLETED;
                     }
-                    host.log("[游戏V4.34] 页面已离开水果游戏，停止继续点击");
+                    host.log("[游戏V4.35] 页面已离开水果游戏，停止继续点击");
                     return Result.SAFE_STOP;
                 }
 
@@ -278,8 +348,59 @@ final class FruitGameSolver {
         }
 
         if (host.aborted()) return Result.ABORTED;
-        host.log("[游戏V4.34] 达到本轮安全上限，停止自动点击");
+        host.log("[游戏V4.35] 达到本轮安全上限，停止自动点击");
         return Result.SAFE_STOP;
+    }
+
+    private static boolean looksLikeFruitStartScreen(String text) {
+        String t = normalize(text);
+        if (t.isEmpty()) return false;
+        return t.contains("开始游戏")
+                || (t.contains("第1关") && t.contains("开始")
+                    && !t.contains("消除") && !t.contains("打乱"));
+    }
+
+    /**
+     * 检测“解锁/消除/打乱”这类功能弹窗。
+     *
+     * 三类弹窗布局一致：屏幕中央会出现一块很大的暖白/米黄色面板，
+     * 背景整体变暗。正常棋盘中央是蓝色天空，因此用中央区域的暖色亮像素
+     * 占比可以稳定区分，不需要每轮都做一次慢 OCR。
+     */
+    private static boolean looksLikeBlockingFunctionPopup(GameFrame frame) {
+        if (frame == null || frame.bitmap == null) return false;
+        Bitmap bitmap = frame.bitmap;
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        if (width <= 0 || height <= 0) return false;
+
+        int x0 = clamp(Math.round(width * 0.18f), 0, width - 1);
+        int x1 = clamp(Math.round(width * 0.82f), x0 + 1, width);
+        int y0 = clamp(Math.round(height * 0.31f), 0, height - 1);
+        int y1 = clamp(Math.round(height * 0.68f), y0 + 1, height);
+
+        int step = Math.max(2, width / 240);
+        int warmBright = 0;
+        int samples = 0;
+
+        for (int y = y0; y < y1; y += step) {
+            for (int x = x0; x < x1; x += step) {
+                int c = bitmap.getPixel(x, y);
+                int r = (c >> 16) & 0xff;
+                int g = (c >> 8) & 0xff;
+                int b = c & 0xff;
+
+                // 弹窗主体是暖白/米黄；正常天空是青蓝色。
+                if (r > 205 && g > 175 && b > 115 && r - b > 20) {
+                    warmBright++;
+                }
+                samples++;
+            }
+        }
+
+        if (samples <= 0) return false;
+        double ratio = warmBright / (double) samples;
+        return ratio >= 0.46;
     }
 
     static boolean looksLikeFruitGame(String text) {
@@ -354,7 +475,7 @@ final class FruitGameSolver {
         if (dir == null) return null;
         if (!dir.exists() && !dir.mkdirs()) return null;
 
-        File file = new File(dir, "xianyu_fruit_v434_" + android.os.Process.myPid() + ".png");
+        File file = new File(dir, "xianyu_fruit_v435_" + android.os.Process.myPid() + ".png");
         String path = file.getAbsolutePath();
         String cmd = "rm -f " + shellQuote(path)
                 + "; screencap -p " + shellQuote(path)
@@ -394,7 +515,7 @@ final class FruitGameSolver {
         Bitmap bitmap = frame.bitmap;
         int width = bitmap.getWidth();
         int height = bitmap.getHeight();
-        // V4.34 real-device rule: fruit clipped/packed against the top cannot reliably
+        // V4.35 real-device rule: fruit clipped/packed against the top cannot reliably
         // fall into the pit. Bottom contains remaining/progress, unlock, eliminate,
         // shuffle and the pit UI. Neither zone is ever a tap candidate.
         int roiTop = clamp(Math.round(height * 0.115f), 0, height - 1);
@@ -559,7 +680,7 @@ final class FruitGameSolver {
     }
 
     /**
-     * V4.34 决策引擎：不是单纯找“最像的一对”，而是在所有可靠对子中
+     * V4.35 决策引擎：不是单纯找“最像的一对”，而是在所有可靠对子中
      * 综合考虑视觉置信度、底层优先、两颗水果都处于低位、纵向跨度和释放空间。
      * 视觉阈值仍然是硬门槛，决策分只负责在“已经可靠”的对子之间排序。
      */
@@ -579,7 +700,7 @@ final class FruitGameSolver {
                 FruitObject b = objects.get(j);
 
                 if (blacklist != null && !blacklist.isEmpty()) {
-                    String key = pairKeyV434(a, b);
+                    String key = pairKeyV435(a, b);
                     if (blacklist.contains(key)) continue;
                 }
 
@@ -646,16 +767,16 @@ final class FruitGameSolver {
     }
 
     /**
-     * V4.34 水果视觉特征指纹。用 RGB 采样 + HSV 直方图粗量化得到稳定哈希，
+     * V4.35 水果视觉特征指纹。用 RGB 采样 + HSV 直方图粗量化得到稳定哈希，
      * 同一水果的不同实例会得到相同 key，用于黑名单去重。
      */
-    private static String pairKeyV434(FruitObject a, FruitObject b) {
-        String ka = fruitKeyV434(a);
-        String kb = fruitKeyV434(b);
+    private static String pairKeyV435(FruitObject a, FruitObject b) {
+        String ka = fruitKeyV435(a);
+        String kb = fruitKeyV435(b);
         return ka.compareTo(kb) <= 0 ? ka + "|" + kb : kb + "|" + ka;
     }
 
-    private static String fruitKeyV434(FruitObject f) {
+    private static String fruitKeyV435(FruitObject f) {
         if (f == null || f.rgb == null) return "0";
         long h = 0xcbf29ce484222325L;
         for (int i = 0; i < f.rgb.length; i += 16) {
