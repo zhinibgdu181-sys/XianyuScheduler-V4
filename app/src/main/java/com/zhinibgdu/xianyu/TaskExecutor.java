@@ -4146,7 +4146,7 @@ public final class TaskExecutor {
             String suPath,
             String taskName
     ) {
-        diagnostic("[水果V4.29] 启动水果配对求解器：" + taskName);
+        diagnostic("[水果V4.36] 启动水果配对求解器：" + taskName);
         if (!paceSleepV415(260L, 420L)) return false;
 
         gameIncompleteHoldV421 = false;
@@ -4154,12 +4154,12 @@ public final class TaskExecutor {
         gameIncompleteTaskV421 = "";
         beginGameSolverOwnershipV420("FRUIT_PAIR_GAME", taskName);
 
-        FruitGameSolver.Result result = FruitGameSolver.Result.SAFE_STOP;
+        FruitGameSolver.Result result = FruitGameSolver.Result.SAFE_STOP_CLEAN;
         try {
             // Only bounded re-observation is allowed. No in-game function button
             // (shuffle/eliminate/unlock/use) is ever touched by the solver.
             for (int segment = 1; segment <= 2; segment++) {
-                diagnostic("[水果V4.29] 求解段 " + segment + "/2");
+                diagnostic("[水果V4.36] 求解段 " + segment + "/2");
                 result = FruitGameSolver.solveOneRound(
                         lastContext,
                         suPath,
@@ -4168,63 +4168,63 @@ public final class TaskExecutor {
                             public boolean tap(int x, int y, String reason) {
                                 if (userAborted || physicalTouchDetected) return false;
                                 if (reason == null) {
-                                    diagnostic("[游戏限制V4.33] 拒绝无reason点击");
+                                    diagnostic("[游戏限制V4.36] 拒绝无reason点击");
                                     return false;
                                 }
 
-                                // V4.33：两个唯一允许的非水果点击：
-                                // 1) 开始游戏；2) 自动弹出的消除/打乱推荐弹窗右上角X。
+                                // V4.36：两个唯一允许的非水果点击：
+                                // 1) 开始游戏；2) 自动弹出的解锁/消除/打乱推荐弹窗右上角X。
                                 // 坐标必须同时落在极窄白名单，防止误点“使用/消除/打乱/解锁”。
                                 if ("水果游戏-开始游戏".equals(reason)) {
                                     if (x < 560 || x > 880 || y < 2180 || y > 2500) {
-                                        diagnostic("[水果安全点击V4.33] BLOCK START " + x + "," + y);
+                                        diagnostic("[水果安全点击V4.36] BLOCK START " + x + "," + y);
                                         return false;
                                     }
                                     RootResult r = rootWithPath(suPath,
                                             "input tap " + x + " " + y);
-                                    diagnostic("[水果安全点击V4.33] ALLOW START → " + x + "," + y);
+                                    diagnostic("[水果安全点击V4.36] ALLOW START → " + x + "," + y);
                                     return r.exitCode == 0 && !userAborted;
                                 }
 
                                 if ("水果游戏-关闭道具弹窗".equals(reason)) {
                                     if (x < 1160 || x > 1325 || y < 740 || y > 960) {
-                                        diagnostic("[水果安全点击V4.33] BLOCK POPUP_X " + x + "," + y);
+                                        diagnostic("[水果安全点击V4.36] BLOCK POPUP_X " + x + "," + y);
                                         return false;
                                     }
                                     RootResult r = rootWithPath(suPath,
                                             "input tap " + x + " " + y);
-                                    diagnostic("[水果安全点击V4.33] ALLOW POPUP_X → " + x + "," + y);
+                                    diagnostic("[水果安全点击V4.36] ALLOW POPUP_X → " + x + "," + y);
                                     return r.exitCode == 0 && !userAborted;
                                 }
 
                                 if (!reason.startsWith("水果游戏-配对")) {
-                                    diagnostic("[游戏限制V4.33] 拒绝非水果对象点击：" + reason);
+                                    diagnostic("[游戏限制V4.36] 拒绝非水果对象点击：" + reason);
                                     return false;
                                 }
 
                                 int safeTop = 350;
                                 int safeBottom = 1920;
                                 if (y < safeTop) {
-                                    diagnostic("[水果安全点击V4.33] BLOCK " + x + "," + y
+                                    diagnostic("[水果安全点击V4.36] BLOCK " + x + "," + y
                                             + " reason=TOP_NO_DROP_ZONE");
                                     return false;
                                 }
                                 if (y > safeBottom) {
-                                    diagnostic("[水果安全点击V4.33] BLOCK " + x + "," + y
+                                    diagnostic("[水果安全点击V4.36] BLOCK " + x + "," + y
                                             + " reason=BOTTOM_UI_FORBIDDEN");
                                     return false;
                                 }
                                 int jx = x + ThreadLocalRandom.current().nextInt(-3, 4);
                                 int jy = y + ThreadLocalRandom.current().nextInt(-3, 4);
                                 if (jy < safeTop || jy > safeBottom) {
-                                    diagnostic("[水果安全点击V4.33] BLOCK jitter=" + jx + "," + jy);
+                                    diagnostic("[水果安全点击V4.36] BLOCK jitter=" + jx + "," + jy);
                                     return false;
                                 }
                                 RootResult r = rootWithPath(
                                         suPath,
                                         "input tap " + Math.max(1, jx) + " " + Math.max(1, jy)
                                 );
-                                diagnostic("[水果安全点击V4.33] ALLOW " + reason + " → " + jx + "," + jy);
+                                diagnostic("[水果安全点击V4.36] ALLOW " + reason + " → " + jx + "," + jy);
                                 return r.exitCode == 0 && !userAborted;
                             }
 
@@ -4250,13 +4250,20 @@ public final class TaskExecutor {
                         }
                 );
 
-                if (result != FruitGameSolver.Result.SAFE_STOP) break;
-                ScreenOcr.Snapshot still = captureOcrV45(suPath, "水果V4.26/安全停止页面确认");
+                // V4.36：DIRTY 表示已经尝试过水果点击但未闭环确认成功，
+                // 坑位可能被污染，绝不允许启动第二求解段。
+                if (result == FruitGameSolver.Result.SAFE_STOP_DIRTY) {
+                    diagnostic("[水果V4.36] DIRTY安全停止：坑位状态可能已改变，禁止求解段2继续点击");
+                    break;
+                }
+                if (result != FruitGameSolver.Result.SAFE_STOP_CLEAN) break;
+
+                ScreenOcr.Snapshot still = captureOcrV45(suPath, "水果V4.36/CLEAN安全停止页面确认");
                 String stillText = combinedTextV45(null, still);
                 if (!FruitGameSolver.looksLikeFruitGame(stillText)) break;
                 if (segment < 2) {
-                    diagnostic("[水果V4.29] 暂未找到可靠对子；不点任何功能按钮，稳定后再观察一次");
-                    if (!paceSleepV415(320L, 520L)) return false;
+                    diagnostic("[水果V4.36] CLEAN安全停止：未污染坑位；稳定后仅允许再观察一次");
+                    if (!paceSleepV415(240L, 380L)) return false;
                 }
             }
         } finally {
@@ -4266,29 +4273,25 @@ public final class TaskExecutor {
         if (result == FruitGameSolver.Result.ABORTED) return false;
 
         if (result == FruitGameSolver.Result.COMPLETED) {
-            diagnostic("[水果V4.29] ✅ 水果第1关完成，执行受控返回到任务面板");
+            diagnostic("[水果V4.36] ✅ 水果第1关完成，执行受控返回到任务面板");
             TaskProfileStoreV48.recordRecovery(taskName, "fruit_game_completed");
             return conditionalBackRecoveryV410(suPath, taskName, "水果游戏完成返回");
         }
 
         if (result == FruitGameSolver.Result.NOT_FRUIT_GAME) {
-            diagnostic("[水果V4.33] 点击任务后没有进入预期水果页；复查实际页面");
+            diagnostic("[水果V4.36] 点击任务后没有进入预期水果页；复查实际页面");
 
             // V4.32: after a loading-time false negative, re-check the real page.
             // If the fruit game is actually visible, never let generic
             // conditionalBackRecovery perform edge swipes inside the game.
             ScreenOcr.Snapshot checkOcr =
-                    captureOcrV45(suPath, "水果V4.33/未识别复查");
+                    captureOcrV45(suPath, "水果V4.36/未识别复查");
             String checkText = combinedTextV45(null, checkOcr);
 
             if (FruitGameSolver.looksLikeFruitGame(checkText)) {
-                diagnostic("[水果V4.33] 复查发现实际已在水果游戏中，用KEYCODE_BACK退出");
-                RootResult back =
-                        rootWithPath(suPath, "input keyevent KEYCODE_BACK");
-                boolean recovered = back.exitCode == 0
-                        && paceSleepV415(180L, 300L)
-                        && recoverToXianyuTaskPanelV47(
-                                suPath, "水果游戏未识别后KEYCODE_BACK恢复");
+                diagnostic("[水果V4.36] 复查发现实际已在水果游戏中，执行双BACK+重启兜底退出");
+                boolean recovered = exitFruitGameToTaskPanelV436(
+                        suPath, taskName, "水果游戏未识别恢复");
 
                 if (recovered) {
                     gameIncompleteHoldV421 = false;
@@ -4298,7 +4301,7 @@ public final class TaskExecutor {
                 gameIncompleteHoldV421 = true;
                 gameIncompleteKindV421 = "FRUIT_PAIR_GAME";
                 gameIncompleteTaskV421 = taskName;
-                diagnostic("[游戏守卫V4.33] KEYCODE_BACK后仍未恢复任务面板，保留现场");
+                diagnostic("[游戏守卫V4.36] 水果页仍无法安全退出，保留现场");
                 return false;
             }
 
@@ -4307,18 +4310,19 @@ public final class TaskExecutor {
             return false;
         }
 
-        // V4.26: SAFE_STOP no longer kills the whole daily scan. We are allowed
-        // to leave the mini-game itself, but still never click its function buttons.
-        ScreenOcr.Snapshot hold = captureOcrV45(suPath, "水果V4.26/最终安全停止确认");
+        // V4.36：CLEAN/DIRTY 都不再继续盲点小游戏功能按钮。DIRTY 只意味着
+        // 不允许第二求解段，不意味着必须把整个日常扫描永久卡在游戏页。
+        ScreenOcr.Snapshot hold = captureOcrV45(suPath, "水果V4.36/最终安全停止确认");
         String holdText = combinedTextV45(null, hold);
-        TaskProfileStoreV48.recordUnverifiedV411(taskName, "fruit_game_safe_stop");
+        String stopReason = result == FruitGameSolver.Result.SAFE_STOP_DIRTY
+                ? "fruit_game_safe_stop_dirty" : "fruit_game_safe_stop_clean";
+        TaskProfileStoreV48.recordUnverifiedV411(taskName, stopReason);
 
         if (FruitGameSolver.looksLikeFruitGame(holdText)) {
-            diagnostic("[游戏守卫V4.29] 水果Solver未完成；禁止任何屏幕返回手势，改用KEYCODE_BACK退出小游戏");
-            diagnostic("[水果安全触摸V4.29] BLOCK generic swipe reason=FRUIT_GAME_NO_GENERIC_GESTURE");
-            RootResult back = rootWithPath(suPath, "input keyevent KEYCODE_BACK");
-            boolean recovered = back.exitCode == 0 && paceSleepV415(180L, 300L)
-                    && recoverToXianyuTaskPanelV47(suPath, "水果游戏KEYCODE_BACK后导航恢复");
+            diagnostic("[游戏守卫V4.36] 水果Solver未完成；禁止边缘滑动/功能按钮，执行受控退出");
+            diagnostic("[水果安全触摸V4.36] BLOCK generic swipe reason=FRUIT_GAME_NO_GENERIC_GESTURE");
+            boolean recovered = exitFruitGameToTaskPanelV436(
+                    suPath, taskName, "水果Solver安全停止恢复");
             if (recovered) {
                 gameIncompleteHoldV421 = false;
                 return true;
@@ -4327,9 +4331,66 @@ public final class TaskExecutor {
             gameIncompleteHoldV421 = true;
             gameIncompleteKindV421 = "FRUIT_PAIR_GAME";
             gameIncompleteTaskV421 = taskName;
-            diagnostic("[游戏守卫V4.29] 无法安全退出水果页，才保留现场并停止继续扫描");
+            diagnostic("[游戏守卫V4.36] 双BACK与重启兜底后仍无法恢复，保留现场并停止继续扫描");
         }
         return false;
+    }
+
+    /**
+     * V4.36 水果小游戏专用退出。空闲推广弹窗可能吞掉第一次 KEYCODE_BACK，
+     * 因此先允许最多两次 BACK，每次都重新识别页面；仍在水果页才重启闲鱼兜底。
+     */
+    private static boolean exitFruitGameToTaskPanelV436(
+            String suPath, String taskName, String reason
+    ) {
+        if (userAborted || physicalTouchDetected) return false;
+
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            diagnostic("[水果退出V4.36] KEYCODE_BACK " + attempt + "/2 / " + reason);
+            RootResult back = rootWithPath(suPath, "input keyevent KEYCODE_BACK");
+            if (back.exitCode != 0) {
+                diagnostic("[水果退出V4.36] BACK命令失败 exit=" + back.exitCode);
+                break;
+            }
+            if (!paceSleepV415(260L, 420L)) return false;
+
+            ScreenOcr.Snapshot probe = captureOcrV45(
+                    suPath, "水果V4.36/退出检查#" + attempt);
+            String text = combinedTextV45(null, probe);
+            if (isTaskPageV45(null, probe)) {
+                diagnostic("[水果退出V4.36] ✅ 已直接回到任务面板");
+                return true;
+            }
+            if (!FruitGameSolver.looksLikeFruitGame(text)) {
+                diagnostic("[水果退出V4.36] 已离开水果页，继续恢复任务面板");
+                if (recoverToXianyuTaskPanelV47(
+                        suPath, "水果退出后导航恢复#" + attempt)) {
+                    return true;
+                }
+            } else {
+                diagnostic("[水果退出V4.36] 第" + attempt
+                        + "次BACK后仍在水果页；可能是关闭了空闲弹窗");
+            }
+        }
+
+        if (userAborted || physicalTouchDetected) return false;
+        diagnostic("[水果退出V4.36] 两次BACK仍未恢复，重启闲鱼作为最终兜底");
+        RootResult restart = rootWithPath(
+                suPath,
+                "am force-stop " + TARGET_PACKAGE
+                        + "; sleep 1; am start -n " + TARGET_MAIN_ACTIVITY
+        );
+        if (restart.exitCode != 0 || !waitFg(suPath, 12000L)) {
+            diagnostic("[水果退出V4.36] ❌ 重启闲鱼失败");
+            return false;
+        }
+        if (!paceSleepV415(500L, 760L)) return false;
+        boolean recovered = recoverToXianyuTaskPanelV47(
+                suPath, "水果重启闲鱼后恢复任务面板");
+        diagnostic(recovered
+                ? "[水果退出V4.36] ✅ 重启后已恢复任务面板"
+                : "[水果退出V4.36] ❌ 重启后仍未恢复任务面板");
+        return recovered;
     }
 
     private static boolean executeMahjongPairGameV419(

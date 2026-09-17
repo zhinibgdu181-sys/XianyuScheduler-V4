@@ -1,3 +1,14 @@
+# V4.36
+
+- Fruit game: split safe stop into `SAFE_STOP_CLEAN` and `SAFE_STOP_DIRTY`; DIRTY states never start a second solve segment.
+- Fruit game: treat the long-idle “解锁/消除/打乱” recommendation dialog as an asynchronous blocking overlay.
+- Fruit game: close only the dialog's own X at about `(0.866W, 0.281H)`, verify that the dialog actually disappeared, then discard stale fruit coordinates and re-plan.
+- Fruit game: add popup checks after A and after B; ambiguous A-stage popup states are stopped as DIRTY.
+- Fruit game: tighten pair threshold to `0.990`, remove 0.93/0.88/0.83 fallbacks, and tighten B re-acquisition to reduce false pairs observed in real logs.
+- Fruit game: save a diagnostic screenshot when a visually selected pair fails the `remaining N -> N-2` verification.
+- Recovery: fruit-game exit now allows two KEYCODE_BACK attempts (first may only close an idle popup), then restarts IdleFish as a final fallback before rebuilding navigation.
+- Existing Mahjong solver and non-game task behavior are retained.
+
 # V4.29
 
 - Fruit game: top no-drop zone and bottom UI are hard forbidden touch zones.
