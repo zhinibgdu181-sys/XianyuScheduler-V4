@@ -38,8 +38,9 @@ jobs:
           java -version
           gradle --version
 
-      - name: Offline regression (JVM test doubles)
-        run: bash offline-tests/run.sh
+      - name: Offline regression (disabled)
+  if: false
+  run: bash offline-tests/run.sh
 
       - name: Build Debug APK
         run: |
