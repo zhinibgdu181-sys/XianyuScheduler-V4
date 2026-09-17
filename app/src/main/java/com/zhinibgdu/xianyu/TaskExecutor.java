@@ -324,7 +324,7 @@ public final class TaskExecutor {
         diagnostic(
                 learning
                         ? "========== 真人示范学习开始 · V4.13 =========="
-                        : "========== 闲鱼任务开始 · V4.40.0 =========="
+                        : "========== 闲鱼任务开始 · V4.41.0 =========="
         );
 
         if (learning) {
@@ -1821,11 +1821,11 @@ public final class TaskExecutor {
             // this layout. Avoid a full OCR round just to confirm COIN_HOME.
             // If the direct tap is too early/misses, the final task-panel probe
             // below will classify COIN_HOME and perform the normal OCR fallback.
-            if (!paceSleepV415(520L, 720L)) return false;
+            if (!paceSleepV415(850L, 1150L)) return false;
             diagnostic("[极速导航V4.26] 已点闲鱼币，乐观直点‘赚骰子’，减少一次整屏OCR");
             boolean optimisticEarn = tapByRatioV43(
                     suPath, 0.735f, 0.495f, "极速导航V4.23-闲鱼币-赚骰子快速点击", false);
-            if (optimisticEarn && !paceSleepV415(320L, 480L)) return false;
+            if (optimisticEarn && !paceSleepV415(650L, 950L)) return false;
 
             PageProbeV411 optimisticTask = probePageV411(suPath, "极速导航V4.23/乐观任务面板确认");
             if (optimisticTask.kind == PageKindV411.TASK_PANEL) {
@@ -2092,13 +2092,6 @@ public final class TaskExecutor {
         if (text.contains("1分兑换")) score++;
         if (text.contains("闲鱼币抵扣")) score++;
         if (text.contains("IP兑换")) score++;
-        // V4.40: 新版闲鱼币首页首屏可能不再稳定识别“赚骰子/扔骰子寻宝”，
-        // 但“玩游戏 赚闲鱼币 + 现金奖池/闲鱼币夺大宝/小游戏”组合只会出现在币首页。
-        // 这可避免把已经到达 COIN_HOME 的页面误判 UNKNOWN 后再额外 OCR 5~6 秒。
-        if (text.contains("玩游戏") && text.contains("赚闲鱼币")) score += 2;
-        if (text.contains("现金奖池")) score++;
-        if (text.contains("闲鱼币夺大宝")) score++;
-        if (text.contains("小游戏")) score++;
         return score >= 2;
     }
 
@@ -4157,8 +4150,8 @@ public final class TaskExecutor {
             String suPath,
             String taskName
     ) {
-        diagnostic("[水果V4.40.0] 启动栈式二消求解器：" + taskName);
-        if (!paceSleepV415(180L, 300L)) return false;
+        diagnostic("[水果V4.41.0] 启动稳定栈式二消求解器：" + taskName);
+        if (!paceSleepV415(260L, 420L)) return false;
 
         gameIncompleteHoldV421 = false;
         gameIncompleteKindV421 = "";
@@ -4188,13 +4181,13 @@ public final class TaskExecutor {
                             public boolean tap(int x, int y, String reason) {
                                 if (userAborted || physicalTouchDetected) return false;
                                 if (!GameTapPolicy.allows(x, y, observedWidth, observedHeight, reason)) {
-                                    diagnostic("[水果V4.40.0] 拒绝越界/非白名单点击：" + reason
+                                    diagnostic("[水果V4.41.0] 拒绝越界/非白名单点击：" + reason
                                             + " @" + x + "," + y + " / " + observedWidth + "x" + observedHeight);
                                     return false;
                                 }
                                 // Use the detected center exactly; jitter can cross narrow sprite boundaries.
                                 RootResult r = rootWithPath(suPath, "input tap " + x + " " + y);
-                                diagnostic("[水果V4.40.0] 点击 " + reason + " → " + x + "," + y);
+                                diagnostic("[水果V4.41.0] 点击 " + reason + " → " + x + "," + y);
                                 return r.exitCode == 0 && !userAborted;
                             }
 
