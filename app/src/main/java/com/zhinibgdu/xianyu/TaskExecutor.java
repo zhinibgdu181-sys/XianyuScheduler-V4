@@ -324,7 +324,7 @@ public final class TaskExecutor {
         diagnostic(
                 learning
                         ? "========== 真人示范学习开始 · V4.13 =========="
-                        : "========== 闲鱼任务开始 · V4.26 =========="
+                        : "========== 闲鱼任务开始 · V4.36.1 =========="
         );
 
         if (learning) {

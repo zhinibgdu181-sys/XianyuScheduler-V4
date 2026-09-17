@@ -600,10 +600,24 @@
                         android:backgroundTint="#E9EEF8"
                         android:text="刷新日志"
                         android:textColor="#2F6FED"
-                        android:textSize="13sp" />
+                        android:textSize="12sp" />
 
                     <Space
-                        android:layout_width="8dp"
+                        android:layout_width="6dp"
+                        android:layout_height="1dp" />
+
+                    <Button
+                        android:id="@+id/copy_all_log_button"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:backgroundTint="#EAF7EE"
+                        android:text="复制全部"
+                        android:textColor="#166534"
+                        android:textSize="12sp" />
+
+                    <Space
+                        android:layout_width="6dp"
                         android:layout_height="1dp" />
 
                     <Button
@@ -614,7 +628,7 @@
                         android:backgroundTint="#FDECEC"
                         android:text="清空日志"
                         android:textColor="#B42318"
-                        android:textSize="13sp" />
+                        android:textSize="12sp" />
                 </LinearLayout>
 
                 <ScrollView
@@ -644,7 +658,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="9dp"
                     android:gravity="center"
-                    android:text="仅显示最近 120 行 · 完整日志仍保存在应用目录"
+                    android:text="界面显示最近 120 行 · “复制全部”会复制完整日志"
                     android:textColor="#9CA3AF"
                     android:textSize="11sp" />
             </LinearLayout>

@@ -6,6 +6,8 @@ import android.app.AlarmManager;
 import android.app.AlertDialog;
 import android.app.PendingIntent;
 import android.content.Context;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -143,6 +145,7 @@ public class MainActivity extends Activity {
         Button learningStop = findViewById(R.id.learning_stop_button);
         Button log = findViewById(R.id.log_button);
         Button clearLog = findViewById(R.id.clear_log_button);
+        Button copyAllLog = findViewById(R.id.copy_all_log_button);
         Button todayRefresh = findViewById(R.id.today_refresh_button);
         Button showPath = findViewById(R.id.show_path_button);
 
@@ -154,6 +157,7 @@ public class MainActivity extends Activity {
         learningStop.setOnClickListener(v -> stopLearningMode());
         log.setOnClickListener(v -> showStatus(true));
         clearLog.setOnClickListener(v -> confirmClearLog());
+        copyAllLog.setOnClickListener(v -> copyAllLogToClipboard());
         todayRefresh.setOnClickListener(v -> refreshTodayCompleted());
         showPath.setOnClickListener(v -> showDataPaths());
 
@@ -452,6 +456,38 @@ public class MainActivity extends Activity {
                 .setMessage(text + "\n\n/data/data 路径需要 Root 权限查看。")
                 .setPositiveButton("知道了", null)
                 .show();
+    }
+
+
+    private void copyAllLogToClipboard() {
+        java.io.File dir = getExternalFilesDir(null);
+        java.io.File file = dir == null ? null : new java.io.File(dir, "xianyu_log.txt");
+        if (file == null || !file.exists()) {
+            Toast.makeText(this, "暂无完整日志", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            List<String> allLines = Files.readAllLines(file.toPath(), StandardCharsets.UTF_8);
+            String all = String.join("\n", allLines);
+            if (all.isEmpty()) {
+                Toast.makeText(this, "暂无完整日志", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            ClipboardManager clipboard =
+                    (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard == null) {
+                Toast.makeText(this, "系统剪贴板不可用", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            clipboard.setPrimaryClip(ClipData.newPlainText("xianyu_log.txt", all));
+            setStatusMessage("已复制完整日志，共 " + all.length() + " 个字符。\n"
+                    + "日志页面仍只显示最近 " + MAX_LOG_LINES + " 行，避免界面卡顿。");
+            Toast.makeText(this, "完整日志已复制", Toast.LENGTH_SHORT).show();
+        } catch (Throwable t) {
+            setStatusMessage("复制完整日志失败：" + t.getClass().getSimpleName()
+                    + "：" + t.getMessage());
+            Toast.makeText(this, "复制完整日志失败", Toast.LENGTH_LONG).show();
+        }
     }
 
     private void confirmClearLog() {

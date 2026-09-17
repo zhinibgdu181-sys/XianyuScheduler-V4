@@ -17,14 +17,14 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * V4.36 视觉小游戏模块："消了还想消"水果配对。
+ * V4.36.1 视觉小游戏模块："消了还想消"水果配对。
  *
  * 规则：点击水果会进入下方坑位；两个相同水果自动消除；坑位最多3个。
  * 安全策略：只点击高置信度的完整同类对 A->A，一次只处理一对。
  * 只允许点击水果对象本身。禁止点击“打乱”“消除”“解锁”等任何游戏功能按钮。
  * 找不到高置信度对子时直接安全停止。
  *
- * V4.36 改进：
+ * V4.36.1 改进：
  * 1. 决策引擎：视觉置信度只是硬门槛，在可靠对子中优先处理底层、低风险、高释放价值组合。
  * 2. Observe→Evaluate→Act→Verify→Replan：点A后重新截图定位B，不使用已经失效的旧坐标。
  * 3. 每一对都用“剩余 N→N-2”闭环验证；失败组合进入本局黑名单并安全停止。
@@ -158,6 +158,9 @@ final class FruitGameSolver {
 
         // V4.36 本轮验证失败过的对子进入黑名单，不再重复尝试
         Set<String> failedPairs = new HashSet<>();
+        // 本局被证实“点击后仍停在原位”的水果位置。棋盘未变化时不再点它；
+        // 一旦有一对成功消除、棋盘重新下落，就清空这些旧位置。
+        Set<String> blockedPositions = new HashSet<>();
 
         while (!host.aborted()
                 && pairActions < MAX_PAIR_ACTIONS
@@ -195,7 +198,7 @@ final class FruitGameSolver {
             PairChoice pair = null;
             double hitThreshold = MIN_PAIR_SCORE;
             for (double t : FALLBACK_THRESHOLDS_V436) {
-                pair = chooseBestPairWithThreshold(objects, t, failedPairs);
+                pair = chooseBestPairWithThreshold(objects, t, failedPairs, blockedPositions);
                 if (pair != null) {
                     hitThreshold = t;
                     break;
@@ -243,10 +246,13 @@ final class FruitGameSolver {
             int beforeRemaining = remaining;
             int ax = mapX(frame, pair.a.centerX);
             int ay = mapY(frame, pair.a.centerY);
+            int plannedBx = mapX(frame, pair.b.centerX);
+            int plannedBy = mapY(frame, pair.b.centerY);
             FruitObject expectedB = pair.b;
             safeRecycle(frame.bitmap);
 
-            host.log("[决策V4.36] 选择当前动作 / A=(" + ax + "," + ay + ")"
+            host.log("[决策V4.36.1] 选择当前动作 / A=(" + ax + "," + ay + ")"
+                    + " / 计划B=(" + plannedBx + "," + plannedBy + ")"
                     + " / visual=" + format(pair.score)
                     + " / decision=" + format(pair.decisionScore)
                     + " / lower=" + format(pair.lowerBoth)
@@ -277,17 +283,52 @@ final class FruitGameSolver {
             }
 
             List<FruitObject> afterObjects = detectFruitObjects(afterA);
-            FruitObject reacquiredB = findBestMatchingFruit(expectedB, afterObjects);
-            if (reacquiredB == null) {
+
+            // 先确认 A 这一击真的改变了棋盘。此前日志只知道“发出了 tap”，
+            // 无法区分“水果被点走”和“水果被遮挡/不可点，仍停在原位”。
+            // 若 A 仍在原位置附近，则本次没有污染坑位：只屏蔽这个位置并重新规划，
+            // 绝不继续点 B。
+            FruitMatch stillA = findMatchingFruitNear(
+                    pair.a, afterObjects, pair.a.centerX, pair.a.centerY,
+                    afterA.bitmap.getWidth(), afterA.bitmap.getHeight(),
+                    0.060, 0.050, 0.990);
+            if (stillA != null) {
+                blockedPositions.add(positionKeyV4361(pair.a));
+                int stillAx = mapX(afterA, stillA.fruit.centerX);
+                int stillAy = mapY(afterA, stillA.fruit.centerY);
                 safeRecycle(afterA.bitmap);
-                host.log("[游戏V4.36] A下落后无法重新定位同类B；A已可能占用坑位，DIRTY安全停止");
+                host.log("[点击验证V4.36.1] A点击后目标仍在原位附近 → ("
+                        + stillAx + "," + stillAy + ")"
+                        + " / sim=" + format(stillA.similarity.score)
+                        + " / 判定A未成功下落；不点B，屏蔽该位置后重新规划");
+                continue;
+            }
+
+            FruitMatch reacquired = findBestMatchingFruit(
+                    expectedB, afterObjects,
+                    afterA.bitmap.getWidth(), afterA.bitmap.getHeight());
+            if (reacquired == null) {
+                safeRecycle(afterA.bitmap);
+                host.log("[游戏V4.36.1] A已离开原位，但无法在合理下落范围内重新定位B；"
+                        + "A可能已占用坑位，DIRTY安全停止");
                 return Result.SAFE_STOP_DIRTY;
             }
+            FruitObject reacquiredB = reacquired.fruit;
             int bx = mapX(afterA, reacquiredB.centerX);
             int by = mapY(afterA, reacquiredB.centerY);
+            double dxRatio = Math.abs(reacquiredB.centerX - expectedB.centerX)
+                    / Math.max(1.0, afterA.bitmap.getWidth());
+            double dyRatio = (reacquiredB.centerY - expectedB.centerY)
+                    / Math.max(1.0, afterA.bitmap.getHeight());
             safeRecycle(afterA.bitmap);
 
-            host.log("[决策V4.36] A下落后重新分析 → B=(" + bx + "," + by + ")");
+            host.log("[决策V4.36.1] B空间约束重定位 / 原计划=("
+                    + plannedBx + "," + plannedBy + ") → 新B=(" + bx + "," + by + ")"
+                    + " / sim=" + format(reacquired.similarity.score)
+                    + " rgb=" + format(1.0 - reacquired.similarity.rgbMad)
+                    + " hist=" + format(reacquired.similarity.histCos)
+                    + " shape=" + format(reacquired.similarity.shapeIou)
+                    + " / dx=" + format(dxRatio) + " dy=" + format(dyRatio));
             if (!host.tap(bx, by, "水果游戏-配对B")) {
                 return host.aborted() ? Result.ABORTED : Result.SAFE_STOP_DIRTY;
             }
@@ -329,6 +370,8 @@ final class FruitGameSolver {
                     host.log("[验证V4.36] ✅ 配对确认：" + beforeRemaining + "→" + afterRemaining
                             + " / 本次决策有效，重新分析新局面");
                     remaining = afterRemaining;
+                    // 棋盘已经重排，旧的“不可点击位置”坐标不再有意义。
+                    blockedPositions.clear();
                 } else if (beforeRemaining >= 0 && afterRemaining >= beforeRemaining) {
                     failedPairs.add(pairKeyV435(pair.a, pair.b));
                     host.log("[验证V4.36] ❌ 未确认消除：" + beforeRemaining + "→" + afterRemaining
@@ -766,7 +809,7 @@ final class FruitGameSolver {
     }
 
     private static PairChoice chooseBestPair(List<FruitObject> objects) {
-        return chooseBestPairWithThreshold(objects, MIN_PAIR_SCORE, null);
+        return chooseBestPairWithThreshold(objects, MIN_PAIR_SCORE, null, null);
     }
 
     /**
@@ -777,7 +820,8 @@ final class FruitGameSolver {
     private static PairChoice chooseBestPairWithThreshold(
             List<FruitObject> objects,
             double minScore,
-            Set<String> blacklist
+            Set<String> blacklist,
+            Set<String> blockedPositions
     ) {
         if (objects == null || objects.size() < 2) return null;
         PairChoice best = null;
@@ -788,6 +832,13 @@ final class FruitGameSolver {
             FruitObject a = objects.get(i);
             for (int j = i + 1; j < objects.size(); j++) {
                 FruitObject b = objects.get(j);
+
+                if (blockedPositions != null && !blockedPositions.isEmpty()) {
+                    if (blockedPositions.contains(positionKeyV4361(a))
+                            || blockedPositions.contains(positionKeyV4361(b))) {
+                        continue;
+                    }
+                }
 
                 if (blacklist != null && !blacklist.isEmpty()) {
                     String key = pairKeyV435(a, b);
@@ -827,33 +878,83 @@ final class FruitGameSolver {
      * A 下落后重新定位原计划中的 B。不能继续使用旧坐标，因为棋盘会发生下落重排。
      * 这里只在当前重新检测到的水果中寻找与 expected 最相似、且达到可靠门槛的实例。
      */
-    private static FruitObject findBestMatchingFruit(
+    private static FruitMatch findBestMatchingFruit(
             FruitObject expected,
-            List<FruitObject> objects
+            List<FruitObject> objects,
+            int frameWidth,
+            int frameHeight
     ) {
         if (expected == null || objects == null || objects.isEmpty()) return null;
 
-        FruitObject best = null;
-        double bestScore = -1.0;
+        FruitMatch best = null;
+        double maxDx = Math.max(18.0, frameWidth * 0.13);
+        double maxUp = Math.max(12.0, frameHeight * 0.035);
+        double maxDown = Math.max(30.0, frameHeight * 0.20);
+
         for (FruitObject candidate : objects) {
             if (candidate == null) continue;
-            Similarity sim = similarity(expected, candidate);
 
-            // V4.36：B 重新定位不再使用 0.90 的宽松门槛。实机日志显示
-            // 0.981/0.976 仍可能是假对子，因此这里同样保持保守。
-            if (sim.rgbMad > 0.055
-                    || sim.histCos < 0.97
-                    || sim.shapeIou < 0.80
-                    || sim.score < 0.985) {
+            double dx = Math.abs(candidate.centerX - expected.centerX);
+            double dy = candidate.centerY - expected.centerY;
+            // 点击 A 以后，其它水果应主要向下落；不允许在全屏范围凭“长得像”抢一个 B。
+            if (dx > maxDx || dy < -maxUp || dy > maxDown) continue;
+
+            Similarity sim = similarity(expected, candidate);
+            if (sim.rgbMad > 0.045
+                    || sim.histCos < 0.985
+                    || sim.shapeIou < 0.86
+                    || sim.score < 0.992) {
                 continue;
             }
 
-            if (sim.score > bestScore) {
-                bestScore = sim.score;
-                best = candidate;
+            double spatial = 1.0
+                    - 0.60 * Math.min(1.0, dx / maxDx)
+                    - 0.40 * Math.min(1.0, Math.max(0.0, dy) / maxDown);
+            double rank = 0.88 * sim.score + 0.12 * spatial;
+            if (best == null || rank > best.rank) {
+                best = new FruitMatch(candidate, sim, rank);
             }
         }
         return best;
+    }
+
+    /**
+     * 在指定位置附近确认某颗水果是否仍存在。用于验证 A 点击是否真正生效。
+     */
+    private static FruitMatch findMatchingFruitNear(
+            FruitObject expected,
+            List<FruitObject> objects,
+            float anchorX,
+            float anchorY,
+            int frameWidth,
+            int frameHeight,
+            double maxDxRatio,
+            double maxDyRatio,
+            double minScore
+    ) {
+        if (expected == null || objects == null) return null;
+        double maxDx = Math.max(12.0, frameWidth * maxDxRatio);
+        double maxDy = Math.max(12.0, frameHeight * maxDyRatio);
+        FruitMatch best = null;
+        for (FruitObject candidate : objects) {
+            if (candidate == null) continue;
+            double dx = Math.abs(candidate.centerX - anchorX);
+            double dy = Math.abs(candidate.centerY - anchorY);
+            if (dx > maxDx || dy > maxDy) continue;
+            Similarity sim = similarity(expected, candidate);
+            if (sim.score < minScore || sim.histCos < 0.98 || sim.shapeIou < 0.84) continue;
+            double rank = sim.score - 0.03 * (dx / maxDx) - 0.02 * (dy / maxDy);
+            if (best == null || rank > best.rank) best = new FruitMatch(candidate, sim, rank);
+        }
+        return best;
+    }
+
+    private static String positionKeyV4361(FruitObject f) {
+        if (f == null) return "0,0";
+        // 约 12px 分桶；棋盘没变化时足以稳定识别同一个不可点击位置。
+        int qx = Math.round(f.centerX / 12f);
+        int qy = Math.round(f.centerY / 12f);
+        return qx + "," + qy;
     }
 
     /**
@@ -1170,6 +1271,18 @@ final class FruitGameSolver {
             this.rgb = rgb;
             this.shape = shape;
             this.hist = hist;
+        }
+    }
+
+    private static final class FruitMatch {
+        final FruitObject fruit;
+        final Similarity similarity;
+        final double rank;
+
+        FruitMatch(FruitObject fruit, Similarity similarity, double rank) {
+            this.fruit = fruit;
+            this.similarity = similarity;
+            this.rank = rank;
         }
     }
 

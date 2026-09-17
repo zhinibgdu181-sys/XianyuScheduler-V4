@@ -1,3 +1,11 @@
+# V4.36.1
+
+- 水果求解：新增 A 点击生效验证。A 点击后若同一水果仍停在原位，不再盲点 B，而是屏蔽该位置并重新规划。
+- 水果求解：B 重定位加入空间约束，不再在全屏范围仅凭外观相似度选择 B；记录原计划坐标、重定位坐标、相似度和位移。
+- 水果求解：成功配对后清空旧的不可点击位置记录；保留 V4.36 的 DIRTY/CLEAN 安全停止与空闲弹窗守卫。
+- 日志页：新增“复制全部”按钮，直接复制完整 `xianyu_log.txt`，界面仍仅渲染最近 120 行避免卡顿。
+- 版本：4.36.1（versionCode 37）。
+
 # V4.36
 
 - Fruit game: split safe stop into `SAFE_STOP_CLEAN` and `SAFE_STOP_DIRTY`; DIRTY states never start a second solve segment.
