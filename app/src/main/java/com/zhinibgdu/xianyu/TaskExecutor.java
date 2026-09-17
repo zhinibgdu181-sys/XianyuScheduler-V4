@@ -324,7 +324,7 @@ public final class TaskExecutor {
         diagnostic(
                 learning
                         ? "========== 真人示范学习开始 · V4.13 =========="
-                        : "========== 闲鱼任务开始 · V4.36.2 =========="
+                        : "========== 闲鱼任务开始 · V4.36.3 =========="
         );
 
         if (learning) {
@@ -4146,7 +4146,7 @@ public final class TaskExecutor {
             String suPath,
             String taskName
     ) {
-        diagnostic("[水果V4.36.2] 启动水果配对求解器：" + taskName);
+        diagnostic("[水果V4.36.3] 启动水果配对求解器：" + taskName);
         if (!paceSleepV415(260L, 420L)) return false;
 
         gameIncompleteHoldV421 = false;

@@ -17,22 +17,25 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * V4.36.2 视觉小游戏模块："消了还想消"水果配对。
+ * V4.36.3 视觉小游戏模块："消了还想消"水果配对。
  *
  * 规则：点击水果会进入下方坑位；两个相同水果自动消除；坑位最多3个。
  * 安全策略：只点击高置信度的完整同类对 A->A，一次只处理一对。
  * 只允许点击水果对象本身。禁止点击“打乱”“消除”“解锁”等任何游戏功能按钮。
  * 找不到高置信度对子时直接安全停止。
  *
- * V4.36.2 改进：
+ * V4.36.3 改进：
  * 1. 决策引擎：视觉置信度只是硬门槛，在可靠对子中优先处理底层、低风险、高释放价值组合。
  * 2. Observe→Evaluate→Act→Verify→Replan：点A后重新截图定位B，不使用已经失效的旧坐标。
  * 3. 每一对都用“剩余 N→N-2”闭环验证；失败组合进入本局黑名单并安全停止。
  * 4. 保留功能按钮禁区，不点击打乱/消除/解锁/使用。
  * 5. SAFE_STOP 拆分 CLEAN/DIRTY；点击过水果但未验证成功时禁止外层二次求解。
  * 6. 把长时间无操作自动出现的“解锁/消除/打乱”推广窗作为异步遮挡层处理。
- * 7. 新增真实“可下落性”建模：水果只有到下方坑洞的竖直通道没有被其它水果挡住，才允许进入点击候选。
- * 8. A 下落后重新计算整张棋盘的遮挡关系，B 必须在新局面中仍然可直接下落才允许点击。
+ * 7. 可下落性改成“竖直自由落体 + V形漏斗”模型：按水果当前 x 计算左右斜坡的真实接触高度；
+ *    中央开口直接通向坑洞，不再把整个底部简化成同一条水平线。
+ * 8. 检测 ROI 向漏斗方向延伸，完整保留贴着漏斗上沿的最底层水果；旧版恰好会裁掉这批最容易下落的水果。
+ * 9. 碰撞宽度改用 shape mask 主体分位宽度，忽略叶片/透明边的少量外扩，降低相邻列误判。
+ * 10. A 下落后重新计算整张棋盘的遮挡关系，B 必须在新局面中仍然可直接下落才允许点击。
  *
  * 这个实现不依赖 OpenCV。它把截图缩放到约720px宽，利用蓝色背景分割、
  * 连通域、归一化图块颜色/形状相似度寻找重复水果。
@@ -67,6 +70,20 @@ final class FruitGameSolver {
     private static final double MAX_RGB_MAD = 0.055;
     private static final double MIN_HIST_COS = 0.970;
     private static final double MIN_SHAPE_IOU = 0.80;
+
+    // V4.36.3：按实机截图标定 V 形漏斗，而不是把“底部”当成一条水平线。
+    // 截图中左右斜坡外侧约从 61.2%H 开始，向中央下降到约 74.0%H；
+    // 中间约 43.5%W~56.5%W 是坑洞入口。水果先竖直自由落体，碰到斜坡后再被导向中央坑洞。
+    private static final float FUNNEL_OUTER_Y_FRAC = 0.612f;
+    private static final float FUNNEL_INNER_Y_FRAC = 0.740f;
+    private static final float FUNNEL_LEFT_INNER_X_FRAC = 0.435f;
+    private static final float FUNNEL_RIGHT_INNER_X_FRAC = 0.565f;
+
+    // 检测区必须越过斜坡外侧上沿，否则最底层水果的下半部分会被裁掉。
+    // 实机图中最底层水果中心仍在约 59%H，底部可到 62%H 左右。
+    private static final float DETECTION_BOTTOM_Y_FRAC = 0.655f;
+    // 只把中心仍位于蓝色棋盘自由落体区的完整水果作为候选；斜坡/坑洞 UI 不进入候选。
+    private static final float BOARD_CENTER_MAX_Y_FRAC = 0.625f;
 
     private static final double[] FALLBACK_THRESHOLDS_V436 = {
             MIN_PAIR_SCORE
@@ -196,17 +213,17 @@ final class FruitGameSolver {
 
             List<FruitObject> objects = detectFruitObjects(frame);
 
-            // V4.36.2：真正按游戏物理规则判断“可下落”。
+            // V4.36.3：按“自由落体区→漏斗上沿”的真实几何判断可下落。
             // 只有水果到底部坑洞的竖直扫掠通道没有被其它水果占据，才允许点击。
-            DropAnalysis drop = analyzeDroppability(objects);
+            DropAnalysis drop = analyzeDroppability(objects, frame.bitmap.getWidth(), frame.bitmap.getHeight());
             List<FruitObject> droppableObjects = drop.droppable;
-            host.log("[下落V4.36.2] 识别水果=" + objects.size()
+            host.log("[下落V4.36.3] 识别水果=" + objects.size()
                     + " / 可直接下落=" + droppableObjects.size()
                     + " / 被遮挡=" + drop.blocked.size()
                     + blockedSummary(drop, frame));
 
             // V4.36 保守阈值：不再向 0.93/0.88/0.83 降级。
-            // V4.36.2 更进一步：只在物理上可直接掉入坑洞的水果中寻找对子。
+            // V4.36.3 更进一步：只在物理上可直接掉入坑洞的水果中寻找对子。
             PairChoice pair = null;
             double hitThreshold = MIN_PAIR_SCORE;
             for (double t : FALLBACK_THRESHOLDS_V436) {
@@ -218,10 +235,11 @@ final class FruitGameSolver {
                 }
             }
 
-            host.log("[游戏V4.36.2] 可配对候选=" + droppableObjects.size()
+            host.log("[游戏V4.36.3] 可配对候选=" + droppableObjects.size()
                     + " / 总水果=" + objects.size()
                     + " / 顶部禁区<" + Math.round(frame.originalHeight * 0.115f)
-                    + " / 底部禁区>" + Math.round(frame.originalHeight * 0.615f)
+                    + " / 漏斗外沿≈" + Math.round(frame.originalHeight * FUNNEL_OUTER_Y_FRAC)
+                    + " / 中央入口≈" + Math.round(frame.originalHeight * FUNNEL_INNER_Y_FRAC)
                     + (pair == null ? " / 无可下落高置信对子" :
                     " / 最佳对子=" + format(pair.score)
                             + " rgb=" + format(pair.rgbSimilarity)
@@ -253,7 +271,7 @@ final class FruitGameSolver {
                     return Result.COMPLETED;
                 }
 
-                host.log("[游戏V4.36.2] 当前没有‘可直接下落 + 高置信同类’对子"
+                host.log("[游戏V4.36.3] 当前没有‘可直接下落 + 高置信同类’对子"
                         + (drop.blocked.isEmpty() ? "" : "；仍有被遮挡水果，暂不做单槽冒险试探")
                         + "，CLEAN安全停止");
                 return Result.SAFE_STOP_CLEAN;
@@ -268,7 +286,7 @@ final class FruitGameSolver {
             FruitObject expectedB = pair.b;
             safeRecycle(frame.bitmap);
 
-            host.log("[决策V4.36.2] 选择当前可下落动作 / A=(" + ax + "," + ay + ")"
+            host.log("[决策V4.36.3] 选择当前可下落动作 / A=(" + ax + "," + ay + ")"
                     + " / 计划B=(" + plannedBx + "," + plannedBy + ")"
                     + " / visual=" + format(pair.score)
                     + " / decision=" + format(pair.decisionScore)
@@ -300,7 +318,7 @@ final class FruitGameSolver {
             }
 
             List<FruitObject> afterObjects = detectFruitObjects(afterA);
-            DropAnalysis afterDrop = analyzeDroppability(afterObjects);
+            DropAnalysis afterDrop = analyzeDroppability(afterObjects, afterA.bitmap.getWidth(), afterA.bitmap.getHeight());
 
             // 先确认 A 这一击真的改变了棋盘。
             // 物理规则已经保证 A 点击前“下落通道畅通”，这里再用“原位目标 + 总对象数变化”
@@ -315,7 +333,7 @@ final class FruitGameSolver {
                 int stillAx = mapX(afterA, stillA.fruit.centerX);
                 int stillAy = mapY(afterA, stillA.fruit.centerY);
                 safeRecycle(afterA.bitmap);
-                host.log("[点击验证V4.36.2] A点击后目标仍在原位附近 → ("
+                host.log("[点击验证V4.36.3] A点击后目标仍在原位附近 → ("
                         + stillAx + "," + stillAy + ")"
                         + " / sim=" + format(stillA.similarity.score)
                         + " / 对象数变化=" + beforeObjectCount + "→" + afterObjects.size()
@@ -323,7 +341,7 @@ final class FruitGameSolver {
                 continue;
             }
 
-            host.log("[点击验证V4.36.2] A后重建遮挡图 / 水果=" + afterObjects.size()
+            host.log("[点击验证V4.36.3] A后重建遮挡图 / 水果=" + afterObjects.size()
                     + " / 可直接下落=" + afterDrop.droppable.size()
                     + " / 被遮挡=" + afterDrop.blocked.size()
                     + " / 对象数变化=" + beforeObjectCount + "→" + afterObjects.size());
@@ -337,14 +355,16 @@ final class FruitGameSolver {
                         expectedB, afterObjects,
                         afterA.bitmap.getWidth(), afterA.bitmap.getHeight());
                 if (existingB != null) {
-                    FruitObject blocker = findNearestBlockingFruit(existingB.fruit, afterObjects);
-                    host.log("[下落V4.36.2] B仍存在但没有进入‘可直接下落’候选"
+                    FruitObject blocker = findNearestBlockingFruit(
+                            existingB.fruit, afterObjects,
+                            afterA.bitmap.getWidth(), afterA.bitmap.getHeight());
+                    host.log("[下落V4.36.3] B仍存在但没有进入‘可直接下落’候选"
                             + (blocker == null ? "" : " / blocker=("
                             + mapX(afterA, blocker.centerX) + ","
                             + mapY(afterA, blocker.centerY) + ")")
                             + "；A可能已进入坑位，DIRTY安全停止");
                 } else {
-                    host.log("[游戏V4.36.2] A已离开原位，但无法在合理范围重新定位可下落B；"
+                    host.log("[游戏V4.36.3] A已离开原位，但无法在合理范围重新定位可下落B；"
                             + "A可能已占用坑位，DIRTY安全停止");
                 }
                 safeRecycle(afterA.bitmap);
@@ -359,7 +379,7 @@ final class FruitGameSolver {
                     / Math.max(1.0, afterA.bitmap.getHeight());
             safeRecycle(afterA.bitmap);
 
-            host.log("[决策V4.36.2] B可下落重定位 / 原计划=("
+            host.log("[决策V4.36.3] B可下落重定位 / 原计划=("
                     + plannedBx + "," + plannedBy + ") → 新B=(" + bx + "," + by + ")"
                     + " / sim=" + format(reacquired.similarity.score)
                     + " rgb=" + format(1.0 - reacquired.similarity.rgbMad)
@@ -392,7 +412,7 @@ final class FruitGameSolver {
                             reacquiredB, postBObjects, reacquiredB.centerX, reacquiredB.centerY,
                             postB.bitmap.getWidth(), postB.bitmap.getHeight(),
                             0.060, 0.050, 0.990);
-                    host.log("[点击验证V4.36.2] B后对象数=" + afterObjects.size()
+                    host.log("[点击验证V4.36.3] B后对象数=" + afterObjects.size()
                             + "→" + postBObjects.size()
                             + (stillB == null ? " / B原位未检出"
                             : " / B原位仍有同类 sim=" + format(stillB.similarity.score)));
@@ -694,11 +714,12 @@ final class FruitGameSolver {
         Bitmap bitmap = frame.bitmap;
         int width = bitmap.getWidth();
         int height = bitmap.getHeight();
-        // V4.36 real-device rule: fruit clipped/packed against the top cannot reliably
-        // fall into the pit. Bottom contains remaining/progress, unlock, eliminate,
-        // shuffle and the pit UI. Neither zone is ever a tap candidate.
+        // V4.36.3：检测区与“可点击自由落体区”分开。
+        // 旧版直接把 ROI 截在 61.5%H（漏斗上沿），会把贴着漏斗的最底层水果
+        // 下半部分裁掉，随后又因“触碰 ROI 边界”被丢弃。实机截图中最容易
+        // 直接下落的底层水果恰好就在这里，因此把检测区延伸到 65.5%H。
         int roiTop = clamp(Math.round(height * 0.115f), 0, height - 1);
-        int roiBottom = clamp(Math.round(height * 0.615f), roiTop + 1, height);
+        int roiBottom = clamp(Math.round(height * DETECTION_BOTTOM_Y_FRAC), roiTop + 1, height);
         int roiHeight = roiBottom - roiTop;
 
         int[] pixels = new int[width * height];
@@ -789,10 +810,16 @@ final class FruitGameSolver {
         }
 
         List<FruitObject> result = new ArrayList<>();
+        float maxBoardCenterY = height * BOARD_CENTER_MAX_Y_FRAC;
         for (Component c : components) {
             FruitObject object = buildDescriptor(
                     c, labels, pixels, width, height, roiTop, roiHeight);
-            if (object != null) result.add(object);
+            if (object == null) continue;
+
+            // 允许水果图像的底部略微进入漏斗区域，但中心必须仍属于上方棋盘。
+            // 这样能保留“贴漏斗”的最底层水果，同时排除斜坡、坑洞和底部按钮碎片。
+            if (object.centerY > maxBoardCenterY) continue;
+            result.add(object);
         }
         return result;
     }
@@ -860,19 +887,29 @@ final class FruitGameSolver {
     }
 
     /**
-     * V4.36.2 物理可达性：点击后水果只会向下掉入坑洞。
-     * 如果它的竖直扫掠通道内存在另一颗更靠下的水果，就判定为 BLOCKED。
-     * 这里使用真实连通域 bbox，而不是仅按 y 坐标“底层优先”。
+     * V4.36.3 物理可达性。
+     *
+     * 实机画面不是“整屏同一个底部 Y”：左右黄色挡板构成 V 形漏斗。
+     * 对每颗水果，先按它当前的 x 计算真正的自由落体终点：
+     * - 左侧：落到左斜坡；
+     * - 右侧：落到右斜坡；
+     * - 中央开口：直接落入坑洞。
+     * 只检查当前位置到这个局部终点之间是否存在其它水果。
      */
-    private static DropAnalysis analyzeDroppability(List<FruitObject> objects) {
+    private static DropAnalysis analyzeDroppability(
+            List<FruitObject> objects,
+            int frameWidth,
+            int frameHeight
+    ) {
         List<FruitObject> droppable = new ArrayList<>();
         List<BlockingRelation> blocked = new ArrayList<>();
-        if (objects == null || objects.isEmpty()) {
+        if (objects == null || objects.isEmpty() || frameWidth <= 0 || frameHeight <= 0) {
             return new DropAnalysis(droppable, blocked);
         }
 
         for (FruitObject fruit : objects) {
-            FruitObject blocker = findNearestBlockingFruit(fruit, objects);
+            FruitObject blocker = findNearestBlockingFruit(
+                    fruit, objects, frameWidth, frameHeight);
             if (blocker == null) {
                 droppable.add(fruit);
             } else {
@@ -883,38 +920,44 @@ final class FruitGameSolver {
     }
 
     /**
-     * 返回 fruit 正下方最先会碰到的水果。返回 null 表示到坑洞的竖直通道畅通。
+     * 返回 fruit 在自由落体阶段最先会撞到的水果。
      *
-     * 横向判断采用“收窄后的水果 bbox 扫掠通道 + 最小重叠量”，避免把明显相邻的
-     * 两列水果误判成互相阻挡；同时保留一个中心距约束，适配圆形/椭圆形水果。
+     * 这里有两个关键修正：
+     * 1. 下落终点使用 V 形漏斗的 x-dependent floor，而不是固定 61.5%H；
+     * 2. 横向碰撞宽度使用 shape mask 的“主体 8%~92% 分位宽度”，忽略叶子、透明边、
+     *    高光等细碎外扩，避免把相邻列误判成完全阻挡。
      */
     private static FruitObject findNearestBlockingFruit(
             FruitObject fruit,
-            List<FruitObject> objects
+            List<FruitObject> objects,
+            int frameWidth,
+            int frameHeight
     ) {
-        if (fruit == null || objects == null) return null;
+        if (fruit == null || objects == null || frameWidth <= 0 || frameHeight <= 0) return null;
 
+        final double dropEndY = funnelContactY(fruit.centerX, frameWidth, frameHeight);
+        final double fruitRadiusX = effectiveCollisionHalfWidth(fruit);
         FruitObject nearest = null;
         double nearestY = Double.MAX_VALUE;
-        double fruitWidth = Math.max(1.0, fruit.width());
-        double corridorInset = fruitWidth * 0.14;
-        double corridorLeft = fruit.left + corridorInset;
-        double corridorRight = fruit.right - corridorInset;
 
         for (FruitObject other : objects) {
             if (other == null || other == fruit) continue;
 
-            double minVerticalSeparation = Math.max(4.0,
-                    Math.min(fruit.height(), other.height()) * 0.20);
+            double minVerticalSeparation = Math.max(3.0,
+                    Math.min(fruit.height(), other.height()) * 0.14);
             if (other.centerY <= fruit.centerY + minVerticalSeparation) continue;
 
-            double overlap = Math.min(corridorRight, other.right)
-                    - Math.max(corridorLeft, other.left);
-            double minOverlap = Math.min(fruitWidth, Math.max(1.0, other.width())) * 0.12;
-            double centerDx = Math.abs(other.centerX - fruit.centerX);
-            double centerCollisionLimit = ((fruitWidth + other.width()) * 0.5) * 0.72;
+            // 障碍物主体已经在该水果会接触斜坡/进入坑洞的位置以下，不属于自由落体挡路。
+            double otherTopCore = other.centerY - Math.max(2.0, other.height() * 0.36);
+            if (otherTopCore >= dropEndY) continue;
 
-            if (overlap < minOverlap || centerDx > centerCollisionLimit) continue;
+            double otherRadiusX = effectiveCollisionHalfWidth(other);
+            double centerDx = Math.abs(other.centerX - fruit.centerX);
+
+            // 采用主体宽度后再留 8% 的擦边容差。只有明显会撞到主体才判 BLOCKED。
+            // 轻微图像 bbox/叶子重叠不再一票否决。
+            double collisionLimit = (fruitRadiusX + otherRadiusX) * 0.92;
+            if (centerDx >= collisionLimit) continue;
 
             if (other.centerY < nearestY) {
                 nearest = other;
@@ -922,6 +965,77 @@ final class FruitGameSolver {
             }
         }
         return nearest;
+    }
+
+    /**
+     * 根据 x 计算水果自由落体阶段的终点。
+     * 左右两条斜坡按实机截图做线性近似；中央开口没有斜坡，直接进入坑洞。
+     */
+    private static double funnelContactY(double x, int frameWidth, int frameHeight) {
+        if (frameWidth <= 0 || frameHeight <= 0) return frameHeight;
+
+        double leftInner = frameWidth * FUNNEL_LEFT_INNER_X_FRAC;
+        double rightInner = frameWidth * FUNNEL_RIGHT_INNER_X_FRAC;
+        double outerY = frameHeight * FUNNEL_OUTER_Y_FRAC;
+        double innerY = frameHeight * FUNNEL_INNER_Y_FRAC;
+
+        if (x <= leftInner) {
+            double t = clamp01(x / Math.max(1.0, leftInner));
+            return outerY + (innerY - outerY) * t;
+        }
+        if (x >= rightInner) {
+            double denom = Math.max(1.0, frameWidth - rightInner);
+            double t = clamp01((frameWidth - x) / denom);
+            return outerY + (innerY - outerY) * t;
+        }
+
+        // 中央是坑洞入口；给出比斜坡内端更深的终点，仅用于判断上方水果是否挡路。
+        return frameHeight * 0.86;
+    }
+
+    /**
+     * 从 32x32 shape mask 估计真正参与碰撞的横向主体半宽。
+     * 使用前景像素横向累计分布的 8%~92% 区间，主动忽略少量叶片/尖角/透明边。
+     */
+    private static double effectiveCollisionHalfWidth(FruitObject fruit) {
+        if (fruit == null) return 1.0;
+        if (fruit.shape == null || fruit.shape.length != GRID * GRID) {
+            return Math.max(4.0, fruit.width() * 0.40);
+        }
+
+        int[] col = new int[GRID];
+        int total = 0;
+        for (int y = 0; y < GRID; y++) {
+            for (int x = 0; x < GRID; x++) {
+                if (!fruit.shape[y * GRID + x]) continue;
+                col[x]++;
+                total++;
+            }
+        }
+        if (total <= 0) return Math.max(4.0, fruit.width() * 0.40);
+
+        int lowTarget = Math.max(1, (int) Math.floor(total * 0.08));
+        int highTarget = Math.max(lowTarget + 1, (int) Math.ceil(total * 0.92));
+        int cumulative = 0;
+        int left = 0;
+        int right = GRID - 1;
+        boolean leftSet = false;
+
+        for (int x = 0; x < GRID; x++) {
+            cumulative += col[x];
+            if (!leftSet && cumulative >= lowTarget) {
+                left = x;
+                leftSet = true;
+            }
+            if (cumulative >= highTarget) {
+                right = x;
+                break;
+            }
+        }
+
+        double coreFrac = (right - left + 1) / (double) GRID;
+        coreFrac = Math.max(0.58, Math.min(0.90, coreFrac));
+        return Math.max(4.0, fruit.width() * coreFrac * 0.5);
     }
 
     private static String blockedSummary(DropAnalysis drop, GameFrame frame) {
@@ -946,7 +1060,7 @@ final class FruitGameSolver {
     }
 
     /**
-     * V4.36.2 决策引擎：调用方已经先过滤掉 BLOCKED 水果；这里不是单纯找
+     * V4.36.3 决策引擎：调用方已经先过滤掉 BLOCKED 水果；这里不是单纯找
      * “最像的一对”，而是在所有“可直接掉入坑洞”的可靠对子中综合考虑视觉置信度、
      * 底层优先、两颗水果都处于低位和纵向跨度。
      * 视觉阈值仍然是硬门槛，决策分只负责在“已经可靠”的对子之间排序。
