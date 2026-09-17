@@ -12,7 +12,8 @@ final class GameTapPolicy {
             return nx >= 1160.0/1440 && nx <= 1325.0/1440 && ny >= 740.0/3120 && ny <= 960.0/3120;
         if (!"水果游戏-配对A".equals(reason)
                 && !"水果游戏-配对B".equals(reason)
-                && !"水果游戏-槽位匹配".equals(reason)) return false;
+                && !"水果游戏-槽位匹配".equals(reason)
+                && !"水果游戏-安全压栈".equals(reason)) return false;
         return ny >= .115 && ny <= .625;
     }
 }

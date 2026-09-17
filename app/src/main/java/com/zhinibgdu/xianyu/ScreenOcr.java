@@ -30,6 +30,8 @@ final class ScreenOcr {
 
     private static final long ROOT_TIMEOUT_MS = 8000L;
     private static final long OCR_TIMEOUT_MS = 12000L;
+    // V4.40: OCR不需要1440p全分辨率。1080宽仍足够识别中文，同时显著减少ML Kit像素量。
+    private static final int OCR_ANALYSIS_WIDTH = 1080;
 
     private ScreenOcr() {
     }
@@ -47,60 +49,93 @@ final class ScreenOcr {
                                          RootCommandRunner.Cancellation cancellation) {
         if (context == null || suPath == null || suPath.trim().isEmpty()) return Snapshot.empty();
         File screenshot = null;
-        Bitmap bitmap = null;
+        Bitmap original = null;
+        Bitmap analysis = null;
         TextRecognizer recognizer = null;
         Task<Text> pending = null;
         try {
-            File dir = context.getExternalFilesDir(null);
+            // V4.40: 使用内部cache，避免external/FUSE路径上的额外I/O。
+            File dir = context.getCacheDir();
+            if (dir == null || (!dir.exists() && !dir.mkdirs())) {
+                dir = context.getExternalFilesDir(null);
+            }
             if (dir == null || (!dir.exists() && !dir.mkdirs())) return Snapshot.empty();
             screenshot = File.createTempFile("xianyu_ocr_", ".png", dir);
             String path = shellQuote(screenshot.getAbsolutePath());
             if (!RootCommandRunner.run(suPath, "screencap -p " + path + " && chmod 0644 " + path,
                     ROOT_TIMEOUT_MS, cancellation)) return Snapshot.empty();
-            bitmap = BitmapFactory.decodeFile(screenshot.getAbsolutePath());
-            if (bitmap == null) return Snapshot.empty();
+            original = BitmapFactory.decodeFile(screenshot.getAbsolutePath());
+            if (original == null) return Snapshot.empty();
+
+            final int originalWidth = original.getWidth();
+            final int originalHeight = original.getHeight();
+            if (originalWidth <= 0 || originalHeight <= 0) return Snapshot.empty();
+
+            analysis = original;
+            float scale = 1.0f;
+            if (originalWidth > OCR_ANALYSIS_WIDTH) {
+                int ah = Math.max(1, Math.round((float) originalHeight * OCR_ANALYSIS_WIDTH / originalWidth));
+                analysis = Bitmap.createScaledBitmap(original, OCR_ANALYSIS_WIDTH, ah, true);
+                scale = OCR_ANALYSIS_WIDTH / (float) originalWidth;
+            }
+
             if (sharedRecognizer == null)
                 sharedRecognizer = TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
             recognizer = sharedRecognizer;
-            pending = recognizer.process(InputImage.fromBitmap(bitmap, 0));
+            pending = recognizer.process(InputImage.fromBitmap(analysis, 0));
             long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(OCR_TIMEOUT_MS);
             while (!pending.isComplete()) {
                 if (System.nanoTime() >= deadline || (cancellation != null && cancellation.cancelled()))
                     return Snapshot.empty();
-                Thread.sleep(100L);
+                Thread.sleep(60L);
             }
             if (cancellation != null && cancellation.cancelled()) return Snapshot.empty();
             Text result = pending.getResult();
             List<Item> items = new ArrayList<>();
             if (result != null) {
+                final float invScale = scale <= 0f ? 1f : 1f / scale;
                 for (Text.TextBlock block : result.getTextBlocks()) {
                     for (Text.Line line : block.getLines()) {
                         String text = normalize(line.getText());
                         Rect bounds = line.getBoundingBox();
-                        if (!text.isEmpty() && bounds != null) items.add(new Item(text, new Rect(bounds)));
+                        if (!text.isEmpty() && bounds != null) {
+                            Rect mapped = bounds;
+                            if (scale != 1.0f) {
+                                mapped = new Rect(
+                                        Math.round(bounds.left * invScale),
+                                        Math.round(bounds.top * invScale),
+                                        Math.round(bounds.right * invScale),
+                                        Math.round(bounds.bottom * invScale));
+                            } else {
+                                mapped = new Rect(bounds);
+                            }
+                            items.add(new Item(text, mapped));
+                        }
                     }
                 }
             }
             return new Snapshot(result == null ? "" : normalize(result.getText()), items,
-                    bitmap.getWidth(), bitmap.getHeight());
+                    originalWidth, originalHeight);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return Snapshot.empty();
         } catch (Exception e) {
             return Snapshot.empty();
         } finally {
+            final Bitmap finalOriginal = original;
+            final Bitmap finalAnalysis = analysis;
             if (pending != null && !pending.isComplete()) {
-                // ML Kit may still be reading the input after our timeout. It owns these
-                // resources until completion; the next request gets a new recognizer.
+                // ML Kit可能仍持有analysis bitmap，延迟到任务完成再释放。
                 sharedRecognizer = null;
-                final Bitmap heldBitmap = bitmap;
                 final TextRecognizer heldRecognizer = recognizer;
                 pending.addOnCompleteListener(Runnable::run, done -> {
-                    if (heldBitmap != null) heldBitmap.recycle();
+                    if (finalAnalysis != null && !finalAnalysis.isRecycled()) finalAnalysis.recycle();
+                    if (finalOriginal != null && finalOriginal != finalAnalysis && !finalOriginal.isRecycled()) finalOriginal.recycle();
                     if (heldRecognizer != null) heldRecognizer.close();
                 });
-            } else if (bitmap != null) {
-                bitmap.recycle();
+            } else {
+                if (analysis != null && !analysis.isRecycled()) analysis.recycle();
+                if (original != null && original != analysis && !original.isRecycled()) original.recycle();
             }
             safeDelete(screenshot);
         }
