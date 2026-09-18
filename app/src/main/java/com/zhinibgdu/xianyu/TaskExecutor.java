@@ -230,7 +230,7 @@ public final class TaskExecutor {
         invalidateOcrCacheV411();
         lastTaskPanelOcrAtV415 = 0L;
         diagnostic("[数据路径] " + buildDataPathsLogV435(lastContext));
-        diagnostic("========== " + activeCategory.label + "开始 · " + BuildConfig.VERSION_NAME + " ==========");
+        diagnostic("========== " + activeCategory.label + "开始 · " + getAppVersionName(lastContext) + " ==========");
         notifyTask(lastContext, activeCategory.label, "任务已启动");
         new Thread(() -> {
             try {
@@ -1813,6 +1813,14 @@ public final class TaskExecutor {
         }
 
         return completed;
+    }
+
+    private static String getAppVersionName(Context context) {
+        try {
+            return context.getPackageManager().getPackageInfo(context.getPackageName(), 0).versionName;
+        } catch (Throwable ignored) {
+            return "unknown";
+        }
     }
 
     private static String buildDataPathsLogV435(Context context) {
