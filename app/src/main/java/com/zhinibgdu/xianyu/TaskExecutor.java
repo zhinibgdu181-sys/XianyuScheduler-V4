@@ -265,7 +265,7 @@ public final class TaskExecutor {
      * authorized ROOT shell as the primary launch path, then verify the real foreground
      * package before declaring completion and showing the completion Toast.
      */
-    private static boolean returnToApp(Context ctx, String suPath) {
+    private static boolean returnToApp(Context ctx, String suPath, String completionMessage) {
         if (ctx == null) return false;
         try {
             final String component = MODULE_PACKAGE + "/" + MODULE_PACKAGE + ".MainActivity";
@@ -310,7 +310,9 @@ public final class TaskExecutor {
                 String fg = getFg(suPath, false);
                 if (MODULE_PACKAGE.equals(fg)) {
                     diagnostic("[完成] 已确认返回定时任务 APP：" + MODULE_PACKAGE);
-                    showTaskCompletionToast(ctx, activeCategory.label + "已完成");
+                    showTaskCompletionToast(ctx, completionMessage == null || completionMessage.trim().isEmpty()
+                            ? "闲鱼任务已完成"
+                            : completionMessage);
                     return true;
                 }
 
@@ -487,6 +489,7 @@ public final class TaskExecutor {
 
         int completed = 0;
         boolean allEnabledCategoriesFinished = true;
+        StringBuilder completedCategoryLabels = new StringBuilder();
         TaskCategory requested = activeCategory;
         TaskCategory[] categories = requested == TaskCategory.ALL
                 ? new TaskCategory[]{TaskCategory.LOCAL, TaskCategory.VIDEO, TaskCategory.GAME, TaskCategory.JUMP}
@@ -495,10 +498,19 @@ public final class TaskExecutor {
             if (userAborted || gameIncompleteHoldV421) break;
             if (requested == TaskCategory.ALL && !isCategoryEnabled(ctx, categories[i])) continue;
             activeCategory = categories[i];
+            // Each category gets an independent completion result. Do not carry the
+            // previous category's exhausted=true state into the next category.
+            lastCategoryExhaustedV438 = false;
             diagnostic("[任务分类] 开始：" + activeCategory.label);
             notifyTask(ctx, activeCategory.label, "正在扫描任务");
             if (i > 0 && !resetTaskPanelTop(suPath)) break;
             completed += scanAndExecuteTasks(suPath, ctx);
+            if (lastCategoryExhaustedV438 && completedCategoryLabels.length() > 0) {
+                completedCategoryLabels.append("、");
+            }
+            if (lastCategoryExhaustedV438) {
+                completedCategoryLabels.append(activeCategory.label);
+            }
             if (!lastCategoryExhaustedV438 && !userAborted && !gameIncompleteHoldV421) {
                 allEnabledCategoriesFinished = false;
                 diagnostic("[任务分类] " + activeCategory.label + " 尚未确认完成，禁止提前返回定时任务 APP");
@@ -508,7 +520,15 @@ public final class TaskExecutor {
 
         // 只有所有已开启分类都明确确认“没有更多未完成任务”后，才返回定时任务 APP。
         if (!userAborted && !gameIncompleteHoldV421 && allEnabledCategoriesFinished) {
-            returnToApp(ctx, suPath);
+            String completionMessage;
+            if (completedCategoryLabels.length() == 0) {
+                completionMessage = "闲鱼任务已完成";
+            } else if (completedCategoryLabels.indexOf("、") < 0) {
+                completionMessage = completedCategoryLabels + "已完成";
+            } else {
+                completionMessage = "闲鱼任务已全部完成";
+            }
+            returnToApp(ctx, suPath, completionMessage);
         }
 
         diagnostic(
