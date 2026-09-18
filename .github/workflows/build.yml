@@ -45,18 +45,19 @@ jobs:
           KEY_ALIAS: ${{ secrets.XIANYU_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.XIANYU_KEY_PASSWORD }}
         run: |
-          if [ -n "$KEYSTORE_B64" ]; then
-            printf '%s' "$KEYSTORE_B64" | base64 --decode > xianyu-release.jks
-            cat > signing.properties <<EOF
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::Stable signing secrets are required. Configure XIANYU_KEYSTORE_BASE64, XIANYU_KEYSTORE_PASSWORD, XIANYU_KEY_ALIAS and XIANYU_KEY_PASSWORD in GitHub repository secrets."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > xianyu-release.jks
+          cat > signing.properties <<EOF
           storeFile=xianyu-release.jks
           storePassword=$KEYSTORE_PASSWORD
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
           EOF
             echo "Stable signing configured."
-          else
-            echo "No stable signing secrets configured; building with default debug signing."
-          fi
+
 
       - name: Build Debug APK
         run: |
