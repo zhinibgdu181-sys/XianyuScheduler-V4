@@ -39,20 +39,24 @@ jobs:
           gradle --version
 
       - name: Prepare stable signing
-        if: ${{ secrets.XIANYU_KEYSTORE_BASE64 != '' }}
         env:
           KEYSTORE_B64: ${{ secrets.XIANYU_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.XIANYU_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.XIANYU_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.XIANYU_KEY_PASSWORD }}
         run: |
-          printf '%s' "$KEYSTORE_B64" | base64 --decode > xianyu-release.jks
-          cat > signing.properties <<EOF
+          if [ -n "$KEYSTORE_B64" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 --decode > xianyu-release.jks
+            cat > signing.properties <<EOF
           storeFile=xianyu-release.jks
           storePassword=$KEYSTORE_PASSWORD
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
           EOF
+            echo "Stable signing configured."
+          else
+            echo "No stable signing secrets configured; building with default debug signing."
+          fi
 
       - name: Build Debug APK
         run: |
