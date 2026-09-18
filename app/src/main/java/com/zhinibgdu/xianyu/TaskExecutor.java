@@ -196,6 +196,7 @@ public final class TaskExecutor {
     // V4.43.8: a category may finish scanning without actually being complete.
     // Keep this result separate so execute() never returns to the scheduler app on an unresolved category.
     private static volatile boolean lastCategoryExhaustedV438 = false;
+    private static volatile boolean returnedToSchedulerV438 = false;
 
     public static String getActiveCategoryLabel() {
         return activeCategory.label;
@@ -233,6 +234,7 @@ public final class TaskExecutor {
         gameIncompleteTaskV421 = "";
         invalidateOcrCacheV411();
         lastTaskPanelOcrAtV415 = 0L;
+        returnedToSchedulerV438 = false;
         diagnostic("[数据路径] " + buildDataPathsLogV435(lastContext));
         diagnostic("========== " + activeCategory.label + "开始 · " + getAppVersionName(lastContext) + " ==========");
         notifyTask(lastContext, activeCategory.label, "任务已启动");
@@ -247,7 +249,10 @@ public final class TaskExecutor {
                 ScreenOcr.close();
                 inBounceTask = false;
                 diagnostic("========== 任务结束 ==========");
-                notifyTask(lastContext, activeCategory.label, userAborted ? "任务已中止" : "任务已结束，已返回 APP");
+                notifyTask(lastContext, activeCategory.label,
+                        userAborted
+                                ? "任务已中止"
+                                : (returnedToSchedulerV438 ? "任务已完成，已返回 APP" : "任务已完成，但未确认返回 APP"));
                 running = false;
                 if (complete != null) {
                     try { complete.run(); } catch (Throwable t) { diagnostic("完成回调异常", t); }
@@ -310,6 +315,7 @@ public final class TaskExecutor {
                 String fg = getFg(suPath, false);
                 if (MODULE_PACKAGE.equals(fg)) {
                     diagnostic("[完成] 已确认返回定时任务 APP：" + MODULE_PACKAGE);
+                    returnedToSchedulerV438 = true;
                     showTaskCompletionToast(ctx, completionMessage == null || completionMessage.trim().isEmpty()
                             ? "闲鱼任务已完成"
                             : completionMessage);
