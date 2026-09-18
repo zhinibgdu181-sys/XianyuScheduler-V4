@@ -2913,9 +2913,9 @@ public final class TaskExecutor {
             // 闲鱼“滑动浏览15s”页面实际存在一个独立倒计时。
             // 15 秒是最低要求，不等于我们的自动化可以在 15 秒整立即退出。
             // 日志已证明 15 秒结束时页面仍显示“滑动浏览8s/7s”，所以继续等待
-            // 直到倒计时消失；最多给 40 秒保护上限，避免页面异常时无限等待。
+            // 直到倒计时消失；最多给 45 秒保护上限，避免页面异常时无限等待。
             boolean welfareBrowse = isWelfareBrowseTaskV4433(taskName);
-            long effectiveWaitMs = welfareBrowse ? Math.max(waitMs, 40000L) : waitMs;
+            long effectiveWaitMs = welfareBrowse ? Math.max(waitMs, 45000L) : waitMs;
 
             while (SystemClock.elapsedRealtime() - started < effectiveWaitMs) {
                 if (!paceSleepV415(170L, 290L)) return false;
@@ -2949,7 +2949,7 @@ public final class TaskExecutor {
                 }
 
                 if (isInternalBrowse && elapsed >= nextBrowseSwipe
-                        && (!welfareBrowse || elapsed < 38000L)) {
+                        && (!welfareBrowse || elapsed < 42000L)) {
                     String fg = getFg(suPath, false);
                     if (MODULE_PACKAGE.equals(fg)) {
                         markUserAbortV48("浏览任务期间用户接管");
@@ -2973,15 +2973,14 @@ public final class TaskExecutor {
                     String browseText = combinedTextV45(null, browseProbe);
                     if (containsBrowseCountdownV4433(browseText)) {
                         browseCompletionMisses = 0;
-                        diagnostic("[福利浏览V4.43.3] 任务倒计时仍存在，继续等待："
+                        diagnostic("[福利浏览V4.43.4] 任务倒计时仍存在，继续等待："
                                 + extractBrowseCountdownV4433(browseText));
                     } else {
                         browseCompletionMisses++;
                         diagnostic("[福利浏览V4.43.3] 未识别到倒计时，确认次数="
                                 + browseCompletionMisses + "/2");
-                        if (browseCompletionMisses >= 2 && elapsed >= 16000L) {
-                            diagnostic("[福利浏览V4.43.3] ✅ 倒计时已消失，提前结束等待");
-                            break;
+                        if (browseCompletionMisses >= 3 && elapsed >= 30000L) {
+                            diagnostic("[福利浏览V4.43.4] ⚠️ 连续未识别到倒计时，但不提前退出；继续等待保护时限");
                         }
                     }
                     nextBrowseCompletionProbe += 1000L;
