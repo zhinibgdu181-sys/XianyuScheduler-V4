@@ -148,7 +148,7 @@ public final class TaskExecutor {
             "浏览"
     };
 
-    private static volatile boolean running =
+    private static volatile Context lastContextForTaskSwitch;\n\n    private static volatile boolean running =
             false;
 
     /**
@@ -284,11 +284,11 @@ public final class TaskExecutor {
     }
 
     public static void runLearning(Context appContext) {
-        runLearning(appContext, null);
+        run(appContext, null);
     }
 
     public static void runLearning(Context appContext, Runnable onComplete) {
-        startRunV412(appContext, onComplete, true);
+        run(appContext, onComplete);
     }
 
     private static synchronized void startRunV412(
@@ -310,6 +310,7 @@ public final class TaskExecutor {
 
         lastContext = appContext.getApplicationContext();
         running = true;
+        lastContextForTaskSwitch = appContext.getApplicationContext();
         learningModeV412 = learning;
         learningStopRequestedV412 = false;
         learningInputProcessV412 = null;
@@ -1571,8 +1572,10 @@ public final class TaskExecutor {
             Context ctx
     ) {
 
-        // V4.43: human feature/profile learning removed.
-        // Task execution uses OCR + fixed rules only.
+        // V4.11: prepare schema, remove duplicate/stale cases, and keep one
+        // canonical record for each identical case.
+        TaskProfileStoreV48.prepareV411();
+        TaskProfileStoreV48.compactUniqueCases();
 
         String suPath =
                 findSuPathWithRetry();
@@ -3969,10 +3972,28 @@ public final class TaskExecutor {
         diagnostic("[游戏独占V4.26] UNLOCK " + old + " / " + taskName);
     }
 
+
+    private static boolean isTaskEnabledForName(Context context, String taskName) {
+        if (context == null) return true;
+        String t = taskName == null ? "" : taskName;
+        if (containsAny(t, "视频", "观看", "看15秒")) {
+            return AppConfig.isVideoTaskEnabled(context);
+        }
+        if (containsAny(t, "水果", "麻将", "小游戏", "消除")) {
+            return AppConfig.isGameTaskEnabled(context);
+        }
+        return AppConfig.isLocalTaskEnabled(context);
+    }
+
     private static boolean executeSingleTask(
             String suPath,
             String taskName
     ) {
+
+        if (!isTaskEnabledForName(lastContextForTaskSwitch, taskName)) {
+            diagnostic("[跳过] " + taskName + "：任务开关关闭");
+            return false;
+        }
 
         diagnostic("[执行] " + taskName);
 
@@ -4614,6 +4635,13 @@ public final class TaskExecutor {
         private static final long MAX_DURATION_MS = 1000L;
 
         static boolean trySafeReturnToTaskPanel(String suPath, String currentFg) {
+            // V4.44: learning data is observation only.
+            // Human demonstrations may be used for statistics, but they must not
+            // directly trigger UI gestures. The state machine owns all actions.
+            diagnostic("[真人学习决策V4.44] 学习库仅作为统计参考，禁止自动回放动作");
+            return false;
+
+            /*
             Context context = lastContext;
             if (context == null || userAborted || learningModeV412
                     || gameSolverOwnsPageV420) return false;
@@ -4739,6 +4767,7 @@ public final class TaskExecutor {
 
             diagnostic("[真人学习决策V4.20] 返回后未验证到 TASK_PANEL；不执行第二次盲返回");
             return false;
+            */
         }
     }
 

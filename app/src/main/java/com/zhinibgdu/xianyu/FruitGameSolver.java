@@ -58,7 +58,7 @@ final class FruitGameSolver {
     private static final long MAX_ROUND_MS = 30L * 60L * 1000L;
     private static final int MAX_PAIR_ACTIONS = 130;
     private static final int MAX_RECOVERY_RETRY = 3;
-    private static final int MAX_NO_ACTION_RETRY = 3;
+    private static final int MAX_NO_ACTION_RETRY = 5;
     private static final long BLOCKED_POSITION_TTL_MS = 12_000L;
 
     // V4.38.0：三槽二消模型。槽位在中央竖井中从下往上堆叠。
@@ -119,11 +119,13 @@ final class FruitGameSolver {
         if (context == null || suPath == null || suPath.isEmpty() || host == null) {
             return Result.SAFE_STOP_CLEAN;
         }
+        host.log("[水果V4.44-step5] Solver启动，进入动作生成与点击验证闭环");
 
         if (!host.sleep(420L, 720L)) return Result.ABORTED;
 
         // V4.36：进入水果任务后可能经历 loading / “开始游戏”首页。
         // 不再只看一帧就判死刑；最多等待 8 秒，并在出现开始页时主动点“开始游戏”。
+        int entryRecoveryCount = 0;
         int recoveryCount = 0;
         String firstText = "";
         boolean confirmed = false;
@@ -142,7 +144,7 @@ final class FruitGameSolver {
 
                 if (looksLikeFruitGame(firstText)
                         || (!looksLikeTaskPanel(firstText) && isRoundCompleted(firstText))) {
-                    recoveryCount = 0;
+                    entryRecoveryCount = 0;
                     confirmed = true;
                     break;
                 }
@@ -177,8 +179,8 @@ final class FruitGameSolver {
                 if (!host.sleep(600L, 900L)) return Result.ABORTED;
             } catch (RuntimeException e) {
                 if (host.aborted()) return Result.ABORTED;
-                if (++recoveryCount > MAX_RECOVERY_RETRY) return Result.SAFE_STOP_CLEAN;
-                host.log("[恢复V4.42] 进入确认重试 " + recoveryCount + "/" + MAX_RECOVERY_RETRY
+                if (++entryRecoveryCount > MAX_RECOVERY_RETRY) return Result.SAFE_STOP_CLEAN;
+                host.log("[恢复V4.42] 进入确认重试 " + entryRecoveryCount + "/" + MAX_RECOVERY_RETRY
                         + " / " + e.getClass().getSimpleName());
                 if (!host.sleep(300L, 500L)) return Result.ABORTED;
             }
@@ -277,6 +279,7 @@ final class FruitGameSolver {
                 if (recovering) {
                     host.log("[恢复V4.42] 已重新确认水果页面和稳定槽位，继续求解");
                     recovering = false;
+                    recoveryCount = 0;
                 }
                 observationHealthy = true;
 
@@ -338,6 +341,9 @@ final class FruitGameSolver {
                         : " / 无安全动作"));
 
                 if (trayChoice == null && pair == null && safePush == null) {
+                    host.log("[水果V4.44] 无可执行move: objects=" + objects.size()
+                            + ", tray=" + tray.count
+                            + ", blocked=" + blockedPositions.size());
                     if (noActionRetry == 0 || noActionRetry == MAX_NO_ACTION_RETRY) {
                         logNoActionTrayDiagnostics(host, frame, tray, objects, drop, blockedPositions);
                     }
@@ -354,8 +360,9 @@ final class FruitGameSolver {
                     }
 
                     if (noActionRetry < MAX_NO_ACTION_RETRY) {
-                        noActionRetry++;
-                        host.log("[无动作V4.42] 等待动画后重新截图 " + noActionRetry + "/"
+                        host.log("[水果V4.44-step5] 当前轮未生成有效动作，进入重新建模流程 retry=" + (noActionRetry + 1));
+                noActionRetry++;
+                        host.log("[无动作V4.42] 等待动画/棋盘刷新后重新截图 " + noActionRetry + "/"
                                 + MAX_NO_ACTION_RETRY + " / objects=" + objects.size());
                         if (!host.sleep(300L, 500L)) return Result.ABORTED;
                         continue;
@@ -369,10 +376,14 @@ final class FruitGameSolver {
                     } else {
                         host.log("[游戏V4.38.0] 当前没有‘可直接下落 + 高置信同类’安全对子，CLEAN安全停止");
                     }
+                    host.log("[水果V4.44-step4] 连续无动作达到阈值，准备安全停止前最后复核");
                     return Result.SAFE_STOP_CLEAN;
                 }
 
                 noActionRetry = 0;
+                host.log("[水果V4.44] move生成成功: trayChoice=" + (trayChoice != null)
+                        + ", pair=" + (pair != null)
+                        + ", safePush=" + (safePush != null));
                 final int beforeRemaining = remaining;
                 final int beforeTrayCount = tray.count;
 

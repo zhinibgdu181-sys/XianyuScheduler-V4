@@ -9,6 +9,9 @@ public final class AppConfig {
     private static final String KEY_HOUR = "hour";
     private static final String KEY_MINUTE = "minute";
     private static final String KEY_ENABLED = "schedule_enabled";
+    private static final String KEY_LOCAL_TASK = "enable_local_task";
+    private static final String KEY_VIDEO_TASK = "enable_video_task";
+    private static final String KEY_GAME_TASK = "enable_game_task";
 
     public static final int DEFAULT_HOUR = 9;
     public static final int DEFAULT_MINUTE = 0;
@@ -40,6 +43,27 @@ public final class AppConfig {
                 .putInt(KEY_HOUR, hour)
                 .putInt(KEY_MINUTE, minute)
                 .putBoolean(KEY_ENABLED, true)
+                .apply();
+    }
+
+
+    public static boolean isLocalTaskEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_LOCAL_TASK, true);
+    }
+
+    public static boolean isVideoTaskEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_VIDEO_TASK, false);
+    }
+
+    public static boolean isGameTaskEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_GAME_TASK, false);
+    }
+
+    public static void saveTaskSwitches(Context context, boolean local, boolean video, boolean game) {
+        prefs(context).edit()
+                .putBoolean(KEY_LOCAL_TASK, local)
+                .putBoolean(KEY_VIDEO_TASK, video)
+                .putBoolean(KEY_GAME_TASK, game)
                 .apply();
     }
 

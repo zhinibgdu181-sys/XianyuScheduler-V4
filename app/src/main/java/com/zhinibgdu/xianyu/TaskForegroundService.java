@@ -25,7 +25,7 @@ public class TaskForegroundService extends Service {
     private static final int NOTIFICATION_ID = 18009;
     private static final String EXTRA_MODE = "run_mode";
     private static final String MODE_AUTO = "auto";
-    // V4.43: 真人学习模式 removed
+    private static final String MODE_LEARNING = "learning";
 
     private PowerManager.WakeLock wakeLock;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -43,9 +43,8 @@ public class TaskForegroundService extends Service {
         startWithMode(context, MODE_AUTO);
     }
 
-    /** V4.43 compatibility stub: human-learning mode removed. */
     public static void startLearning(Context context) {
-        TaskStatusReceiver.writeLog(context, "INFO", "调度", "真人学习模式已移除");
+        startWithMode(context, MODE_LEARNING);
     }
 
     private static void startWithMode(Context context, String mode) {
@@ -82,8 +81,7 @@ public class TaskForegroundService extends Service {
             return START_NOT_STICKY;
         }
         String mode = intent.getStringExtra(EXTRA_MODE);
-        // V4.43: only automatic fixed-rule tasks are allowed.
-        boolean learning = false;
+        boolean learning = MODE_LEARNING.equals(mode);
 
         TaskStatusReceiver.writeLog(
                 this,
@@ -118,7 +116,11 @@ public class TaskForegroundService extends Service {
             stopSelf();
         });
 
-        TaskExecutor.run(getApplicationContext(), complete);
+        if (learning) {
+            TaskExecutor.runLearning(getApplicationContext(), complete);
+        } else {
+            TaskExecutor.run(getApplicationContext(), complete);
+        }
 
         return START_NOT_STICKY;
     }
@@ -168,7 +170,7 @@ public class TaskForegroundService extends Service {
                     "闲鱼自动任务运行状态",
                     NotificationManager.IMPORTANCE_LOW
             );
-            channel.setDescription("保持自动任务在后台运行");
+            channel.setDescription("保持自动任务或真人示范学习在后台运行");
             manager.createNotificationChannel(channel);
         } catch (Throwable t) {
             Log.e(TAG, "创建通知渠道失败", t);

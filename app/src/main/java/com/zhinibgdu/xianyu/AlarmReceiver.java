@@ -31,6 +31,13 @@ public class AlarmReceiver extends BroadcastReceiver {
 
         TaskStatusReceiver.writeLog(app, "INFO", "调度", "定时闹钟触发");
 
+        if (!AppConfig.isLocalTaskEnabled(app)
+                && !AppConfig.isVideoTaskEnabled(app)
+                && !AppConfig.isGameTaskEnabled(app)) {
+            TaskStatusReceiver.writeLog(app, "INFO", "调度", "三个任务开关均关闭，跳过执行");
+            return;
+        }
+
         try {
             TaskForegroundService.start(app);
         } catch (Throwable t) {

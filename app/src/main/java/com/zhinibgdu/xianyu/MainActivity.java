@@ -22,6 +22,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Switch;
 import android.widget.Toast;
 import android.app.TimePickerDialog;
 import android.app.DatePickerDialog;
@@ -43,11 +44,13 @@ public class MainActivity extends Activity {
     private TextView scheduleStatusText;
     private TextView runtimeStatusText;
     private TextView statusDetailText;
+    private TextView learningStatusText;
     private TextView automationFeedbackText;
     private TextView todayDateText;
     private TextView todaySummaryText;
     private TextView todayCompletedText;
     private TextView dataPathText;
+    private Switch localSwitch, videoSwitch, gameSwitch;
     private TextView logText;
     private ScrollView logScroll;
 
@@ -101,6 +104,7 @@ public class MainActivity extends Activity {
         scheduleStatusText = findViewById(R.id.schedule_status_text);
         runtimeStatusText = findViewById(R.id.runtime_status_text);
         statusDetailText = findViewById(R.id.status_detail_text);
+        learningStatusText = findViewById(R.id.learning_status_text);
         automationFeedbackText = findViewById(R.id.automation_feedback_text);
         todayDateText = findViewById(R.id.today_date_text);
         todaySummaryText = findViewById(R.id.today_summary_text);
@@ -138,23 +142,29 @@ public class MainActivity extends Activity {
         Button schedule = findViewById(R.id.schedule_button);
         Button cancel = findViewById(R.id.cancel_button);
         Button test = findViewById(R.id.test_button);
+        Button learning = findViewById(R.id.learning_button);
         Button stop = findViewById(R.id.stop_button);
-        Button xianyuLocal = findViewById(R.id.xianyu_local_task_button);
-        Button videoTask = findViewById(R.id.video_task_button);
-        Button gameTask = findViewById(R.id.game_task_button);
+        Button learningStop = findViewById(R.id.learning_stop_button);
         Button log = findViewById(R.id.log_button);
         Button clearLog = findViewById(R.id.clear_log_button);
         Button copyAllLog = findViewById(R.id.copy_all_log_button);
+        localSwitch = findViewById(R.id.switch_local_task);
+        videoSwitch = findViewById(R.id.switch_video_task);
+        gameSwitch = findViewById(R.id.switch_game_task);
+        loadSwitches();
+
         Button todayRefresh = findViewById(R.id.today_refresh_button);
         Button showPath = findViewById(R.id.show_path_button);
 
         schedule.setOnClickListener(v -> scheduleDailyTask());
         cancel.setOnClickListener(v -> cancelDailyTask());
-        test.setOnClickListener(v -> triggerXianyuTask());
-        xianyuLocal.setOnClickListener(v -> TaskDispatcher.dispatch(this, "xianyu"));
-        videoTask.setOnClickListener(v -> TaskDispatcher.dispatch(this, "video"));
-        gameTask.setOnClickListener(v -> TaskDispatcher.dispatch(this, "game"));
+        test.setOnClickListener(v -> {
+            saveSwitches();
+            triggerXianyuTask();
+        });
+        learning.setOnClickListener(v -> triggerLearningMode());
         stop.setOnClickListener(v -> stopCurrentRun());
+        learningStop.setOnClickListener(v -> stopLearningMode());
         log.setOnClickListener(v -> showStatus(true));
         clearLog.setOnClickListener(v -> confirmClearLog());
         copyAllLog.setOnClickListener(v -> copyAllLogToClipboard());
@@ -509,7 +519,9 @@ public class MainActivity extends Activity {
     }
 
     private void triggerLearningMode() {
-        if (TaskExecutor.isRunning()) {
+        Toast.makeText(this, "真人学习模块已移除，请使用自动任务", Toast.LENGTH_SHORT).show();
+        return;
+        /*if (TaskExecutor.isRunning()) {
             setStatusMessage("当前已有运行实例，请先停止当前任务。");
             Toast.makeText(this, "已有任务正在运行", Toast.LENGTH_SHORT).show();
             return;
@@ -531,7 +543,7 @@ public class MainActivity extends Activity {
             setStatusMessage("启动学习模式失败：" + t.getClass().getSimpleName()
                     + "：" + t.getMessage());
             Toast.makeText(this, "启动学习模式失败", Toast.LENGTH_LONG).show();
-        }
+        }*/
     }
 
     private void stopLearningMode() {
@@ -559,6 +571,21 @@ public class MainActivity extends Activity {
         );
         handler.removeCallbacks(runningRefresh);
         handler.postDelayed(runningRefresh, 500L);
+    }
+
+
+    private void loadSwitches() {
+        android.content.SharedPreferences p=getSharedPreferences("task_config", MODE_PRIVATE);
+        localSwitch.setChecked(p.getBoolean("enable_local_task", true));
+        videoSwitch.setChecked(p.getBoolean("enable_video_task", false));
+        gameSwitch.setChecked(p.getBoolean("enable_game_task", false));
+    }
+
+    private void saveSwitches() {
+        AppConfig.saveTaskSwitches(this,
+                localSwitch.isChecked(),
+                videoSwitch.isChecked(),
+                gameSwitch.isChecked());
     }
 
     private void triggerXianyuTask() {
@@ -707,6 +734,7 @@ public class MainActivity extends Activity {
             scheduleStatusText.setText("每日任务：未启用");
         }
         int learned = TaskExecutor.getLearningCaseCount(this);
+        learningStatusText.setText("学习库：已保存 " + learned + " 个唯一案例");
         setRuntimeState(TaskExecutor.isRunning());
     }
 
@@ -731,6 +759,8 @@ public class MainActivity extends Activity {
 
         String log = readRecentLog(file);
         logText.setText(log);
+        learningStatusText.setText(
+                "学习库：已保存 " + TaskExecutor.getLearningCaseCount(this) + " 个唯一案例");
 
         if (running) {
             if (TaskExecutor.isLearningMode()) {
