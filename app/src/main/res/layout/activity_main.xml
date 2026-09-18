@@ -341,7 +341,7 @@
                 android:paddingStart="18dp"
                 android:paddingTop="24dp"
                 android:paddingEnd="18dp"
-                android:paddingBottom="30dp">
+                android:paddingBottom="10dp">
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -582,16 +582,6 @@
                         android:textStyle="bold" />
                 </LinearLayout>
 
-                <TextView
-                    android:id="@+id/automation_feedback_text"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:background="@drawable/bg_card"
-                    android:padding="14dp"
-                    android:text="自动化功能状态会显示在这里。"
-                    android:textColor="#6B7280"
-                    android:textSize="13sp" />
             </LinearLayout>
         </LinearLayout>
 
@@ -627,8 +617,8 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
-                android:layout_weight="0.72"
-                android:minHeight="150dp"
+                android:layout_weight="0.52"
+                android:minHeight="130dp"
                 android:layout_marginTop="10dp"
                 android:background="@drawable/bg_card"
                 android:orientation="vertical"
