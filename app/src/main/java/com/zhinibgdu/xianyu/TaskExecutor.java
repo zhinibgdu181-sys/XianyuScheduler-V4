@@ -229,7 +229,8 @@ public final class TaskExecutor {
         gameIncompleteTaskV421 = "";
         invalidateOcrCacheV411();
         lastTaskPanelOcrAtV415 = 0L;
-        diagnostic("========== " + activeCategory.label + "开始 · V4.43.1 ==========");
+        diagnostic("[数据路径] " + buildDataPathsLogV435(lastContext));
+        diagnostic("========== " + activeCategory.label + "开始 · " + BuildConfig.VERSION_NAME + " ==========");
         notifyTask(lastContext, activeCategory.label, "任务已启动");
         new Thread(() -> {
             try {
@@ -1506,6 +1507,8 @@ public final class TaskExecutor {
         int consecutiveFail = 0;
         String exhaustedViewport = "";
         int repeatedViewport = 0;
+        int consecutiveEmptyCandidateScans = 0;
+        boolean categoryExhausted = false;
 
         for (int pass = 0; pass < 30; pass++) {
 
@@ -1598,6 +1601,16 @@ public final class TaskExecutor {
             diagnostic("候选任务=" + candidates.size());
 
             if (candidates.isEmpty()) {
+                // OCR can miss a whole frame transiently. Require three consecutive
+                // empty scans before treating a category as exhausted, so one bad
+                // OCR frame cannot produce a false "category completed" message.
+                consecutiveEmptyCandidateScans++;
+                if (consecutiveEmptyCandidateScans >= 3) {
+                    diagnostic("[任务分类] 连续3次未识别到任务，视为当前分类没有更多可执行任务："
+                            + activeCategory.label);
+                    categoryExhausted = true;
+                    break;
+                }
                 if (!swipeUp(suPath)) {
                     sleepAbortableV48(500L);
                 } else {
@@ -1605,6 +1618,7 @@ public final class TaskExecutor {
                 }
                 continue;
             }
+            consecutiveEmptyCandidateScans = 0;
 
             TaskCandidate target = null;
             int targetPriority = Integer.MAX_VALUE;
@@ -1657,6 +1671,7 @@ public final class TaskExecutor {
                 if (repeatedViewport >= 1) {
                     diagnostic("[任务分类] 检测到任务列表连续两次相同，已滑到底部；停止无效继续滑动："
                             + activeCategory.label);
+                    categoryExhausted = true;
                     break;
                 }
                 if (!swipeUp(suPath)) {
@@ -1788,7 +1803,41 @@ public final class TaskExecutor {
             }
         }
 
+        if (categoryExhausted) {
+            String finishedMessage = activeCategory.label
+                    + "已完成：当前分类没有更多可执行任务，本分类已验证完成 "
+                    + completed + " 个任务";
+            diagnostic("[任务分类完成] " + finishedMessage);
+            sendStatus(activeCategory.label, "INFO", finishedMessage);
+            notifyTask(ctx, activeCategory.label, "本分类任务已完成");
+        }
+
         return completed;
+    }
+
+    private static String buildDataPathsLogV435(Context context) {
+        if (context == null) return "context=null";
+        try {
+            Context app = context.getApplicationContext();
+            File external = app.getExternalFilesDir(null);
+            String externalPath = external == null ? "不可用" : external.getAbsolutePath();
+            String logPath = external == null
+                    ? "不可用"
+                    : new File(external, LOG_FILE_NAME).getAbsolutePath();
+            String diagPath = external == null
+                    ? DIAGNOSTIC_DIR_V411
+                    : new File(external, "xianyu_diagnostics").getAbsolutePath();
+            String prefsPath = new File(
+                    app.getDataDir(),
+                    "shared_prefs/xianyu_records_v427.xml"
+            ).getAbsolutePath();
+            return "日志=" + logPath
+                    + " | 数据目录=" + externalPath
+                    + " | 诊断截图=" + diagPath
+                    + " | 任务记录=" + prefsPath;
+        } catch (Throwable t) {
+            return "读取数据路径失败：" + t.getClass().getSimpleName();
+        }
     }
 
     private static int taskPriorityV46(TaskCandidate candidate) {
