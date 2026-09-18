@@ -140,9 +140,7 @@ public class MainActivity extends Activity {
 
         Button schedule = findViewById(R.id.schedule_button);
         Button cancel = findViewById(R.id.cancel_button);
-        Button test = findViewById(R.id.test_button);
-        Button video = findViewById(R.id.video_task_button);
-        Button game = findViewById(R.id.game_task_button);
+        Button execute = findViewById(R.id.execute_task_button);
         Button stop = findViewById(R.id.stop_button);
         Button log = findViewById(R.id.log_button);
         Button clearLog = findViewById(R.id.clear_log_button);
@@ -163,9 +161,7 @@ public class MainActivity extends Activity {
 
         schedule.setOnClickListener(v -> scheduleDailyTask());
         cancel.setOnClickListener(v -> cancelDailyTask());
-        test.setOnClickListener(v -> triggerXianyuTask(TaskCategory.LOCAL));
-        video.setOnClickListener(v -> triggerXianyuTask(TaskCategory.VIDEO));
-        game.setOnClickListener(v -> triggerXianyuTask(TaskCategory.GAME));
+        execute.setOnClickListener(v -> triggerSelectedTasks());
         stop.setOnClickListener(v -> stopCurrentRun());
         log.setOnClickListener(v -> showStatus(true));
         clearLog.setOnClickListener(v -> confirmClearLog());
@@ -534,6 +530,32 @@ public class MainActivity extends Activity {
         );
         handler.removeCallbacks(runningRefresh);
         handler.postDelayed(runningRefresh, 500L);
+    }
+
+    private void triggerSelectedTasks() {
+        boolean local = localSwitch.isChecked();
+        boolean video = videoSwitch.isChecked();
+        boolean game = gameSwitch.isChecked();
+
+        if (!local && !video && !game) {
+            setStatusMessage("当前三个任务开关均已关闭。请至少开启一个任务后再点击“执行任务”。");
+            Toast.makeText(this, "请至少开启一个任务", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        StringBuilder selected = new StringBuilder();
+        if (local) selected.append("闲鱼本地任务");
+        if (video) {
+            if (selected.length() > 0) selected.append("、");
+            selected.append("视频任务");
+        }
+        if (game) {
+            if (selected.length() > 0) selected.append("、");
+            selected.append("小游戏任务");
+        }
+
+        setStatusMessage("已选择：" + selected + "。\n点击“执行任务”后将按本地 → 视频 → 小游戏顺序执行。");
+        triggerXianyuTask(TaskCategory.ALL);
     }
 
     private void triggerXianyuTask(TaskCategory category) {
