@@ -2913,9 +2913,9 @@ public final class TaskExecutor {
             // 闲鱼“滑动浏览15s”页面实际存在一个独立倒计时。
             // 15 秒是最低要求，不等于我们的自动化可以在 15 秒整立即退出。
             // 日志已证明 15 秒结束时页面仍显示“滑动浏览8s/7s”，所以继续等待
-            // 直到倒计时消失；最多给 28 秒保护上限，避免页面异常时无限等待。
+            // 直到倒计时消失；最多给 40 秒保护上限，避免页面异常时无限等待。
             boolean welfareBrowse = isWelfareBrowseTaskV4433(taskName);
-            long effectiveWaitMs = welfareBrowse ? Math.max(waitMs, 28000L) : waitMs;
+            long effectiveWaitMs = welfareBrowse ? Math.max(waitMs, 40000L) : waitMs;
 
             while (SystemClock.elapsedRealtime() - started < effectiveWaitMs) {
                 if (!paceSleepV415(170L, 290L)) return false;
@@ -2949,7 +2949,7 @@ public final class TaskExecutor {
                 }
 
                 if (isInternalBrowse && elapsed >= nextBrowseSwipe
-                        && (!welfareBrowse || elapsed < 27000L)) {
+                        && (!welfareBrowse || elapsed < 38000L)) {
                     String fg = getFg(suPath, false);
                     if (MODULE_PACKAGE.equals(fg)) {
                         markUserAbortV48("浏览任务期间用户接管");
