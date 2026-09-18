@@ -48,7 +48,7 @@ public class MainActivity extends Activity {
     private TextView todaySummaryText;
     private TextView todayCompletedText;
     private TextView dataPathText;
-    private Switch localSwitch, videoSwitch, gameSwitch;
+    private Switch localSwitch, videoSwitch, gameSwitch, jumpSwitch;
     private TextView logText;
     private ScrollView logScroll;
 
@@ -146,14 +146,17 @@ public class MainActivity extends Activity {
         localSwitch = findViewById(R.id.switch_local_task);
         videoSwitch = findViewById(R.id.switch_video_task);
         gameSwitch = findViewById(R.id.switch_game_task);
+        jumpSwitch = findViewById(R.id.switch_jump_task);
         localSwitch.setChecked(AppConfig.isLocalTaskEnabled(this));
         videoSwitch.setChecked(AppConfig.isVideoTaskEnabled(this));
         gameSwitch.setChecked(AppConfig.isGameTaskEnabled(this));
+        jumpSwitch.setChecked(AppConfig.isJumpTaskEnabled(this));
         android.widget.CompoundButton.OnCheckedChangeListener save = (button, checked) ->
-                AppConfig.saveTaskSwitches(this, localSwitch.isChecked(), videoSwitch.isChecked(), gameSwitch.isChecked());
+                AppConfig.saveTaskSwitches(this, localSwitch.isChecked(), videoSwitch.isChecked(), gameSwitch.isChecked(), jumpSwitch.isChecked());
         localSwitch.setOnCheckedChangeListener(save);
         videoSwitch.setOnCheckedChangeListener(save);
         gameSwitch.setOnCheckedChangeListener(save);
+        jumpSwitch.setOnCheckedChangeListener(save);
         Button todayRefresh = findViewById(R.id.today_refresh_button);
         Button showPath = findViewById(R.id.show_path_button);
 
@@ -548,8 +551,9 @@ public class MainActivity extends Activity {
         boolean local = localSwitch.isChecked();
         boolean video = videoSwitch.isChecked();
         boolean game = gameSwitch.isChecked();
+        boolean jump = jumpSwitch.isChecked();
 
-        if (!local && !video && !game) {
+        if (!local && !video && !game && !jump) {
             setStatusMessage("当前三个任务开关均已关闭。请至少开启一个任务后再点击“执行任务”。");
             Toast.makeText(this, "请至少开启一个任务", Toast.LENGTH_SHORT).show();
             return;
