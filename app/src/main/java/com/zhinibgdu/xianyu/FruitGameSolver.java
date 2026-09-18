@@ -204,6 +204,7 @@ final class FruitGameSolver {
         int pairActions = 0;
         int noActionRetry = 0;
         boolean recovering = false;
+                    recoveryCount = 0;
         boolean fruitTapAttempted = false;
 
         // V4.36 本轮验证失败过的对子进入黑名单，不再重复尝试
@@ -279,6 +280,7 @@ final class FruitGameSolver {
                 if (recovering) {
                     host.log("[恢复V4.42] 已重新确认水果页面和稳定槽位，继续求解");
                     recovering = false;
+                    recoveryCount = 0;
                 }
                 observationHealthy = true;
 
