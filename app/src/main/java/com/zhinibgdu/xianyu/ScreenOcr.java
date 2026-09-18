@@ -59,6 +59,7 @@ final class ScreenOcr {
                     ROOT_TIMEOUT_MS, cancellation)) return Snapshot.empty();
             bitmap = BitmapFactory.decodeFile(screenshot.getAbsolutePath());
             if (bitmap == null) return Snapshot.empty();
+            boolean welfareFishVisible = hasWelfareFishOverlay(bitmap);
             if (sharedRecognizer == null)
                 sharedRecognizer = TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
             recognizer = sharedRecognizer;
@@ -82,7 +83,7 @@ final class ScreenOcr {
                 }
             }
             return new Snapshot(result == null ? "" : normalize(result.getText()), items,
-                    bitmap.getWidth(), bitmap.getHeight());
+                    bitmap.getWidth(), bitmap.getHeight(), welfareFishVisible);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return Snapshot.empty();
@@ -104,6 +105,34 @@ final class ScreenOcr {
             }
             safeDelete(screenshot);
         }
+    }
+
+    /**
+     * 闲鱼“滑动浏览15s”完成标记是右下角的小黄鱼图标，不是稳定的 OCR 文本。
+     * 某些页面完成后 OCR 仍会从商品内容里识别出“滑动浏览9s”，因此这里直接
+     * 检测任务浮层的小黄鱼像素；仅在右下区域统计高饱和黄色像素。
+     */
+    private static boolean hasWelfareFishOverlay(Bitmap bitmap) {
+        if (bitmap == null || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) return false;
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        int left = Math.max(0, Math.round(width * 0.72f));
+        int top = Math.max(0, Math.round(height * 0.70f));
+        int bottom = Math.min(height, Math.round(height * 0.90f));
+
+        int yellow = 0;
+        for (int y = top; y < bottom; y++) {
+            for (int x = left; x < width; x++) {
+                int pixel = bitmap.getPixel(x, y);
+                int r = (pixel >> 16) & 0xff;
+                int g = (pixel >> 8) & 0xff;
+                int b = pixel & 0xff;
+                if (r >= 200 && g >= 150 && b <= 105 && r - b >= 110) {
+                    if (++yellow >= 900) return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static String shellQuote(String value) {
@@ -132,18 +161,20 @@ final class ScreenOcr {
         final List<Item> items;
         final int width;
         final int height;
+        final boolean welfareFishVisible;
 
-        Snapshot(String fullText, List<Item> items, int width, int height) {
+        Snapshot(String fullText, List<Item> items, int width, int height, boolean welfareFishVisible) {
             this.fullText = fullText == null ? "" : fullText;
             this.items = items == null
                     ? Collections.emptyList()
                     : Collections.unmodifiableList(new ArrayList<>(items));
             this.width = width;
             this.height = height;
+            this.welfareFishVisible = welfareFishVisible;
         }
 
         static Snapshot empty() {
-            return new Snapshot("", Collections.emptyList(), 0, 0);
+            return new Snapshot("", Collections.emptyList(), 0, 0, false);
         }
 
         boolean isEmpty() {
