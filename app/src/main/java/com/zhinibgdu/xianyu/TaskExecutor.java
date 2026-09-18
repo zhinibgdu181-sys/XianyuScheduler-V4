@@ -2980,7 +2980,8 @@ public final class TaskExecutor {
                         diagnostic("[福利浏览V4.43.3] 未识别到倒计时，确认次数="
                                 + browseCompletionMisses + "/2");
                         if (browseCompletionMisses >= 3 && elapsed >= 30000L) {
-                            diagnostic("[福利浏览V4.43.4] ⚠️ 连续未识别到倒计时，但不提前退出；继续等待保护时限");
+                            diagnostic("[福利浏览V4.43.4] ✅ 连续3次未识别到倒计时，确认浏览完成");
+                            break;
                         }
                     }
                     nextBrowseCompletionProbe += 1000L;
