@@ -148,7 +148,7 @@ public final class TaskExecutor {
             "浏览"
     };
 
-    private static volatile Context lastContextForTaskSwitch;\n\n    private static volatile boolean running =
+    private static volatile Context lastContextForTaskSwitch;    private static volatile boolean running =
             false;
 
     /**
@@ -310,7 +310,8 @@ public final class TaskExecutor {
 
         lastContext = appContext.getApplicationContext();
         running = true;
-        lastContextForTaskSwitch = appContext.getApplicationContext();
+        
+lastContextForTaskSwitch = appContext.getApplicationContext();
         learningModeV412 = learning;
         learningStopRequestedV412 = false;
         learningInputProcessV412 = null;
