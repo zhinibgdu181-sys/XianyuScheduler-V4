@@ -2885,7 +2885,8 @@ public final class TaskExecutor {
         long started = SystemClock.elapsedRealtime();
 
         try {
-            long nextBrowseSwipe = fixedDuration(2600L, 2200L, 3300L);
+            // 15 秒内部浏览期间约每 2.5 秒滑动一次。
+            long nextBrowseSwipe = fixedDuration(2500L, 2300L, 2700L);
             long nextFgCheck = 0L;
             long systemTransitSince = 0L;
 
@@ -2933,7 +2934,7 @@ public final class TaskExecutor {
                         );
                         diagnostic("[执行] 内部浏览滑动，elapsed=" + elapsed + "ms");
                     }
-                    nextBrowseSwipe += 3000L;
+                    nextBrowseSwipe += 2500L;
                 }
             }
 
@@ -4428,6 +4429,9 @@ public final class TaskExecutor {
         long explicit = explicitSecondsRequirementV415(taskName);
         if (explicit > 0L) return Math.min(45000L, explicit + 900L);
         if (isSearch) return 5200L;
+        // “去浏览福利好物”需要完整浏览约 15 秒；旧版 8200ms 只够滑动两次。
+        if (isInternalBrowse && taskName != null
+                && taskName.replaceAll("\s+", "").contains("去浏览福利好物")) return 15000L;
         if (isInternalBrowse) return 8200L;
         if (isBounce) {
             if (containsAny(taskName, "逛逛", "浏览", "农场", "果园", "玩1关", "玩一玩")) {
@@ -4446,6 +4450,8 @@ public final class TaskExecutor {
     ) {
         long explicit = explicitSecondsRequirementV415(taskName);
         if (explicit > 0L) return Math.min(45000L, explicit + 500L);
+        if (isInternalBrowse && taskName != null
+                && taskName.replaceAll("\s+", "").contains("去浏览福利好物")) return 15000L;
         if (isInternalBrowse) return 6200L;
         if (isBounce && containsAny(taskName, "逛逛", "浏览", "农场", "果园")) return 6000L;
         if (isBounce) return 3800L;
