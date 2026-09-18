@@ -56,7 +56,7 @@ public final class TaskExecutor {
                     + "/com.taobao.fleamarket.home.activity.InitActivity";
 
     private static final String NOTIFICATION_CHANNEL =
-            "xianyu_task";
+            "xianyu_task_v2";
 
     private static final int NOTIFICATION_ID =
             18008;
@@ -5696,7 +5696,9 @@ public final class TaskExecutor {
                     .setContentText(
                             safe(text)
                     )
-                    .setAutoCancel(true);
+                    .setAutoCancel(true)
+                    .setPriority(android.app.Notification.PRIORITY_HIGH)
+                    .setDefaults(android.app.Notification.DEFAULT_ALL);
 
             if (pendingIntent != null) {
                 builder.setContentIntent(
