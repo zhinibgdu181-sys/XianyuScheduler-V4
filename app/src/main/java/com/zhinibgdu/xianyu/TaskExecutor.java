@@ -33,48 +33,13 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
-/**
- * XianyuTaskExecutor V4.22
- *
- * 重点修复：
- * 1. dumpsys 前台解析不再把“未知”误判为模块 App。
- * 2. 只有明确检测到 com.zhinibgdu.xianyu 才触发用户中止。
- * 3. uiautomator 第一次失败自动重试。
- * 4. Root 命令统一检查退出码和超时。
- * 5. 任务由前台 Service 承载进程生命周期，不再依赖 Xposed/广播注入。
- * 6. 特征库按“任务 + 事件类型 + 原因/恢复方式”去重；同一案例只保留一条记录。
- * 7. V4.9 将历史经验接入执行决策：等待时间、返回策略、失败退避和策略日志。
- * 8. V4.10 返回策略：右侧最边缘 75% 高度优先；每次返回后识别页面；必要时第二次右滑，失败再用左侧兜底。
- * 9. V4.11：真实任务完成验证、页面特征库、任务状态机、近期经验加权、人工接管防自触发、
- *    OCR缓存分层、失败冷却、失败诊断截图、特征库版本/过期清理。
- * 10. V4.12：真人示范学习模式。学习模式只观察、不主动点击/滑动/启动目标 App；
- *     记录真人点击/滑动/边缘返回、动作前后页面、等待时间和页面转换，并对相同案例去重累计。
- * 11. V4.12：自动模式人工接管后进入硬停止态，所有后续 UI 变更 Root 命令都会被统一拦截。
- * 12. V4.13：修复真人示范触摸生命周期和持续时间采集；按 getevent 事件时间计算 DOWN→UP，
- *     新触摸不再继承上一手势坐标；增加语义去重、页面/外部 App 归一化和无关系统动作过滤。
- * 13. V4.15：自适应节奏。减少重复 OCR/固定等待；验证页复用最近任务面板快照。
- * 14. V4.16：任务面板立即连贯执行。返回/识别到 TASK_PANEL 后复用该帧直接挑选
- *     下一个“签到/领取奖励/去完成”，不再为了上一任务的进度变化额外停留。
- * 15. V4.17：修复“赚骰子/1分兑换”OCR粘连误点；导航OCR优先；UIAutomator快速超时；人工接管即时中断。
- * 16. V4.18：加入小游戏页面分类；“消了还想消”启用水果视觉配对求解器；麻将对子页先识别并纳入学习库。
- * 17. V4.19：“点点消不停”启用麻将视觉求解器：识别6x6棋盘/同牌，优先处理相邻对子，
- *     再滑动同牌靠近；每一步截图验证，失败动作进入本轮黑名单，不盲滑。
- * 18. V4.20：游戏分流不再依赖完整任务名；点击后以实际页面类型为准，OCR把“消”识成“渭”也能
- *     进入水果求解器。游戏求解期间启用独占锁，普通恢复和真人学习回放不得插手。
- * 19. V4.20：真人学习库降权为“受控建议库”：只允许同一外部App、重复>=3次、目标TASK_PANEL的
- *     左/右边缘返回案例自动复用；TAP/普通滑动/跨App经验永不自动回放。
- * 20. V4.20：首页→我的→闲鱼币→赚骰子改为OCR单帧接力，同一张OCR既确认页面又点击下一入口，
- *     删除重复确认OCR；扩展“赚骰子”OCR错字容错。
- * 21. V4.21：修复水果游戏守卫与快速导航。
- * 22. V4.22：游戏交互对象白名单；水果只点水果，麻将只操作麻将牌，功能按钮一律禁止自动点击。
- */
+/** Executes selected task categories using verified page state and fixed timing. */
 public final class TaskExecutor {
 
     private static final String TAG =
@@ -148,7 +113,7 @@ public final class TaskExecutor {
             "浏览"
     };
 
-    private static volatile Context lastContextForTaskSwitch;    private static volatile boolean running =
+    private static volatile boolean running =
             false;
 
     /**
@@ -176,23 +141,6 @@ public final class TaskExecutor {
     private static volatile Process touchMonitorProcess;
     private static volatile Thread touchMonitorThread;
 
-    // V4.13 learning mode. It is observation-only: no automated UI mutation is
-    // allowed while this flag is true.
-    private static volatile boolean learningModeV412 = false;
-    private static volatile boolean learningStopRequestedV412 = false;
-    private static volatile Process learningInputProcessV412;
-    private static volatile Thread learningSamplerThreadV412;
-    private static volatile PageProbeV411 learningLastPageV412;
-    private static volatile long learningLastPageAtV412 = 0L;
-    private static volatile boolean learningHasLeftHelperV412 = false;
-    private static volatile long learningLastActionEndV412 = 0L;
-    private static final Object learningPageHistoryLockV413 = new Object();
-    private static final List<TimedLearningPageV413> learningPageHistoryV413 = new ArrayList<>();
-    private static final String LEARNING_PREFS_V412 = "xianyu_learning_v413";
-    private static final String LEARNING_LOG_FILE_V412 = "xianyu_learning_v413_log.txt";
-    private static final long LEARNING_PAGE_SAMPLE_MS_V412 = 900L;
-    private static final long LEARNING_POST_ACTION_DELAY_MS_V412 = 650L;
-
     // V4.11 manual-takeover hardening: shell-generated tap/swipe events are
     // ignored only inside a very short correlation window so the monitor does
     // not stop itself on devices that echo synthetic input to getevent.
@@ -217,7 +165,7 @@ public final class TaskExecutor {
     private static final long TASK_PANEL_CHAIN_REUSE_MS_V416 = 2600L;
 
     // V4.20/V4.21 game-page ownership. While a visual solver owns the current
-    // Xianyu surface, generic recovery and learned gesture replay are forbidden.
+    // Xianyu surface, generic recovery is forbidden.
     private static volatile boolean gameSolverOwnsPageV420 = false;
     private static volatile String gameSolverKindV420 = "";
 
@@ -243,1304 +191,64 @@ public final class TaskExecutor {
     private TaskExecutor() {
     }
 
-    public static boolean isLearningMode() {
-        return running && learningModeV412;
-    }
+    private static volatile TaskCategory activeCategory = TaskCategory.ALL;
 
-    public static int getLearningCaseCount(Context context) {
-        if (context == null) return 0;
-        try {
-            return context.getApplicationContext()
-                    .getSharedPreferences(LEARNING_PREFS_V412, Context.MODE_PRIVATE)
-                    .getInt("__case_count", 0);
-        } catch (Throwable ignored) {
-            return 0;
-        }
+    public static String getActiveCategoryLabel() {
+        return activeCategory.label;
     }
 
     public static void requestStop(String reason) {
-        if (!running) return;
-        if (learningModeV412) {
-            learningStopRequestedV412 = true;
-            diagnostic("[学习模式V4.13] 收到停止请求："
-                    + (reason == null ? "" : reason));
-            Process p = learningInputProcessV412;
-            if (p != null) {
-                try { p.destroy(); } catch (Throwable ignored) { }
-            }
-        } else {
-            markUserAbortV48(reason == null || reason.isEmpty()
-                    ? "用户请求停止"
-                    : reason);
-        }
+        if (running) markUserAbortV48(reason == null || reason.isEmpty() ? "用户请求停止" : reason);
     }
 
-    public static void run(Context appContext) {
-        run(appContext, null);
+    public static void run(Context context) { run(context, null); }
+
+    public static void run(Context context, Runnable complete) {
+        run(context, TaskCategory.ALL, complete);
     }
 
-    public static void run(Context appContext, Runnable onComplete) {
-        startRunV412(appContext, onComplete, false);
-    }
-
-    public static void runLearning(Context appContext) {
-        run(appContext, null);
-    }
-
-    public static void runLearning(Context appContext, Runnable onComplete) {
-        run(appContext, onComplete);
-    }
-
-    private static synchronized void startRunV412(
-            Context appContext,
-            Runnable onComplete,
-            boolean learning
-    ) {
-        if (running) {
-            diagnostic("⚠️ 已有任务正在运行，忽略重复触发");
+    public static synchronized void run(Context context, TaskCategory category, Runnable complete) {
+        if (running) return;
+        if (context == null) {
+            if (complete != null) complete.run();
             return;
         }
-
-        if (appContext == null) {
-            if (onComplete != null) {
-                try { onComplete.run(); } catch (Throwable ignored) { }
-            }
-            return;
-        }
-
-        lastContext = appContext.getApplicationContext();
+        lastContext = context.getApplicationContext();
+        LegacyDataCleanup.remove(lastContext);
+        activeCategory = category == null ? TaskCategory.ALL : category;
         running = true;
-        
-lastContextForTaskSwitch = appContext.getApplicationContext();
-        learningModeV412 = learning;
-        learningStopRequestedV412 = false;
-        learningInputProcessV412 = null;
         userAborted = false;
         inBounceTask = false;
         physicalTouchDetected = false;
         physicalTouchAt = 0L;
         syntheticInputIgnoreUntilV411 = 0L;
         lastSyntheticInputAtV411 = 0L;
+        gameSolverOwnsPageV420 = false;
+        gameIncompleteHoldV421 = false;
+        gameIncompleteKindV421 = "";
+        gameIncompleteTaskV421 = "";
         invalidateOcrCacheV411();
-
-        diagnostic(
-                learning
-                        ? "========== 真人示范学习开始 · V4.13 =========="
-                        : "========== 闲鱼任务开始 · V4.41.0 =========="
-        );
-
-        if (learning) {
-            diagnostic("🧠 学习模式只观察，不会主动点击、滑动、返回或启动闲鱼");
-            diagnostic("🧠 请手动离开本助手并正常操作；完成后切回本助手即可结束学习");
-        } else {
-            diagnostic("💡 想中途停止：切回“闲鱼定时助手”即可");
-        }
-
-        notifyTask(
-                lastContext,
-                learning ? "闲鱼真人示范学习" : "闲鱼自动任务",
-                learning ? "正在记录真人操作" : "任务已启动"
-        );
-
-        Thread worker = new Thread(
-                () -> {
-                    try {
-                        if (learningModeV412) {
-                            executeLearningV412(lastContext);
-                        } else {
-                            execute(lastContext);
-                        }
-                    } catch (Throwable t) {
-                        diagnostic(
-                                learningModeV412 ? "学习线程异常" : "任务线程异常",
-                                t
-                        );
-                    } finally {
-                        learningStopRequestedV412 = true;
-                        stopPhysicalTouchMonitorV48();
-                        stopLearningSamplerV412();
-                        ScreenOcr.close();
-                        Process lp = learningInputProcessV412;
-                        learningInputProcessV412 = null;
-                        if (lp != null) {
-                            try { lp.destroy(); } catch (Throwable ignored) { }
-                            try { lp.destroyForcibly(); } catch (Throwable ignored) { }
-                        }
-
-                        boolean wasLearning = learningModeV412;
-                        learningModeV412 = false;
-                        learningStopRequestedV412 = false;
-                        inBounceTask = false;
-
-                        diagnostic(
-                                wasLearning
-                                        ? "========== 真人示范学习结束 =========="
-                                        : "========== 闲鱼任务结束 =========="
-                        );
-
-                        notifyTask(
-                                lastContext,
-                                wasLearning ? "闲鱼真人示范学习" : "闲鱼自动任务",
-                                wasLearning
-                                        ? "学习记录已保存"
-                                        : (userAborted ? "任务已中止" : "任务已结束")
-                        );
-
-                        if (onComplete != null) {
-                            try {
-                                onComplete.run();
-                            } catch (Throwable callbackError) {
-                                diagnostic("完成回调异常", callbackError);
-                            }
-                        }
-                        running = false;
-                    }
-                },
-                learning ? "XianyuLearn-V413" : "XianyuTask-V415"
-        );
-
-        worker.start();
-    }
-
-
-    private static void executeLearningV412(Context ctx) {
-        String suPath = findSuPathWithRetry();
-        if (suPath == null) {
-            diagnostic("❌ [学习模式V4.13] Root 不可用，无法读取真实触摸事件");
-            sendStatus("", "FAILED", "学习模式需要 Root 读取触摸事件");
-            return;
-        }
-
-        RootResult id = rootWithPath(suPath, "id");
-        if (id.exitCode != 0 || id.stdout == null || !id.stdout.contains("uid=0")) {
-            diagnostic("❌ [学习模式V4.13] Root 权限验证失败");
-            sendStatus("", "FAILED", "Root 权限验证失败");
-            return;
-        }
-
-        String device = findTouchscreenDeviceV48(suPath);
-        if (device == null || device.isEmpty()) {
-            diagnostic("❌ [学习模式V4.13] 未识别到触摸屏输入设备");
-            sendStatus("", "FAILED", "未识别到触摸屏设备");
-            return;
-        }
-
-        int[] screen = getScreenSizeV43(suPath);
-        int screenW = screen == null ? 1440 : screen[0];
-        int screenH = screen == null ? 3120 : screen[1];
-        TouchAxisV412 axis = readTouchAxisV412(suPath, device, screenW, screenH);
-
-        learningHasLeftHelperV412 = false;
-        learningLastActionEndV412 = SystemClock.elapsedRealtime();
-        learningLastPageV412 = new PageProbeV411(
-                MODULE_PACKAGE,
-                ScreenOcr.Snapshot.empty(),
-                "",
-                PageKindV411.MODULE_APP,
-                "helper"
-        );
-        learningLastPageAtV412 = SystemClock.elapsedRealtime();
-        synchronized (learningPageHistoryLockV413) {
-            learningPageHistoryV413.clear();
-        }
-        rememberLearningPageV413(learningLastPageV412, learningLastPageAtV412);
-
-        diagnostic("[学习模式V4.13] 触摸设备=" + device
-                + " screen=" + screenW + "x" + screenH
-                + " rawX=" + axis.minX + ".." + axis.maxX
-                + " rawY=" + axis.minY + ".." + axis.maxY);
-        diagnostic("[学习模式V4.13] 触摸生命周期=TRACKING_ID/BTN_TOUCH DOWN→UP；持续时间使用 getevent 原始时间戳");
-        diagnostic("[学习模式V4.13] 现在请真人正常操作手机；程序不会执行任何 input tap/swipe/back/am start");
-        diagnostic("[学习模式V4.13] 完成示范后切回“闲鱼定时助手”，学习会自动结束");
-
-        startLearningSamplerV412(suPath);
-
-        Process process = null;
-        int gestureCount = 0;
-        int skippedCount = 0;
-        try {
-            process = Runtime.getRuntime().exec(new String[]{
-                    suPath,
-                    "-c",
-                    "getevent -lt " + device + " 2>/dev/null"
-            });
-            learningInputProcessV412 = process;
-
-            BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8)
-            );
-
-            boolean active = false;
-            int startRawX = -1;
-            int startRawY = -1;
-            int endRawX = -1;
-            int endRawY = -1;
-            long downEventMs = -1L;
-            long downElapsedMs = 0L;
-            long eventToElapsedOffsetMs = Long.MIN_VALUE;
-            long lastUpEventMs = -1L;
-            PageProbeV411 before = null;
-            String line;
-
-            while (running
-                    && learningModeV412
-                    && !learningStopRequestedV412
-                    && (line = reader.readLine()) != null) {
-
-                String u = line.toUpperCase(Locale.US);
-                long eventMs = parseGeteventTimestampMsV413(line);
-                if (eventMs >= 0L && eventToElapsedOffsetMs == Long.MIN_VALUE) {
-                    eventToElapsedOffsetMs = SystemClock.elapsedRealtime() - eventMs;
-                }
-
-                boolean trackingDown = isTrackingDownV413(u);
-                boolean trackingUp = isTrackingUpV413(u);
-                boolean buttonDown = isBtnTouchDownV413(u);
-                boolean buttonUp = isBtnTouchUpV413(u);
-
-                // A new contact MUST reset all coordinates. This is the key V4.13
-                // fix: the previous gesture's end point can never become this
-                // gesture's start point.
-                if ((trackingDown || buttonDown) && !active) {
-                    active = true;
-                    startRawX = -1;
-                    startRawY = -1;
-                    endRawX = -1;
-                    endRawY = -1;
-                    downEventMs = eventMs;
-                    downElapsedMs = eventMs >= 0L && eventToElapsedOffsetMs != Long.MIN_VALUE
-                            ? eventMs + eventToElapsedOffsetMs
-                            : SystemClock.elapsedRealtime();
-                    before = learningPageAtOrBeforeV413(downElapsedMs, 2800L);
-                    if (before == null) before = learningLastPageV412;
-                    if (before == null) {
-                        before = freshestLearningPageV412(suPath, 2500L);
-                    }
-                }
-
-                Integer xVal = parseGeteventAxisValueV412(u, "ABS_MT_POSITION_X", "0035");
-                if (xVal != null && active) {
-                    if (startRawX < 0) startRawX = xVal;
-                    endRawX = xVal;
-                }
-
-                Integer yVal = parseGeteventAxisValueV412(u, "ABS_MT_POSITION_Y", "0036");
-                if (yVal != null && active) {
-                    if (startRawY < 0) startRawY = yVal;
-                    endRawY = yVal;
-                }
-
-                if ((trackingUp || buttonUp) && active) {
-                    active = false;
-                    long processUpElapsedMs = SystemClock.elapsedRealtime();
-                    long upElapsedMs = eventMs >= 0L && eventToElapsedOffsetMs != Long.MIN_VALUE
-                            ? eventMs + eventToElapsedOffsetMs
-                            : processUpElapsedMs;
-                    long duration = durationFromEventTimesV413(
-                            downEventMs,
-                            eventMs,
-                            downElapsedMs,
-                            upElapsedMs);
-
-                    int sx = axis.toScreenX(startRawX);
-                    int sy = axis.toScreenY(startRawY);
-                    int ex = axis.toScreenX(endRawX >= 0 ? endRawX : startRawX);
-                    int ey = axis.toScreenY(endRawY >= 0 ? endRawY : startRawY);
-
-                    if (sx < 0 || sy < 0 || ex < 0 || ey < 0) {
-                        skippedCount++;
-                        diagnostic("[学习模式V4.13] 忽略坐标不完整的触摸事件"
-                                + " rawStart=(" + startRawX + "," + startRawY + ")"
-                                + " rawEnd=(" + endRawX + "," + endRawY + ")");
-                        learningLastActionEndV412 = upElapsedMs;
-                        if (eventMs >= 0L) lastUpEventMs = eventMs;
-                        startRawX = startRawY = endRawX = endRawY = -1;
-                        before = null;
-                        downEventMs = -1L;
-                        continue;
-                    }
-
-                    long idleBefore;
-                    if (downEventMs >= 0L && lastUpEventMs >= 0L && downEventMs >= lastUpEventMs) {
-                        idleBefore = downEventMs - lastUpEventMs;
-                    } else {
-                        idleBefore = learningLastActionEndV412 <= 0L
-                                ? 0L
-                                : Math.max(0L, downElapsedMs - learningLastActionEndV412);
-                    }
-
-                    LearnedGestureV412 gesture = classifyLearnedGestureV412(
-                            sx, sy, ex, ey, duration, screenW, screenH);
-
-                    PageProbeV411 beforeFinal = before != null
-                            ? before
-                            : freshestLearningPageV412(suPath, 2500L);
-
-                    long afterTargetElapsed = upElapsedMs + 450L;
-                    if (!learningStopRequestedV412) {
-                        long remaining = afterTargetElapsed - SystemClock.elapsedRealtime();
-                        if (remaining > 0L) {
-                            SystemClock.sleep(Math.min(LEARNING_POST_ACTION_DELAY_MS_V412, remaining));
-                        }
-                    }
-
-                    PageProbeV411 after = learningStopRequestedV412
-                            ? learningLastPageV412
-                            : learningPageAtOrAfterV413(afterTargetElapsed, 2600L);
-                    if (after == null && !learningStopRequestedV412) {
-                        after = sampleLearningPageV412(suPath, "动作后");
-                    }
-
-                    if (after == null) {
-                        after = new PageProbeV411(
-                                "", ScreenOcr.Snapshot.empty(), "",
-                                PageKindV411.UNKNOWN, "");
-                    }
-                    if (beforeFinal == null) {
-                        beforeFinal = new PageProbeV411(
-                                "", ScreenOcr.Snapshot.empty(), "",
-                                PageKindV411.UNKNOWN, "");
-                    }
-
-                    if (shouldRecordLearningGestureV413(beforeFinal, gesture, after, duration)) {
-                        LearningStoreV412.record(
-                                ctx,
-                                beforeFinal,
-                                gesture,
-                                after,
-                                idleBefore,
-                                duration,
-                                screenW,
-                                screenH
-                        );
-
-                        gestureCount++;
-                        diagnostic("[学习动作V4.13] #" + gestureCount
-                                + " " + gesture.kind
-                                + " (" + sx + "," + sy + ")->(" + ex + "," + ey + ")"
-                                + " duration=" + duration + "ms"
-                                + " idleBefore=" + idleBefore + "ms"
-                                + " page=" + learningPageKindV413(beforeFinal)
-                                + "->" + learningPageKindV413(after));
-                    } else {
-                        skippedCount++;
-                        diagnostic("[学习过滤V4.13] 忽略无关/异常动作 " + gesture.kind
-                                + " duration=" + duration + "ms"
-                                + " page=" + learningPageKindV413(beforeFinal)
-                                + "->" + learningPageKindV413(after));
-                    }
-
-                    learningLastActionEndV412 = upElapsedMs;
-                    if (eventMs >= 0L) lastUpEventMs = eventMs;
-                    learningLastPageV412 = after;
-                    learningLastPageAtV412 = SystemClock.elapsedRealtime();
-
-                    startRawX = startRawY = endRawX = endRawY = -1;
-                    before = null;
-                    downEventMs = -1L;
+        lastTaskPanelOcrAtV415 = 0L;
+        diagnostic("========== " + activeCategory.label + "开始 · V4.43.0 ==========");
+        notifyTask(lastContext, activeCategory.label, "任务已启动");
+        new Thread(() -> {
+            try {
+                execute(lastContext);
+            } catch (Throwable t) {
+                diagnostic("任务线程异常", t);
+                sendStatus("", "FAILED", "任务线程异常：" + t.getClass().getSimpleName());
+            } finally {
+                stopPhysicalTouchMonitorV48();
+                ScreenOcr.close();
+                inBounceTask = false;
+                diagnostic("========== 任务结束 ==========");
+                notifyTask(lastContext, activeCategory.label, userAborted ? "任务已中止" : "任务已结束");
+                running = false;
+                if (complete != null) {
+                    try { complete.run(); } catch (Throwable t) { diagnostic("完成回调异常", t); }
                 }
             }
-        } catch (Throwable t) {
-            if (!learningStopRequestedV412) {
-                diagnostic("[学习模式V4.13] 触摸记录线程异常", t);
-            }
-        } finally {
-            learningInputProcessV412 = null;
-            if (process != null) {
-                try { process.destroy(); } catch (Throwable ignored) { }
-            }
-            stopLearningSamplerV412();
-        }
-
-        int cases = getLearningCaseCount(ctx);
-        diagnostic("[学习模式V4.13] 本次真人示范结束；有效动作=" + gestureCount
-                + " 忽略动作=" + skippedCount + " 当前唯一学习案例=" + cases);
-        sendStatus("", "FINISHED", "学习完成，已保存 " + cases + " 个唯一案例");
-    }
-
-    private static long parseGeteventTimestampMsV413(String line) {
-        if (line == null) return -1L;
-        Matcher m = Pattern.compile("\\[\\s*([0-9]+(?:\\.[0-9]+)?)\\s*\\]").matcher(line);
-        if (!m.find()) return -1L;
-        try {
-            double seconds = Double.parseDouble(m.group(1));
-            return Math.round(seconds * 1000.0);
-        } catch (Throwable ignored) {
-            return -1L;
-        }
-    }
-
-    private static boolean isTrackingDownV413(String upperLine) {
-        if (upperLine == null || !(upperLine.contains("ABS_MT_TRACKING_ID") || upperLine.contains(" 0039 "))) return false;
-        String t = upperLine.trim();
-        return !(t.endsWith("FFFFFFFF") || t.endsWith("-1"));
-    }
-
-    private static boolean isTrackingUpV413(String upperLine) {
-        if (upperLine == null || !(upperLine.contains("ABS_MT_TRACKING_ID") || upperLine.contains(" 0039 "))) return false;
-        String t = upperLine.trim();
-        return t.endsWith("FFFFFFFF") || t.endsWith("-1");
-    }
-
-    private static boolean isBtnTouchDownV413(String upperLine) {
-        if (upperLine == null || !(upperLine.contains("BTN_TOUCH") || upperLine.contains(" 014A "))) return false;
-        String t = upperLine.trim();
-        return t.contains(" DOWN") || t.endsWith("00000001");
-    }
-
-    private static boolean isBtnTouchUpV413(String upperLine) {
-        if (upperLine == null || !(upperLine.contains("BTN_TOUCH") || upperLine.contains(" 014A "))) return false;
-        String t = upperLine.trim();
-        return t.contains(" UP") || t.endsWith("00000000");
-    }
-
-    private static long durationFromEventTimesV413(
-            long downEventMs,
-            long upEventMs,
-            long downElapsedMs,
-            long upElapsedMs
-    ) {
-        if (downEventMs >= 0L && upEventMs >= downEventMs) {
-            long d = upEventMs - downEventMs;
-            if (d >= 1L && d <= 30_000L) return d;
-        }
-        long fallback = Math.max(1L, upElapsedMs - downElapsedMs);
-        return Math.min(30_000L, fallback);
-    }
-
-    private static boolean shouldRecordLearningGestureV413(
-            PageProbeV411 before,
-            LearnedGestureV412 gesture,
-            PageProbeV411 after,
-            long durationMs
-    ) {
-        if (gesture == null) return false;
-        String preFg = before == null ? "" : safe(before.fg);
-        String postFg = after == null ? "" : safe(after.fg);
-
-        if (MODULE_PACKAGE.equals(preFg) || MODULE_PACKAGE.equals(postFg)) return false;
-        if (isLearningNoisePackageV413(preFg) || isLearningNoisePackageV413(postFg)) return false;
-        if (durationMs <= 0L || durationMs > 30_000L) return false;
-
-        // Extremely short large swipes are almost always malformed lifecycle
-        // pairs rather than human gestures.
-        double dist = Math.hypot(gesture.ex - gesture.sx, gesture.ey - gesture.sy);
-        if (durationMs < 12L && dist > 80.0) return false;
-        return true;
-    }
-
-    private static boolean isLearningNoisePackageV413(String pkg) {
-        if (pkg == null || pkg.isEmpty()) return false;
-        return "android".equals(pkg)
-                || "com.android.systemui".equals(pkg)
-                || "com.samsung.android.permissioncontroller".equals(pkg)
-                || "com.google.android.permissioncontroller".equals(pkg)
-                || "com.android.permissioncontroller".equals(pkg);
-    }
-
-    private static void startLearningSamplerV412(String suPath) {
-        stopLearningSamplerV412();
-
-        Thread t = new Thread(() -> {
-            long helperSince = 0L;
-            while (running && learningModeV412 && !learningStopRequestedV412
-                    && !Thread.currentThread().isInterrupted()) {
-                try {
-                    String fg = getFg(suPath, false);
-
-                    if (MODULE_PACKAGE.equals(fg)) {
-                        if (learningHasLeftHelperV412) {
-                            if (helperSince == 0L) helperSince = SystemClock.elapsedRealtime();
-                            if (SystemClock.elapsedRealtime() - helperSince >= 650L) {
-                                learningStopRequestedV412 = true;
-                                diagnostic("[学习模式V4.13] 检测到真人切回助手，停止学习并保存记录");
-                                Process p = learningInputProcessV412;
-                                if (p != null) {
-                                    try { p.destroy(); } catch (Throwable ignored) { }
-                                }
-                                break;
-                            }
-                        }
-                    } else {
-                        helperSince = 0L;
-                        if (fg != null && !fg.isEmpty()) {
-                            learningHasLeftHelperV412 = true;
-                        }
-
-                        long now = SystemClock.elapsedRealtime();
-                        if (learningHasLeftHelperV412
-                                && now - learningLastPageAtV412 >= LEARNING_PAGE_SAMPLE_MS_V412) {
-                            sampleLearningPageV412(suPath, "空闲采样");
-                        }
-                    }
-
-                    SystemClock.sleep(320L);
-                } catch (Throwable t1) {
-                    diagnostic("[学习模式V4.13] 页面采样异常：" + t1);
-                    SystemClock.sleep(600L);
-                }
-            }
-        }, "XianyuLearnSampler-V413");
-
-        t.setDaemon(true);
-        learningSamplerThreadV412 = t;
-        t.start();
-    }
-
-    private static void stopLearningSamplerV412() {
-        Thread t = learningSamplerThreadV412;
-        learningSamplerThreadV412 = null;
-        if (t != null && t != Thread.currentThread()) {
-            try { t.interrupt(); } catch (Throwable ignored) { }
-        }
-    }
-
-    private static synchronized PageProbeV411 sampleLearningPageV412(
-            String suPath,
-            String reason
-    ) {
-        if (!learningModeV412 || learningStopRequestedV412 || Thread.currentThread().isInterrupted()) {
-            return learningLastPageV412;
-        }
-
-        PageProbeV411 page;
-        try {
-            page = probePageV411(suPath, "学习/" + reason);
-        } catch (Throwable t) {
-            String fg = getFg(suPath, false);
-            PageKindV411 kind;
-            if (MODULE_PACKAGE.equals(fg)) kind = PageKindV411.MODULE_APP;
-            else if (TARGET_PACKAGE.equals(fg)) kind = PageKindV411.UNKNOWN_XIANYU;
-            else if (fg != null && !fg.isEmpty()) kind = PageKindV411.EXTERNAL_APP;
-            else kind = PageKindV411.UNKNOWN;
-            page = new PageProbeV411(
-                    fg, ScreenOcr.Snapshot.empty(), "", kind, "sample_error");
-        }
-
-        learningLastPageV412 = page;
-        learningLastPageAtV412 = SystemClock.elapsedRealtime();
-        rememberLearningPageV413(page, learningLastPageAtV412);
-        return page;
-    }
-
-    private static final class TimedLearningPageV413 {
-        final long atElapsedMs;
-        final PageProbeV411 page;
-
-        TimedLearningPageV413(long atElapsedMs, PageProbeV411 page) {
-            this.atElapsedMs = atElapsedMs;
-            this.page = page;
-        }
-    }
-
-    private static void rememberLearningPageV413(PageProbeV411 page, long atElapsedMs) {
-        if (page == null) return;
-        synchronized (learningPageHistoryLockV413) {
-            learningPageHistoryV413.add(new TimedLearningPageV413(atElapsedMs, page));
-            while (learningPageHistoryV413.size() > 24) {
-                learningPageHistoryV413.remove(0);
-            }
-        }
-    }
-
-    private static PageProbeV411 learningPageAtOrBeforeV413(long targetElapsedMs, long maxAgeMs) {
-        TimedLearningPageV413 best = null;
-        synchronized (learningPageHistoryLockV413) {
-            for (TimedLearningPageV413 item : learningPageHistoryV413) {
-                if (item == null || item.page == null) continue;
-                if (item.atElapsedMs <= targetElapsedMs
-                        && targetElapsedMs - item.atElapsedMs <= maxAgeMs
-                        && (best == null || item.atElapsedMs > best.atElapsedMs)) {
-                    best = item;
-                }
-            }
-        }
-        return best == null ? null : best.page;
-    }
-
-    private static PageProbeV411 learningPageAtOrAfterV413(
-            long targetElapsedMs,
-            long maxWaitMs
-    ) {
-        TimedLearningPageV413 best = null;
-        synchronized (learningPageHistoryLockV413) {
-            for (TimedLearningPageV413 item : learningPageHistoryV413) {
-                if (item == null || item.page == null) continue;
-                if (item.atElapsedMs >= targetElapsedMs
-                        && item.atElapsedMs - targetElapsedMs <= maxWaitMs
-                        && (best == null || item.atElapsedMs < best.atElapsedMs)) {
-                    best = item;
-                }
-            }
-        }
-        return best == null ? null : best.page;
-    }
-
-    private static PageProbeV411 freshestLearningPageV412(
-            String suPath,
-            long maxAgeMs
-    ) {
-        PageProbeV411 p = learningLastPageV412;
-        long age = SystemClock.elapsedRealtime() - learningLastPageAtV412;
-        if (p != null && age >= 0L && age <= maxAgeMs) {
-            return p;
-        }
-        return sampleLearningPageV412(suPath, "动作前");
-    }
-
-    private static final class TouchAxisV412 {
-        final int minX;
-        final int maxX;
-        final int minY;
-        final int maxY;
-        final int screenW;
-        final int screenH;
-
-        TouchAxisV412(
-                int minX, int maxX, int minY, int maxY,
-                int screenW, int screenH
-        ) {
-            this.minX = minX;
-            this.maxX = Math.max(minX + 1, maxX);
-            this.minY = minY;
-            this.maxY = Math.max(minY + 1, maxY);
-            this.screenW = Math.max(1, screenW);
-            this.screenH = Math.max(1, screenH);
-        }
-
-        int toScreenX(int raw) {
-            if (raw < 0) return -1;
-            double r = (raw - minX) / (double) (maxX - minX);
-            return clampV412((int) Math.round(r * (screenW - 1)), 0, screenW - 1);
-        }
-
-        int toScreenY(int raw) {
-            if (raw < 0) return -1;
-            double r = (raw - minY) / (double) (maxY - minY);
-            return clampV412((int) Math.round(r * (screenH - 1)), 0, screenH - 1);
-        }
-    }
-
-    private static TouchAxisV412 readTouchAxisV412(
-            String suPath,
-            String device,
-            int screenW,
-            int screenH
-    ) {
-        int minX = 0;
-        int maxX = Math.max(1, screenW - 1);
-        int minY = 0;
-        int maxY = Math.max(1, screenH - 1);
-
-        RootResult r = rootWithPath(
-                suPath,
-                "getevent -lp " + device + " 2>/dev/null"
-        );
-
-        if (r.exitCode == 0 && r.stdout != null) {
-            int[] x = parseAxisRangeV412(r.stdout, "ABS_MT_POSITION_X", "0035");
-            int[] y = parseAxisRangeV412(r.stdout, "ABS_MT_POSITION_Y", "0036");
-            if (x != null) {
-                minX = x[0];
-                maxX = x[1];
-            }
-            if (y != null) {
-                minY = y[0];
-                maxY = y[1];
-            }
-        }
-
-        return new TouchAxisV412(minX, maxX, minY, maxY, screenW, screenH);
-    }
-
-    private static int[] parseAxisRangeV412(
-            String text,
-            String label,
-            String code
-    ) {
-        if (text == null) return null;
-        String[] lines = text.split("\\r?\\n");
-        for (String line : lines) {
-            String u = line.toUpperCase(Locale.US);
-            if (!u.contains(label) && !u.contains(code)) continue;
-
-            Matcher min = Pattern.compile("(?i)\\bmin\\s+(-?\\d+)").matcher(line);
-            Matcher max = Pattern.compile("(?i)\\bmax\\s+(-?\\d+)").matcher(line);
-            if (min.find() && max.find()) {
-                try {
-                    int a = Integer.parseInt(min.group(1));
-                    int b = Integer.parseInt(max.group(1));
-                    if (b > a) return new int[]{a, b};
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-        return null;
-    }
-
-    private static Integer parseGeteventAxisValueV412(
-            String upperLine,
-            String label,
-            String code
-    ) {
-        if (upperLine == null) return null;
-        int idx = upperLine.indexOf(label);
-        if (idx < 0) idx = upperLine.indexOf(code);
-        if (idx < 0) return null;
-
-        String tail = upperLine.substring(idx);
-        Matcher m = Pattern.compile("(?i)(?:ABS_MT_POSITION_[XY]|003[56])\\s+([0-9A-F]{1,8})")
-                .matcher(tail);
-        if (!m.find()) return null;
-        try {
-            return (int) Long.parseLong(m.group(1), 16);
-        } catch (Throwable ignored) {
-            return null;
-        }
-    }
-
-    private static final class LearnedGestureV412 {
-        final String kind;
-        final int sx;
-        final int sy;
-        final int ex;
-        final int ey;
-
-        LearnedGestureV412(String kind, int sx, int sy, int ex, int ey) {
-            this.kind = kind;
-            this.sx = sx;
-            this.sy = sy;
-            this.ex = ex;
-            this.ey = ey;
-        }
-    }
-
-    private static LearnedGestureV412 classifyLearnedGestureV412(
-            int sx, int sy, int ex, int ey,
-            long durationMs,
-            int width, int height
-    ) {
-        int dx = ex - sx;
-        int dy = ey - sy;
-        double distance = Math.hypot(dx, dy);
-        int edgePx = Math.max(8, Math.min(28, Math.round(width * 0.018f)));
-        int swipeMin = Math.max(90, Math.round(width * 0.08f));
-
-        String kind;
-        if (sx <= edgePx && dx >= swipeMin && Math.abs(dx) > Math.abs(dy) * 1.3) {
-            kind = "EDGE_BACK_LEFT";
-        } else if (sx >= width - 1 - edgePx
-                && dx <= -swipeMin
-                && Math.abs(dx) > Math.abs(dy) * 1.3) {
-            kind = "EDGE_BACK_RIGHT";
-        } else if (distance < Math.max(34.0, width * 0.025)) {
-            kind = durationMs >= 650L ? "LONG_PRESS" : "TAP";
-        } else if (Math.abs(dy) > Math.abs(dx) * 1.15) {
-            kind = dy < 0 ? "SWIPE_UP" : "SWIPE_DOWN";
-        } else if (Math.abs(dx) > Math.abs(dy) * 1.15) {
-            kind = dx < 0 ? "SWIPE_LEFT" : "SWIPE_RIGHT";
-        } else {
-            kind = "SWIPE_DIAGONAL";
-        }
-
-        return new LearnedGestureV412(kind, sx, sy, ex, ey);
-    }
-
-    private static int clampV412(int v, int min, int max) {
-        return Math.max(min, Math.min(max, v));
-    }
-
-    private static String learningPageKindV413(PageProbeV411 page) {
-        if (page == null) return "UNKNOWN";
-        String fg = safe(page.fg);
-        String text = safe(page.text);
-
-        if (MODULE_PACKAGE.equals(fg)) return "MODULE_APP";
-        if (!fg.isEmpty() && !TARGET_PACKAGE.equals(fg)) return "EXTERNAL_APP";
-
-        if (TARGET_PACKAGE.equals(fg)) {
-            if (containsAny(text, "正在跳转", "打开淘宝", "打开支付宝", "打开美团")) {
-                return "JUMP_PAGE";
-            }
-            if (containsAny(text,
-                    "继续试玩", "安装应用可立即领奖", "安装完成即可领奖",
-                    "立即下载", "继续播放视频内容", "广告")) {
-                return "AD_OR_INSTALL";
-            }
-            if (containsAny(text, "得骰子赚闲鱼币")
-                    || (containsAny(text, "闲鱼币")
-                    && containsAny(text, "去完成", "领取奖励", "领取笑励", "收益+10%"))) {
-                return "TASK_PANEL";
-            }
-            if (containsAny(text, "扔骰子寻宝", "碎片收集", "1分兑换")
-                    || (containsAny(text, "赚骰子") && containsAny(text, "背包", "闲鱼币"))) {
-                return "COIN_HOME";
-            }
-            if (containsAny(text, "我的收藏")
-                    && containsAny(text, "我发布的", "我卖出的", "我买到的")) {
-                return "MINE";
-            }
-            if (containsAny(text, "卖闲置")
-                    && containsAny(text, "消息")
-                    && containsAny(text, "我的")) {
-                return "XIANYU_HOME";
-            }
-            if (FruitGameSolver.looksLikeFruitGame(text)) return "FRUIT_PAIR_GAME";
-            if (MahjongGameSolver.looksLikeMahjongPairGame(text)) return "MAHJONG_PAIR_GAME";
-        }
-
-        switch (page.kind) {
-            case TASK_PANEL: return "TASK_PANEL";
-            case COIN_HOME: return "COIN_HOME";
-            case MINE: return "MINE";
-            case XIANYU_HOME: return "XIANYU_HOME";
-            case AD_OR_INSTALL: return "AD_OR_INSTALL";
-            case FRUIT_PAIR_GAME: return "FRUIT_PAIR_GAME";
-            case MAHJONG_PAIR_GAME: return "MAHJONG_PAIR_GAME";
-            case EXTERNAL_APP: return "EXTERNAL_APP";
-            case MODULE_APP: return "MODULE_APP";
-            case UNKNOWN_XIANYU: return "UNKNOWN_XIANYU";
-            default: return "UNKNOWN";
-        }
-    }
-
-    private static String learningAppKeyV413(String pkg) {
-        String p = safe(pkg);
-        if (p.isEmpty()) return "";
-        if (TARGET_PACKAGE.equals(p)) return "XIANYU";
-        if (MODULE_PACKAGE.equals(p)) return "HELPER";
-        if ("com.taobao.taobao".equals(p)) return "TAOBAO";
-        if ("com.eg.android.AlipayGphone".equals(p)) return "ALIPAY";
-        if ("com.sankuai.meituan".equals(p)) return "MEITUAN";
-        if ("com.dianping.v1".equals(p)) return "DIANPING";
-        if ("com.sec.android.app.samsungapps".equals(p)) return "GALAXY_STORE";
-        if (p.contains("permissioncontroller")) return "PERMISSION";
-        return p;
-    }
-
-    private static String learningSemanticActionV413(
-            PageProbeV411 before,
-            LearnedGestureV412 gesture,
-            int width,
-            int height
-    ) {
-        if (before == null || gesture == null) return "";
-        if (!("TAP".equals(gesture.kind) || "LONG_PRESS".equals(gesture.kind))) {
-            return "";
-        }
-        String raw = learningActionLabelV412(
-                before.ocr, gesture.sx, gesture.sy, width, height);
-        return canonicalLearningActionV413(raw);
-    }
-
-    private static String canonicalLearningActionV413(String raw) {
-        if (raw == null) return "";
-        String s = raw
-                .replace("领取笑励", "领取奖励")
-                .replace("赚股子", "赚骰子")
-                .replace("賺股子", "赚骰子")
-                .replace("安井", "安装")
-                .replaceAll("\\s+", " ")
-                .trim();
-        if (s.isEmpty()) return "";
-
-        String button = "";
-        if (s.contains("去完成")) button = "去完成";
-        else if (s.contains("领取奖励")) button = "领取奖励";
-        else if (s.contains("签到")) button = "签到";
-        else if (s.contains("去浏览")) button = "去浏览";
-        else if (s.contains("去领取")) button = "去领取";
-
-        String row = "";
-        int slash = s.indexOf('/');
-        if (slash >= 0 && slash + 1 < s.length()) {
-            row = s.substring(slash + 1);
-        } else if (!button.isEmpty()) {
-            row = s.replace(button, "");
-        } else {
-            row = s;
-        }
-
-        row = row
-                .replaceAll("[\\p{Punct}，。！？、：；（）【】《》“”‘’·]+", "")
-                .replaceAll("\\s+", "")
-                .replaceAll("\\d+\\s*/\\s*\\d+", "")
-                .trim();
-        if (row.length() > 28) row = row.substring(0, 28);
-        if (row.matches("[0-9]+") || row.length() == 1) row = "";
-
-        if (!button.isEmpty()) {
-            return row.isEmpty() ? button : button + "/" + row;
-        }
-        return row;
-    }
-
-    private static String learningSemanticSpatialV413(
-            LearnedGestureV412 gesture,
-            String action,
-            int width,
-            int height
-    ) {
-        if (gesture == null || width <= 0 || height <= 0) return "";
-        if ("EDGE_BACK_LEFT".equals(gesture.kind)
-                || "EDGE_BACK_RIGHT".equals(gesture.kind)) {
-            return "EDGE";
-        }
-        if (action != null && !action.isEmpty()) return "LABEL";
-
-        double xr = gesture.sx / (double) Math.max(1, width - 1);
-        double yr = gesture.sy / (double) Math.max(1, height - 1);
-
-        if ("SWIPE_UP".equals(gesture.kind) || "SWIPE_DOWN".equals(gesture.kind)) {
-            String band = yr < 0.34 ? "TOP" : (yr < 0.68 ? "MID" : "BOTTOM");
-            return "SCROLL_" + band;
-        }
-        if ("TAP".equals(gesture.kind) || "LONG_PRESS".equals(gesture.kind)) {
-            int bx = clampV412((int) Math.floor(xr * 4.0), 0, 3);
-            int by = clampV412((int) Math.floor(yr * 8.0), 0, 7);
-            return "T" + bx + ":" + by;
-        }
-        int bx = clampV412((int) Math.floor(xr * 3.0), 0, 2);
-        int by = clampV412((int) Math.floor(yr * 4.0), 0, 3);
-        return "G" + bx + ":" + by;
-    }
-
-    private static final class LearningStoreV412 {
-        private static final String INDEX = "__ids";
-        private static final String NEXT_ID = "__next_id";
-        private static final int MAX_CASES = 220;
-
-        static void record(
-                Context context,
-                PageProbeV411 before,
-                LearnedGestureV412 gesture,
-                PageProbeV411 after,
-                long idleBeforeMs,
-                long durationMs,
-                int width,
-                int height
-        ) {
-            if (context == null || gesture == null) return;
-
-            SharedPreferences p = context.getApplicationContext()
-                    .getSharedPreferences(LEARNING_PREFS_V412, Context.MODE_PRIVATE);
-
-            String preKind = learningPageKindV413(before);
-            String postKind = learningPageKindV413(after);
-            String preFg = before == null ? "" : safe(before.fg);
-            String postFg = after == null ? "" : safe(after.fg);
-            String preApp = learningAppKeyV413(preFg);
-            String postApp = learningAppKeyV413(postFg);
-            String preMarker = before == null ? "" : safe(before.marker);
-            String postMarker = after == null ? "" : safe(after.marker);
-
-            String actionLabel = learningSemanticActionV413(
-                    before, gesture, width, height);
-            String spatialBucket = learningSemanticSpatialV413(
-                    gesture, actionLabel, width, height);
-
-            // V4.13 semantic signature: no pixel-level coordinates and no raw
-            // OCR marker noise. Same page transition + same human action is one
-            // case; coordinates/timing are aggregated as statistics.
-            String signature = preKind + "|" + preApp
-                    + "|" + gesture.kind
-                    + "|" + actionLabel
-                    + "|" + spatialBucket
-                    + "|" + postKind + "|" + postApp;
-
-            List<String> ids = splitLearningIndexV412(p.getString(INDEX, ""));
-            String foundId = null;
-            for (String id : ids) {
-                if (signature.equals(p.getString("c." + id + ".sig", ""))) {
-                    foundId = id;
-                    break;
-                }
-            }
-
-            SharedPreferences.Editor e = p.edit();
-            boolean created = false;
-            if (foundId == null) {
-                int next = p.getInt(NEXT_ID, 1);
-                foundId = Integer.toString(next);
-                e.putInt(NEXT_ID, next + 1);
-                ids.add(foundId);
-                created = true;
-            }
-
-            String b = "c." + foundId + ".";
-            int oldCount = p.getInt(b + "count", 0);
-            int newCount = oldCount + 1;
-
-            long avgDuration = rollingAverageV412(
-                    p.getLong(b + "avg_duration", 0L),
-                    durationMs,
-                    oldCount);
-            long avgIdle = rollingAverageV412(
-                    p.getLong(b + "avg_idle", 0L),
-                    idleBeforeMs,
-                    oldCount);
-
-            int sx10000 = ratio10000V412(gesture.sx, width);
-            int sy10000 = ratio10000V412(gesture.sy, height);
-            int ex10000 = ratio10000V412(gesture.ex, width);
-            int ey10000 = ratio10000V412(gesture.ey, height);
-
-            e.putString(b + "sig", signature)
-                    .putInt(b + "count", newCount)
-                    .putString(b + "pre_kind", preKind)
-                    .putString(b + "pre_fg", preFg)
-                    .putString(b + "pre_app", preApp)
-                    .putString(b + "pre_marker", preMarker)
-                    .putString(b + "gesture", gesture.kind)
-                    .putString(b + "action_label", actionLabel)
-                    .putString(b + "spatial_bucket", spatialBucket)
-                    .putString(b + "post_kind", postKind)
-                    .putString(b + "post_fg", postFg)
-                    .putString(b + "post_app", postApp)
-                    .putString(b + "post_marker", postMarker)
-                    .putLong(b + "avg_duration", avgDuration)
-                    .putLong(b + "avg_idle", avgIdle)
-                    .putLong(b + "min_duration", oldCount <= 0
-                            ? durationMs : Math.min(p.getLong(b + "min_duration", durationMs), durationMs))
-                    .putLong(b + "max_duration", oldCount <= 0
-                            ? durationMs : Math.max(p.getLong(b + "max_duration", durationMs), durationMs))
-                    .putInt(b + "sx", rollingIntAverageV412(
-                            p.getInt(b + "sx", sx10000), sx10000, oldCount))
-                    .putInt(b + "sy", rollingIntAverageV412(
-                            p.getInt(b + "sy", sy10000), sy10000, oldCount))
-                    .putInt(b + "ex", rollingIntAverageV412(
-                            p.getInt(b + "ex", ex10000), ex10000, oldCount))
-                    .putInt(b + "ey", rollingIntAverageV412(
-                            p.getInt(b + "ey", ey10000), ey10000, oldCount))
-                    .putLong(b + "last_at", System.currentTimeMillis());
-
-            if (oldCount == 0) {
-                e.putLong(b + "first_at", System.currentTimeMillis());
-            }
-
-            if (ids.size() > MAX_CASES) {
-                int remove = ids.size() - MAX_CASES;
-                for (int i = 0; i < remove; i++) {
-                    String oldId = ids.get(i);
-                    removeLearningCaseV412(e, oldId);
-                }
-                ids = new ArrayList<>(ids.subList(remove, ids.size()));
-            }
-
-            e.putString(INDEX, joinLearningIndexV412(ids))
-                    .putInt("__case_count", ids.size())
-                    .putInt("__schema", 413)
-                    .apply();
-
-            int avgSx = rollingIntAverageV412(
-                    p.getInt(b + "sx", sx10000), sx10000, oldCount);
-            int avgSy = rollingIntAverageV412(
-                    p.getInt(b + "sy", sy10000), sy10000, oldCount);
-            int avgEx = rollingIntAverageV412(
-                    p.getInt(b + "ex", ex10000), ex10000, oldCount);
-            int avgEy = rollingIntAverageV412(
-                    p.getInt(b + "ey", ey10000), ey10000, oldCount);
-
-            String summary = preKind
-                    + (preApp.isEmpty() ? "" : "(" + preApp + ")")
-                    + " --" + gesture.kind
-                    + (actionLabel.isEmpty() ? "" : "[" + actionLabel + "]")
-                    + "--> " + postKind
-                    + (postApp.isEmpty() ? "" : "(" + postApp + ")")
-                    + " count=" + newCount
-                    + " idle≈" + avgIdle + "ms"
-                    + " duration≈" + avgDuration + "ms"
-                    + " gesture≈(" + String.format(Locale.US, "%.3f", avgSx / 10000.0)
-                    + "," + String.format(Locale.US, "%.3f", avgSy / 10000.0)
-                    + ")->(" + String.format(Locale.US, "%.3f", avgEx / 10000.0)
-                    + "," + String.format(Locale.US, "%.3f", avgEy / 10000.0) + ")";
-
-            diagnostic(created
-                    ? "[学习库V4.13] 新增语义案例：" + summary
-                    : "[学习库V4.13去重] 同案例仅更新统计：" + summary);
-            appendLearningLogV412(context, summary);
-        }
-
-        private static long rollingAverageV412(long oldAvg, long value, int oldCount) {
-            if (oldCount <= 0) return Math.max(0L, value);
-            long count = Math.min(50L, oldCount);
-            return Math.round((oldAvg * count + Math.max(0L, value)) / (double) (count + 1L));
-        }
-
-        private static int rollingIntAverageV412(int oldAvg, int value, int oldCount) {
-            if (oldCount <= 0) return value;
-            int count = Math.min(50, oldCount);
-            return (int) Math.round((oldAvg * (double) count + value) / (count + 1.0));
-        }
-
-        private static int ratio10000V412(int value, int total) {
-            if (total <= 1) return 0;
-            return clampV412(
-                    (int) Math.round(value * 10000.0 / (total - 1.0)),
-                    0,
-                    10000);
-        }
-
-        private static void removeLearningCaseV412(
-                SharedPreferences.Editor e,
-                String id
-        ) {
-            if (id == null || id.isEmpty()) return;
-            String b = "c." + id + ".";
-            String[] keys = {
-                    "sig", "count", "pre_kind", "pre_fg", "pre_app", "pre_marker",
-                    "gesture", "action_label", "spatial_bucket",
-                    "post_kind", "post_fg", "post_app", "post_marker",
-                    "avg_duration", "min_duration", "max_duration", "avg_idle",
-                    "sx", "sy", "ex", "ey", "first_at", "last_at"
-            };
-            for (String key : keys) e.remove(b + key);
-        }
-    }
-
-    private static String learningSpatialBucketV412(
-            LearnedGestureV412 gesture,
-            int width,
-            int height
-    ) {
-        if (gesture == null || width <= 0 || height <= 0) return "";
-        int bx = clampV412((int) Math.floor(gesture.sx * 20.0 / Math.max(1, width)), 0, 19);
-        int by = clampV412((int) Math.floor(gesture.sy * 40.0 / Math.max(1, height)), 0, 39);
-        int ex = clampV412((int) Math.floor(gesture.ex * 20.0 / Math.max(1, width)), 0, 19);
-        int ey = clampV412((int) Math.floor(gesture.ey * 40.0 / Math.max(1, height)), 0, 39);
-        return bx + ":" + by + ">" + ex + ":" + ey;
-    }
-
-    private static String learningActionLabelV412(
-            ScreenOcr.Snapshot snapshot,
-            int screenX,
-            int screenY,
-            int screenW,
-            int screenH
-    ) {
-        if (snapshot == null || snapshot.items == null || snapshot.items.isEmpty()) {
-            return "";
-        }
-
-        double sx = snapshot.width > 0 && screenW > 0
-                ? screenX * (snapshot.width / (double) screenW)
-                : screenX;
-        double sy = snapshot.height > 0 && screenH > 0
-                ? screenY * (snapshot.height / (double) screenH)
-                : screenY;
-
-        ScreenOcr.Item best = null;
-        double bestScore = Double.MAX_VALUE;
-        for (ScreenOcr.Item item : snapshot.items) {
-            if (item == null || item.text == null || item.text.trim().isEmpty()) continue;
-            double dx = item.centerX() - sx;
-            double dy = item.centerY() - sy;
-            double d = Math.hypot(dx, dy);
-
-            boolean contains = item.bounds != null
-                    && sx >= item.bounds.left - 24
-                    && sx <= item.bounds.right + 24
-                    && sy >= item.bounds.top - 24
-                    && sy <= item.bounds.bottom + 24;
-
-            double score = contains ? d * 0.25 : d;
-            if (score < bestScore) {
-                bestScore = score;
-                best = item;
-            }
-        }
-
-        if (best == null || bestScore > Math.max(220.0, snapshot.width * 0.18)) {
-            return "";
-        }
-
-        String action = normalizeLearningTextV412(best.text);
-        if (action.isEmpty()) return "";
-
-        if (containsAny(action, "去完成", "领取奖励", "领取笑励", "签到", "去浏览", "去领取")) {
-            ScreenOcr.Item row = null;
-            double rowScore = Double.MAX_VALUE;
-            for (ScreenOcr.Item item : snapshot.items) {
-                if (item == null || item == best || item.text == null) continue;
-                String txt = normalizeLearningTextV412(item.text);
-                if (txt.length() < 2 || txt.length() > 32) continue;
-                if (containsAny(txt,
-                        "去完成", "领取奖励", "领取笑励", "签到",
-                        "闲鱼币", "得骰子", "赚闲鱼币", "提醒签到")) {
-                    continue;
-                }
-
-                double dy = Math.abs(item.centerY() - best.centerY());
-                if (dy > 130) continue;
-                if (item.centerX() >= best.centerX() - 80) continue;
-
-                double dx = Math.max(0, best.centerX() - item.centerX());
-                double score = dy * 4.0 + dx * 0.15;
-                if (score < rowScore) {
-                    rowScore = score;
-                    row = item;
-                }
-            }
-
-            if (row != null) {
-                String rowText = normalizeLearningTextV412(row.text);
-                if (!rowText.isEmpty()) {
-                    return trimForLog(action + "/" + rowText, 60);
-                }
-            }
-        }
-
-        return trimForLog(action, 40);
-    }
-
-    private static String normalizeLearningTextV412(String text) {
-        if (text == null) return "";
-        String t = text.replaceAll("\\s+", " ").trim();
-        if (t.length() > 40) t = t.substring(0, 40);
-        return t;
-    }
-
-    private static List<String> splitLearningIndexV412(String raw) {
-        List<String> out = new ArrayList<>();
-        if (raw == null || raw.trim().isEmpty()) return out;
-        for (String v : raw.split(",")) {
-            String x = v.trim();
-            if (!x.isEmpty() && !out.contains(x)) out.add(x);
-        }
-        return out;
-    }
-
-    private static String joinLearningIndexV412(List<String> ids) {
-        StringBuilder sb = new StringBuilder();
-        if (ids != null) {
-            for (String id : ids) {
-                if (id == null || id.isEmpty()) continue;
-                if (sb.length() > 0) sb.append(',');
-                sb.append(id);
-            }
-        }
-        return sb.toString();
-    }
-
-    private static void appendLearningLogV412(Context context, String line) {
-        if (context == null || line == null) return;
-        OutputStreamWriter writer = null;
-        try {
-            File dir = context.getExternalFilesDir(null);
-            if (dir == null) return;
-            File file = new File(dir, LEARNING_LOG_FILE_V412);
-            writer = new OutputStreamWriter(
-                    new FileOutputStream(file, true),
-                    StandardCharsets.UTF_8);
-            writer.write(System.currentTimeMillis() + " " + line + "\n");
-            writer.flush();
-        } catch (Throwable t) {
-            diagnostic("[学习模式V4.13] 写学习记录失败：" + t);
-        } finally {
-            if (writer != null) {
-                try { writer.close(); } catch (Throwable ignored) { }
-            }
-        }
+        }, "XianyuTask").start();
     }
 
     private static void goHome(
@@ -1680,11 +388,20 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
             return;
         }
 
-        int completed =
-                scanAndExecuteTasks(
-                        suPath,
-                        ctx
-                );
+        int completed = 0;
+        TaskCategory requested = activeCategory;
+        TaskCategory[] categories = requested == TaskCategory.ALL
+                ? new TaskCategory[]{TaskCategory.LOCAL, TaskCategory.VIDEO, TaskCategory.GAME}
+                : new TaskCategory[]{requested};
+        for (int i = 0; i < categories.length; i++) {
+            if (userAborted || gameIncompleteHoldV421) break;
+            if (requested == TaskCategory.ALL && !isCategoryEnabled(ctx, categories[i])) continue;
+            activeCategory = categories[i];
+            diagnostic("[任务分类] 开始：" + activeCategory.label);
+            notifyTask(ctx, activeCategory.label, "正在扫描任务");
+            if (i > 0 && !resetTaskPanelTop(suPath)) break;
+            completed += scanAndExecuteTasks(suPath, ctx);
+        }
 
         diagnostic(
                 "本次完成任务数="
@@ -2001,7 +718,7 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
             String suPath,
             String reason
     ) {
-        if (!learningModeV412 && (userAborted || physicalTouchDetected)) {
+        if (userAborted || physicalTouchDetected) {
             return ScreenOcr.Snapshot.empty();
         }
         long now = SystemClock.elapsedRealtime();
@@ -2016,7 +733,7 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
         }
 
         ScreenOcr.Snapshot snapshot = ScreenOcr.capture(lastContext, suPath,
-                () -> learningModeV412 ? learningStopRequestedV412 : (userAborted || physicalTouchDetected));
+                () -> userAborted || physicalTouchDetected);
         if (snapshot != null && !snapshot.isEmpty()) {
             cachedOcrV411 = snapshot;
             cachedOcrAtV411 = now;
@@ -2766,6 +1483,33 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
         }
     }
 
+    private static boolean isCategoryEnabled(Context context, TaskCategory category) {
+        switch (category) {
+            case LOCAL: return AppConfig.isLocalTaskEnabled(context);
+            case VIDEO: return AppConfig.isVideoTaskEnabled(context);
+            case GAME: return AppConfig.isGameTaskEnabled(context);
+            default: return false;
+        }
+    }
+
+    private static boolean resetTaskPanelTop(String suPath) {
+        if (userAborted || gameIncompleteHoldV421 || gameSolverOwnsPageV420) return false;
+        PageProbeV411 page = probePageV411(suPath, "切换任务分类");
+        if (page.kind != PageKindV411.TASK_PANEL) return false;
+        int[] size = getScreenSizeV43(suPath);
+        if (size == null || size.length < 2) return false;
+        int w = size[0], h = size[1];
+        if (w <= 0 || h <= 0) return false;
+        for (int i = 0; i < 8; i++) {
+            if (userAborted) return false;
+            RootResult r = rootWithPath(suPath, "input swipe " + w / 2 + " " + h / 2
+                    + " " + w / 2 + " " + h * 4 / 5 + " 400");
+            if (r.exitCode != 0 || !sleepAbortableV48(250L)) return false;
+        }
+        lastTaskPanelOcrAtV415 = 0L;
+        return true;
+    }
+
     private static int scanAndExecuteTasks(
             String suPath,
             Context ctx
@@ -2775,6 +1519,8 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
         Set<String> executed = new HashSet<>();
         Map<String, Integer> attemptsByTask = new HashMap<>();
         int consecutiveFail = 0;
+        String exhaustedViewport = "";
+        int repeatedViewport = 0;
 
         for (int pass = 0; pass < 30; pass++) {
 
@@ -2880,6 +1626,7 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
 
             for (TaskCandidate c : candidates) {
                 if (c == null || c.bounds().isEmpty()) continue;
+                if (TaskCategory.classify(c.name) != activeCategory) continue;
 
                 if (shouldSkip(c.name)) {
                     diagnostic("[跳过] " + c.name);
@@ -2917,6 +1664,15 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
             }
 
             if (target == null) {
+                StringBuilder viewport = new StringBuilder();
+                for (TaskCandidate c : candidates) viewport.append(c.key()).append('|');
+                String fingerprint = viewport.toString();
+                repeatedViewport = fingerprint.equals(exhaustedViewport) ? repeatedViewport + 1 : 0;
+                exhaustedViewport = fingerprint;
+                if (repeatedViewport >= 2) {
+                    diagnostic("[任务分类] 当前分类没有更多可执行任务：" + activeCategory.label);
+                    break;
+                }
                 if (!swipeUp(suPath)) {
                     sleepAbortableV48(500L);
                 } else {
@@ -2925,6 +1681,8 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
                 continue;
             }
 
+            repeatedViewport = 0;
+            exhaustedViewport = "";
             String targetAttemptKey = normalizeTaskAttemptKeyV46(target.name);
             attemptsByTask.put(
                     targetAttemptKey,
@@ -3718,9 +2476,9 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
         }
 
         // 水果恢复耗尽后的保护不能依赖另一帧OCR成功，否则空帧会绕过保护并BACK。
-        if (gameIncompleteHoldV421 && "FRUIT_PAIR_GAME".equals(gameIncompleteKindV421)) {
-            diagnostic("[游戏守卫V4.42] 保留水果现场，跳过任务验证返回/导航");
-            return new TaskVerificationResultV411(false, "game_incomplete_hold:FRUIT_PAIR_GAME", before);
+        if (gameIncompleteHoldV421) {
+            diagnostic("[游戏守卫V4.42] 保留游戏现场，跳过任务验证返回/导航");
+            return new TaskVerificationResultV411(false, "game_incomplete_hold:" + gameIncompleteKindV421, before);
         }
 
         PageProbeV411 probe = probePageV411(suPath, "任务验证初始");
@@ -3963,7 +2721,7 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
         gameSolverOwnsPageV420 = true;
         gameSolverKindV420 = kind == null ? "GAME" : kind;
         diagnostic("[游戏独占V4.26] LOCK " + gameSolverKindV420 + " / " + taskName
-                + "；普通恢复/真人学习回放暂停");
+                + "；普通恢复暂停");
     }
 
     private static void endGameSolverOwnershipV420(String taskName) {
@@ -3973,31 +2731,16 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
         diagnostic("[游戏独占V4.26] UNLOCK " + old + " / " + taskName);
     }
 
-
-    private static boolean isTaskEnabledForName(Context context, String taskName) {
-        if (context == null) return true;
-        String t = taskName == null ? "" : taskName;
-        if (containsAny(t, "视频", "观看", "看15秒")) {
-            return AppConfig.isVideoTaskEnabled(context);
-        }
-        if (containsAny(t, "水果", "麻将", "小游戏", "消除")) {
-            return AppConfig.isGameTaskEnabled(context);
-        }
-        return AppConfig.isLocalTaskEnabled(context);
-    }
-
     private static boolean executeSingleTask(
             String suPath,
             String taskName
     ) {
 
-        if (!isTaskEnabledForName(lastContextForTaskSwitch, taskName)) {
-            diagnostic("[跳过] " + taskName + "：任务开关关闭");
-            return false;
-        }
-
         diagnostic("[执行] " + taskName);
 
+        if (TaskCategory.classify(taskName) == TaskCategory.VIDEO) {
+            return executeVideoTaskPolling(suPath, taskName);
+        }
         GameDispatchV420 gameDispatch = resolveGameDispatchV420(suPath, taskName);
         if (gameDispatch == GameDispatchV420.FRUIT) {
             diagnostic("[页面分流V4.20] " + taskName + " → FRUIT_PAIR_GAME");
@@ -4008,15 +2751,18 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
             return executeMahjongPairGameV419(suPath, taskName);
         }
 
-        boolean isVideo = containsAny(taskName, "视频", "观看", "看15秒");
+        if (activeCategory == TaskCategory.GAME) {
+            diagnostic("[小游戏] 无法确认受支持的游戏页面，停止本轮并保留现场");
+            gameIncompleteHoldV421 = true;
+            gameIncompleteKindV421 = "UNKNOWN_GAME";
+            gameIncompleteTaskV421 = taskName;
+            return false;
+        }
         boolean isSearch = containsAny(taskName, "搜一搜", "搜索", "搜商品");
         boolean isBounce = isBounceTask(taskName);
         boolean isInternalBrowse = !isBounce
                 && containsAny(taskName, INTERNAL_BROWSE_KEYWORDS);
 
-        if (isVideo) {
-            return executeVideoTaskPolling(suPath, taskName);
-        }
 
         long defaultWaitMs = defaultTaskWaitV415(
                 taskName, isSearch, isBounce, isInternalBrowse);
@@ -4028,13 +2774,12 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
         long waitMs;
         if (explicitRequired > 0L) {
             long explicitBase = explicitRequired + 950L;
-            waitMs = jitterDurationV415(
+            waitMs = fixedDuration(
                     explicitBase,
                     explicitRequired + 650L,
-                    Math.min(45000L, explicitRequired + 1700L),
-                    0.025);
+                    Math.min(45000L, explicitRequired + 1700L));
         } else {
-            waitMs = jitterDurationV415(strategy.waitMs, minSafeWait, 15000L, 0.09);
+            waitMs = fixedDuration(strategy.waitMs, minSafeWait, 15000L);
         }
         diagnostic("[策略V4.15] " + strategy.describe()
                 + " / adaptive=" + waitMs + "ms"
@@ -4048,7 +2793,7 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
         long started = SystemClock.elapsedRealtime();
 
         try {
-            long nextBrowseSwipe = jitterDurationV415(2600L, 2200L, 3300L, 0.12);
+            long nextBrowseSwipe = fixedDuration(2600L, 2200L, 3300L);
             long nextFgCheck = 0L;
             long systemTransitSince = 0L;
 
@@ -4059,7 +2804,7 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
 
                 if (elapsed >= nextFgCheck) {
                     String fg = getFg(suPath, false);
-                    nextFgCheck = elapsed + ThreadLocalRandom.current().nextLong(560L, 900L);
+                    nextFgCheck = elapsed + 700L;
 
                     if (MODULE_PACKAGE.equals(fg)) {
                         markUserAbortV48("检测到用户切回闲鱼定时助手");
@@ -4096,7 +2841,7 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
                         );
                         diagnostic("[执行] 内部浏览滑动，elapsed=" + elapsed + "ms");
                     }
-                    nextBrowseSwipe += ThreadLocalRandom.current().nextLong(2600L, 3500L);
+                    nextBrowseSwipe += 3000L;
                 }
             }
 
@@ -4114,7 +2859,7 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
 
             boolean recoveredTaskPanelV415 = false;
             if (!TARGET_PACKAGE.equals(fg)) {
-                diagnostic("[执行V4.20] 外部页结束；仅在严格同App学习案例达标时参考真人返回经验");
+                diagnostic("[执行V4.20] 外部页结束，使用固定返回流程并验证任务面板");
                 TaskProfileStoreV48.recordRecovery(taskName, "return_from:" + printableFg(fg));
                 if (!recoverToXianyuTaskPanelV47(suPath, "任务执行结束快速返回")) {
                     TaskProfileStoreV48.recordFailure(taskName, "return_to_xianyu_failed");
@@ -4346,8 +3091,8 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
                             diagnostic("[游戏限制V4.29] 拒绝非麻将对象点击：" + reason);
                             return false;
                         }
-                        int jx = x + ThreadLocalRandom.current().nextInt(-4, 5);
-                        int jy = y + ThreadLocalRandom.current().nextInt(-4, 5);
+                        int jx = x;
+                        int jy = y;
                         RootResult r = rootWithPath(
                                 suPath,
                                 "input tap " + Math.max(1, jx) + " " + Math.max(1, jy)
@@ -4583,14 +3328,6 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
             return false;
         }
 
-        // V4.14: before force-opening Xianyu, consult the V4.13 human
-        // demonstration library. Only safe learned navigation gestures are
-        // replayed here (EDGE_BACK_RIGHT / EDGE_BACK_LEFT), never learned TAPs.
-        // Every replay is immediately verified against the real task panel.
-        if (!TARGET_PACKAGE.equals(fg)
-                && LearnedDecisionV414.trySafeReturnToTaskPanel(suPath, fg)) {
-            return true;
-        }
         if (userAborted) return false;
 
         if (!TARGET_PACKAGE.equals(fg)) {
@@ -4620,156 +3357,6 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
 
         TaskProfileStoreV48.recordRecovery("__NAV__", reason);
         return enterViaMineCoin(suPath);
-    }
-
-    /**
-     * V4.14 conservative replay layer.
-     *
-     * It reads V4.13 SharedPreferences directly, ranks only demonstrated
-     * external-app -> TASK_PANEL edge-back transitions, replays one gesture,
-     * then verifies the destination. Unknown pages, TAP cases, low-quality
-     * durations and non-task destinations are never replayed automatically.
-     */
-    private static final class LearnedDecisionV414 {
-        private static final int MIN_EXACT_COUNT_V420 = 3;
-        private static final long MIN_DURATION_MS = 80L;
-        private static final long MAX_DURATION_MS = 1000L;
-
-        static boolean trySafeReturnToTaskPanel(String suPath, String currentFg) {
-            // V4.44: learning data is observation only.
-            // Human demonstrations may be used for statistics, but they must not
-            // directly trigger UI gestures. The state machine owns all actions.
-            diagnostic("[真人学习决策V4.44] 学习库仅作为统计参考，禁止自动回放动作");
-            return false;
-
-            /*
-            Context context = lastContext;
-            if (context == null || userAborted || learningModeV412
-                    || gameSolverOwnsPageV420) return false;
-
-            SharedPreferences p = context.getApplicationContext()
-                    .getSharedPreferences(LEARNING_PREFS_V412, Context.MODE_PRIVATE);
-            List<String> ids = splitLearningIndexV412(p.getString("__ids", ""));
-            if (ids.isEmpty()) {
-                diagnostic("[真人学习决策V4.20] 学习库为空，不执行经验回放");
-                return false;
-            }
-
-            String currentApp = learningAppKeyV413(currentFg);
-            if (TARGET_PACKAGE.equals(currentFg) || "XIANYU".equals(currentApp)
-                    || MODULE_PACKAGE.equals(currentFg) || currentApp.isEmpty()) {
-                diagnostic("[真人学习决策V4.20] 当前不是可复用经验的外部App，跳过学习库");
-                return false;
-            }
-            String bestId = null;
-            int bestScore = Integer.MIN_VALUE;
-
-            for (String id : ids) {
-                String b = "c." + id + ".";
-                String preKind = p.getString(b + "pre_kind", "");
-                String preApp = p.getString(b + "pre_app", "");
-                String gesture = p.getString(b + "gesture", "");
-                String postKind = p.getString(b + "post_kind", "");
-                String postApp = p.getString(b + "post_app", "");
-                int count = p.getInt(b + "count", 0);
-                long duration = p.getLong(b + "avg_duration", 0L);
-
-                if (!"EXTERNAL_APP".equals(preKind)) continue;
-                if (!"TASK_PANEL".equals(postKind) || !"XIANYU".equals(postApp)) continue;
-                if (!("EDGE_BACK_RIGHT".equals(gesture)
-                        || "EDGE_BACK_LEFT".equals(gesture))) continue;
-                if (duration < MIN_DURATION_MS || duration > MAX_DURATION_MS) continue;
-
-                boolean exactApp = !currentApp.isEmpty() && currentApp.equals(preApp);
-                // V4.20: no cross-app generalization. Human demonstrations are
-                // suggestions, not scripts. Only the same external app with at
-                // least three repeated successful page transitions may be reused.
-                if (!exactApp) continue;
-                if (count < MIN_EXACT_COUNT_V420) continue;
-
-                int score = count * 10 + 100;
-                if ("EDGE_BACK_RIGHT".equals(gesture)) score += 5;
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestId = id;
-                }
-            }
-
-            if (bestId == null) {
-                diagnostic("[真人学习决策V4.20] 当前外部应用=" + printableFg(currentFg)
-                        + "，没有满足阈值的安全返回经验；使用原恢复逻辑");
-                return false;
-            }
-
-            String b = "c." + bestId + ".";
-            String gesture = p.getString(b + "gesture", "");
-            int count = p.getInt(b + "count", 0);
-            long learnedDuration = p.getLong(b + "avg_duration", 260L);
-            long duration = Math.max(160L, Math.min(450L, learnedDuration));
-            int learnedY = p.getInt(b + "sy", 7500);
-
-            int[] screen = getScreenSizeV43(suPath);
-            int w = screen == null ? 1440 : Math.max(2, screen[0]);
-            int h = screen == null ? 3120 : Math.max(2, screen[1]);
-            int y = Math.max(1, Math.min(h - 2,
-                    (int) Math.round((learnedY / 10000.0) * (h - 1))));
-            // Keep edge-back in the comfortable middle/lower-middle region even
-            // if a noisy learned sample was close to a system exclusion area.
-            y = Math.max((int) (h * 0.55), Math.min((int) (h * 0.88), y));
-
-            int sx;
-            int ex;
-            if ("EDGE_BACK_RIGHT".equals(gesture)) {
-                sx = w - 2;                         // absolute right edge
-                ex = Math.max(1, (int) (w * 0.76));
-            } else {
-                sx = 1;                             // absolute left edge
-                ex = Math.min(w - 2, (int) (w * 0.24));
-            }
-
-            diagnostic("[真人学习决策V4.20] 命中案例#" + bestId
-                    + " gesture=" + gesture
-                    + " count=" + count
-                    + " app=" + currentApp
-                    + " duration=" + duration + "ms"
-                    + " y=" + y + "/" + h);
-
-            if (userAborted) return false;
-            RootResult rr = rootWithPath(suPath,
-                    "input swipe " + sx + " " + y + " " + ex + " " + y + " " + duration);
-            if (rr.exitCode != 0) {
-                diagnostic("[真人学习决策V4.20] 返回手势执行失败，转原恢复逻辑");
-                return false;
-            }
-            if (!sleepAbortableV48(160L) || userAborted) return false;
-
-            // Verification is mandatory. Never chain a blind second Back.
-            String fgAfter = getFg(suPath, false);
-            if (MODULE_PACKAGE.equals(fgAfter)) {
-                markUserAbortV48("学习回放后检测到用户切回助手");
-                return false;
-            }
-            if (!TARGET_PACKAGE.equals(fgAfter)) {
-                diagnostic("[真人学习决策V4.20] 单次返回后仍在外部应用="
-                        + printableFg(fgAfter) + "；停止经验回放，交给恢复逻辑");
-                return false;
-            }
-
-            ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "学习返回验证");
-            if (isTaskPageV45(null, ocr)) {
-                diagnostic("[真人学习决策V4.20] ✅ post_kind=TASK_PANEL 验证通过");
-                return true;
-            }
-            String xml = dumpUi(suPath);
-            if (isTaskPageV45(xml, ocr)) {
-                diagnostic("[真人学习决策V4.20] ✅ XML/OCR 联合验证 TASK_PANEL 通过");
-                return true;
-            }
-
-            diagnostic("[真人学习决策V4.20] 返回后未验证到 TASK_PANEL；不执行第二次盲返回");
-            return false;
-            */
-        }
     }
 
     private static boolean isBounceTask(
@@ -5009,7 +3596,7 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
             String suPath
     ) {
 
-        if (!learningModeV412 && (userAborted || physicalTouchDetected)) {
+        if (userAborted || physicalTouchDetected) {
             return false;
         }
 
@@ -5164,7 +3751,7 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
             String suPath
     ) {
 
-        if (!learningModeV412 && (userAborted || physicalTouchDetected)) {
+        if (userAborted || physicalTouchDetected) {
             return null;
         }
 
@@ -5403,17 +3990,6 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
         int x = (left + right) / 2;
         int y = (top + bottom) / 2;
 
-        // V4.8 bounded tap jitter: only a tiny offset inside the already
-        // detected target rectangle. This is for edge/mis-tap robustness,
-        // not for bypassing platform controls.
-        int safeXJitter = Math.max(0, Math.min(10, (right - left) / 8));
-        int safeYJitter = Math.max(0, Math.min(8, (bottom - top) / 8));
-        if (safeXJitter > 0) {
-            x += ThreadLocalRandom.current().nextInt(-safeXJitter, safeXJitter + 1);
-        }
-        if (safeYJitter > 0) {
-            y += ThreadLocalRandom.current().nextInt(-safeYJitter, safeYJitter + 1);
-        }
         x = Math.max(left + 1, Math.min(right - 1, x));
         y = Math.max(top + 1, Math.min(bottom - 1, y));
 
@@ -5434,7 +4010,7 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
         if (!ensureFg(suPath)) return false;
         if (userAborted) return false;
 
-        diagnostic("[点击] 安全抖动坐标=" + x + "," + y);
+        diagnostic("[点击] 目标中心坐标=" + x + "," + y);
         RootResult r = rootWithPath(suPath, "input tap " + x + " " + y);
         if (r.exitCode != 0) return false;
 
@@ -5794,20 +4370,12 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
     private static boolean paceSleepV415(long minMs, long maxMs) {
         long lo = Math.max(0L, Math.min(minMs, maxMs));
         long hi = Math.max(lo, Math.max(minMs, maxMs));
-        long wait = (hi <= lo) ? lo : ThreadLocalRandom.current().nextLong(lo, hi + 1L);
+        long wait = lo + (hi - lo) / 2L;
         return sleepAbortableV48(wait);
     }
 
-    private static long jitterDurationV415(
-            long baseMs, long minMs, long maxMs, double ratio
-    ) {
-        long base = Math.max(0L, baseMs);
-        double r = Math.max(0.0, Math.min(0.25, ratio));
-        long delta = Math.max(1L, Math.round(base * r));
-        long lo = Math.max(minMs, base - delta);
-        long hi = Math.min(maxMs, base + delta);
-        if (hi < lo) hi = lo;
-        return hi == lo ? lo : ThreadLocalRandom.current().nextLong(lo, hi + 1L);
+    private static long fixedDuration(long baseMs, long minMs, long maxMs) {
+        return Math.max(minMs, Math.min(Math.max(minMs, maxMs), baseMs));
     }
 
     private static long explicitSecondsRequirementV415(String taskName) {
@@ -6668,15 +5236,12 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
 
         // V4.17 hard abort applies to read-only root probes too. Otherwise a
         // blocking dumpsys/uiautomator may keep the executor alive after touch.
-        if (!learningModeV412 && (userAborted || physicalTouchDetected)) {
+        if (userAborted || physicalTouchDetected) {
             return new RootResult(-4, "", "manual_takeover_hard_stop");
         }
 
         if (isUiMutationCommandV412(command)) {
-            if (learningModeV412) {
-                diagnostic("[学习模式V4.13] 已拦截主动 UI 操作：" + command);
-                return new RootResult(-3, "", "learning_mode_observation_only");
-            }
+
             if (userAborted || physicalTouchDetected) {
                 diagnostic("[硬停止V4.13] 人工接管后拦截 UI 操作：" + command);
                 return new RootResult(-4, "", "manual_takeover_hard_stop");
@@ -6730,7 +5295,7 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
             String command,
             long timeoutMs
     ) {
-        if (!learningModeV412 && (userAborted || physicalTouchDetected)) {
+        if (userAborted || physicalTouchDetected) {
             return new RootResult(-4, "", "manual_takeover_hard_stop");
         }
         if (suPath == null || suPath.isEmpty()) {
@@ -6760,7 +5325,7 @@ lastContextForTaskSwitch = appContext.getApplicationContext();
             long deadline = SystemClock.elapsedRealtime() + Math.max(200L, timeoutMs);
             boolean finished = false;
             while (SystemClock.elapsedRealtime() < deadline) {
-                if (!learningModeV412 && (userAborted || physicalTouchDetected)) {
+                if (userAborted || physicalTouchDetected) {
                     process.destroy();
                     try { process.destroyForcibly(); } catch (Throwable ignored) {}
                     return new RootResult(-4, snapshotOutput(stdout), "manual_takeover_hard_stop");

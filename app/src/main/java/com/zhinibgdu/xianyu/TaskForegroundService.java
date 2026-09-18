@@ -15,17 +15,12 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.util.Log;
 
-/**
- * Owns the process lifetime while TaskExecutor is controlling Xianyu or
- * recording a V4.13 human demonstration.
- */
+/** Owns the process lifetime while TaskExecutor controls Xianyu. */
 public class TaskForegroundService extends Service {
     private static final String TAG = "XianyuTaskService";
     private static final String CHANNEL_ID = "xianyu_scheduler";
     private static final int NOTIFICATION_ID = 18009;
     private static final String EXTRA_MODE = "run_mode";
-    private static final String MODE_AUTO = "auto";
-    private static final String MODE_LEARNING = "learning";
 
     private PowerManager.WakeLock wakeLock;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -40,21 +35,14 @@ public class TaskForegroundService extends Service {
     };
 
     public static void start(Context context) {
-        startWithMode(context, MODE_AUTO);
+        start(context, TaskCategory.ALL);
     }
 
-    public static void startLearning(Context context) {
-        startWithMode(context, MODE_LEARNING);
-    }
-
-    private static void startWithMode(Context context, String mode) {
+    public static void start(Context context, TaskCategory category) {
         Intent intent = new Intent(context, TaskForegroundService.class);
-        intent.putExtra(EXTRA_MODE, mode);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(intent);
-        } else {
-            context.startService(intent);
-        }
+        intent.putExtra(EXTRA_MODE, category.name());
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent);
+        else context.startService(intent);
     }
 
     @Override
@@ -81,13 +69,17 @@ public class TaskForegroundService extends Service {
             return START_NOT_STICKY;
         }
         String mode = intent.getStringExtra(EXTRA_MODE);
-        boolean learning = MODE_LEARNING.equals(mode);
+        TaskCategory category = TaskCategory.fromMode(mode);
+        if (category == null) {
+            if (!active) stopSelf(startId);
+            return START_NOT_STICKY;
+        }
 
         TaskStatusReceiver.writeLog(
                 this,
                 "INFO",
                 "调度",
-                learning ? "前台服务收到真人示范学习请求" : "前台服务收到自动任务请求"
+                "前台服务收到请求：" + category.label
         );
 
         if (active || TaskExecutor.isRunning()) {
@@ -110,17 +102,13 @@ public class TaskForegroundService extends Service {
                     getApplicationContext(),
                     "INFO",
                     "调度",
-                    learning ? "学习记录器已结束，停止前台服务" : "任务执行器已结束，停止前台服务"
+                    "任务执行器已结束，停止前台服务"
             );
             stopForegroundCompat();
             stopSelf();
         });
 
-        if (learning) {
-            TaskExecutor.runLearning(getApplicationContext(), complete);
-        } else {
-            TaskExecutor.run(getApplicationContext(), complete);
-        }
+        TaskExecutor.run(getApplicationContext(), category, complete);
 
         return START_NOT_STICKY;
     }
@@ -170,7 +158,7 @@ public class TaskForegroundService extends Service {
                     "闲鱼自动任务运行状态",
                     NotificationManager.IMPORTANCE_LOW
             );
-            channel.setDescription("保持自动任务或真人示范学习在后台运行");
+            channel.setDescription("保持分类自动任务在后台运行");
             manager.createNotificationChannel(channel);
         } catch (Throwable t) {
             Log.e(TAG, "创建通知渠道失败", t);

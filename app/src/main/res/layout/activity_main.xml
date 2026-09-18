@@ -40,7 +40,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:text="自动任务 · 真人学习 · 定时执行"
+                    android:text="本地任务 · 视频任务 · 小游戏任务"
                     android:textColor="#7A8190"
                     android:textSize="13sp" />
 
@@ -213,7 +213,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="12dp"
                         android:lineSpacingExtra="5dp"
-                        android:text="• 自动执行：进入闲鱼币任务面板并按任务状态执行。\n• 记录：按日期查看已验证完成的任务与可确认的闲鱼币收益。\n• 自动化：立即运行、真人学习和每日定时。\n• 日志：查看完整运行过程和故障信息。\n• 游戏：仅操作水果/麻将对象，不点击打乱、消除、解锁等功能按钮。"
+                        android:text="• 自动执行：进入闲鱼币任务面板并按任务状态执行。\n• 记录：按日期查看已验证完成的任务与可确认的闲鱼币收益。\n• 自动化：三类任务独立运行和每日定时。\n• 日志：查看完整运行过程和故障信息。\n• 游戏：仅操作水果/麻将对象，不点击打乱、消除、解锁等功能按钮。"
                         android:textColor="#4B5563"
                         android:textSize="14sp" />
                 </LinearLayout>
@@ -240,7 +240,7 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp"
-                        android:text="点击查看日志、记录和学习库保存位置"
+                        android:text="点击查看日志和任务记录保存位置"
                         android:textColor="#6B7280"
                         android:textIsSelectable="true"
                         android:textSize="12sp" />
@@ -361,7 +361,7 @@
             </LinearLayout>
         </ScrollView>
 
-        <!-- 自动化：定时 + 立即运行 + 学习模式 -->
+        <!-- 自动化：定时 + 三类独立任务 -->
         <ScrollView
             android:id="@+id/page_automation"
             android:layout_width="match_parent"
@@ -390,7 +390,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:text="立即运行、真人学习与每日定时"
+                    android:text="单独运行对应分类；定时按本地 → 视频 → 小游戏执行已开启分类"
                     android:textColor="#7A8190"
                     android:textSize="13sp" />
 
@@ -414,8 +414,7 @@
                         android:id="@+id/switch_local_task"
                         android:layout_width="match_parent"
                         android:layout_height="48dp"
-                        android:layout_marginTop="10dp"
-                        android:text="启用咸鱼本地任务"
+                        android:text="定时包含本地任务"
                         android:textColor="#374151"
                         android:textSize="14sp" />
 
@@ -423,8 +422,7 @@
                         android:id="@+id/switch_video_task"
                         android:layout_width="match_parent"
                         android:layout_height="48dp"
-                        android:layout_marginTop="4dp"
-                        android:text="启用视频任务"
+                        android:text="定时包含视频任务"
                         android:textColor="#374151"
                         android:textSize="14sp" />
 
@@ -432,8 +430,7 @@
                         android:id="@+id/switch_game_task"
                         android:layout_width="match_parent"
                         android:layout_height="48dp"
-                        android:layout_marginTop="4dp"
-                        android:text="启用小游戏任务"
+                        android:text="定时包含小游戏任务"
                         android:textColor="#374151"
                         android:textSize="14sp" />
 
@@ -443,10 +440,30 @@
                         android:layout_height="52dp"
                         android:layout_marginTop="12dp"
                         android:backgroundTint="#2F6FED"
-                        android:text="立即运行闲鱼任务"
+                        android:text="1. 闲鱼本地任务"
                         android:textColor="#FFFFFF"
                         android:textSize="15sp"
                         android:textStyle="bold" />
+
+                    <Button
+                        android:id="@+id/video_task_button"
+                        android:layout_width="match_parent"
+                        android:layout_height="52dp"
+                        android:layout_marginTop="8dp"
+                        android:backgroundTint="#2F6FED"
+                        android:text="2. 视频任务"
+                        android:textColor="#FFFFFF"
+                        android:textSize="15sp" />
+
+                    <Button
+                        android:id="@+id/game_task_button"
+                        android:layout_width="match_parent"
+                        android:layout_height="52dp"
+                        android:layout_marginTop="8dp"
+                        android:backgroundTint="#2F6FED"
+                        android:text="3. 小游戏任务"
+                        android:textColor="#FFFFFF"
+                        android:textSize="15sp" />
 
                     <Button
                         android:id="@+id/stop_button"
@@ -459,54 +476,7 @@
                         android:textSize="14sp" />
                 </LinearLayout>
 
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:background="@drawable/bg_card"
-                    android:orientation="vertical"
-                    android:padding="16dp">
 
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="真人学习"
-                        android:textColor="#374151"
-                        android:textSize="15sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/learning_status_text"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:text="学习库：已保存 0 个唯一案例"
-                        android:textColor="#6B7280"
-                        android:textSize="13sp" />
-
-                    <Button
-                        android:visibility="gone"
-                        android:id="@+id/learning_button"
-                        android:layout_width="match_parent"
-                        android:layout_height="50dp"
-                        android:layout_marginTop="12dp"
-                        android:backgroundTint="#111827"
-                        android:text="开始学习模式"
-                        android:textColor="#FFFFFF"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
-
-                    <Button
-                        android:visibility="gone"
-                        android:id="@+id/learning_stop_button"
-                        android:layout_width="match_parent"
-                        android:layout_height="46dp"
-                        android:layout_marginTop="8dp"
-                        android:backgroundTint="#F3F4F6"
-                        android:text="结束学习"
-                        android:textColor="#4B5563"
-                        android:textSize="13sp" />
-                </LinearLayout>
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -610,7 +580,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:text="自动任务、学习模式与故障信息"
+                    android:text="分类任务运行过程与故障信息"
                     android:textColor="#7A8190"
                     android:textSize="13sp" />
 

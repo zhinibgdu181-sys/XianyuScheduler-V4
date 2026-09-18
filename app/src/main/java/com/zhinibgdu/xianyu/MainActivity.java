@@ -44,7 +44,6 @@ public class MainActivity extends Activity {
     private TextView scheduleStatusText;
     private TextView runtimeStatusText;
     private TextView statusDetailText;
-    private TextView learningStatusText;
     private TextView automationFeedbackText;
     private TextView todayDateText;
     private TextView todaySummaryText;
@@ -99,12 +98,12 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        LegacyDataCleanup.remove(getApplicationContext());
         setContentView(R.layout.activity_main);
 
         scheduleStatusText = findViewById(R.id.schedule_status_text);
         runtimeStatusText = findViewById(R.id.runtime_status_text);
         statusDetailText = findViewById(R.id.status_detail_text);
-        learningStatusText = findViewById(R.id.learning_status_text);
         automationFeedbackText = findViewById(R.id.automation_feedback_text);
         todayDateText = findViewById(R.id.today_date_text);
         todaySummaryText = findViewById(R.id.today_summary_text);
@@ -142,29 +141,32 @@ public class MainActivity extends Activity {
         Button schedule = findViewById(R.id.schedule_button);
         Button cancel = findViewById(R.id.cancel_button);
         Button test = findViewById(R.id.test_button);
-        Button learning = findViewById(R.id.learning_button);
+        Button video = findViewById(R.id.video_task_button);
+        Button game = findViewById(R.id.game_task_button);
         Button stop = findViewById(R.id.stop_button);
-        Button learningStop = findViewById(R.id.learning_stop_button);
         Button log = findViewById(R.id.log_button);
         Button clearLog = findViewById(R.id.clear_log_button);
         Button copyAllLog = findViewById(R.id.copy_all_log_button);
         localSwitch = findViewById(R.id.switch_local_task);
         videoSwitch = findViewById(R.id.switch_video_task);
         gameSwitch = findViewById(R.id.switch_game_task);
-        loadSwitches();
-
+        localSwitch.setChecked(AppConfig.isLocalTaskEnabled(this));
+        videoSwitch.setChecked(AppConfig.isVideoTaskEnabled(this));
+        gameSwitch.setChecked(AppConfig.isGameTaskEnabled(this));
+        android.widget.CompoundButton.OnCheckedChangeListener save = (button, checked) ->
+                AppConfig.saveTaskSwitches(this, localSwitch.isChecked(), videoSwitch.isChecked(), gameSwitch.isChecked());
+        localSwitch.setOnCheckedChangeListener(save);
+        videoSwitch.setOnCheckedChangeListener(save);
+        gameSwitch.setOnCheckedChangeListener(save);
         Button todayRefresh = findViewById(R.id.today_refresh_button);
         Button showPath = findViewById(R.id.show_path_button);
 
         schedule.setOnClickListener(v -> scheduleDailyTask());
         cancel.setOnClickListener(v -> cancelDailyTask());
-        test.setOnClickListener(v -> {
-            saveSwitches();
-            triggerXianyuTask();
-        });
-        learning.setOnClickListener(v -> triggerLearningMode());
+        test.setOnClickListener(v -> triggerXianyuTask(TaskCategory.LOCAL));
+        video.setOnClickListener(v -> triggerXianyuTask(TaskCategory.VIDEO));
+        game.setOnClickListener(v -> triggerXianyuTask(TaskCategory.GAME));
         stop.setOnClickListener(v -> stopCurrentRun());
-        learningStop.setOnClickListener(v -> stopLearningMode());
         log.setOnClickListener(v -> showStatus(true));
         clearLog.setOnClickListener(v -> confirmClearLog());
         copyAllLog.setOnClickListener(v -> copyAllLogToClipboard());
@@ -457,9 +459,7 @@ public class MainActivity extends Activity {
         String logPath = external == null ? "不可用" : new java.io.File(external, "xianyu_log.txt").getAbsolutePath();
         String text = "运行日志：\n" + logPath
                 + "\n\n任务记录：\n/data/data/" + getPackageName()
-                + "/shared_prefs/xianyu_records_v427.xml"
-                + "\n\n真人学习库：\n/data/data/" + getPackageName()
-                + "/shared_prefs/xianyu_learning_v413.xml";
+                + "/shared_prefs/xianyu_records_v427.xml";
         dataPathText.setText(text);
         new AlertDialog.Builder(this)
                 .setTitle("数据保存路径")
@@ -503,7 +503,7 @@ public class MainActivity extends Activity {
     private void confirmClearLog() {
         new AlertDialog.Builder(this)
                 .setTitle("清空日志")
-                .setMessage("确认删除当前全部运行日志？\n不会影响今日任务记录、定时设置和学习库。")
+                .setMessage("确认删除当前全部运行日志？\n不会影响今日任务记录、定时设置。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("清空", (dialog, which) -> {
                     boolean ok = TaskStatusReceiver.clearLog(getApplicationContext());
@@ -518,44 +518,9 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    private void triggerLearningMode() {
-        Toast.makeText(this, "真人学习模块已移除，请使用自动任务", Toast.LENGTH_SHORT).show();
-        return;
-        /*if (TaskExecutor.isRunning()) {
-            setStatusMessage("当前已有运行实例，请先停止当前任务。");
-            Toast.makeText(this, "已有任务正在运行", Toast.LENGTH_SHORT).show();
-            return;
-        }
 
-        setStatusMessage(
-                "真人示范学习即将开始。\n"
-                        + "启动后请手动离开本助手并正常操作闲鱼/广告/外部 App；"
-                        + "程序只记录，不会主动点击或滑动。\n"
-                        + "示范完成后切回本助手，学习会自动结束并保存。"
-        );
 
-        try {
-            TaskForegroundService.startLearning(getApplicationContext());
-            Toast.makeText(this, "学习模式已启动，请开始真人示范", Toast.LENGTH_LONG).show();
-            handler.removeCallbacks(runningRefresh);
-            handler.postDelayed(runningRefresh, 800L);
-        } catch (Throwable t) {
-            setStatusMessage("启动学习模式失败：" + t.getClass().getSimpleName()
-                    + "：" + t.getMessage());
-            Toast.makeText(this, "启动学习模式失败", Toast.LENGTH_LONG).show();
-        }*/
-    }
 
-    private void stopLearningMode() {
-        if (!TaskExecutor.isRunning() || !TaskExecutor.isLearningMode()) {
-            Toast.makeText(this, "当前没有正在进行的真人学习", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        TaskExecutor.requestStop("用户点击“结束学习”");
-        setStatusMessage("正在结束真人学习并保存去重后的学习案例……");
-        handler.removeCallbacks(runningRefresh);
-        handler.postDelayed(runningRefresh, 500L);
-    }
 
     private void stopCurrentRun() {
         if (!TaskExecutor.isRunning()) {
@@ -565,34 +530,21 @@ public class MainActivity extends Activity {
 
         TaskExecutor.requestStop("用户点击“停止当前运行”");
         setStatusMessage(
-                TaskExecutor.isLearningMode()
-                        ? "正在结束学习模式并保存记录……"
-                        : "已请求停止自动任务，后续主动 UI 操作将被立即拦截。"
+                "已请求停止自动任务，后续主动 UI 操作将被立即拦截。"
         );
         handler.removeCallbacks(runningRefresh);
         handler.postDelayed(runningRefresh, 500L);
     }
 
-
-    private void loadSwitches() {
-        android.content.SharedPreferences p=getSharedPreferences("task_config", MODE_PRIVATE);
-        localSwitch.setChecked(p.getBoolean("enable_local_task", true));
-        videoSwitch.setChecked(p.getBoolean("enable_video_task", false));
-        gameSwitch.setChecked(p.getBoolean("enable_game_task", false));
-    }
-
-    private void saveSwitches() {
-        AppConfig.saveTaskSwitches(this,
-                localSwitch.isChecked(),
-                videoSwitch.isChecked(),
-                gameSwitch.isChecked());
-    }
-
-    private void triggerXianyuTask() {
-        setStatusMessage("正在启动任务服务，随后会检查 Root、打开闲鱼并进入任务页。\n运行期间请保持手机解锁。");
+    private void triggerXianyuTask(TaskCategory category) {
+        if (TaskExecutor.isRunning()) {
+            Toast.makeText(this, "请先停止当前任务", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        setStatusMessage("正在启动：" + category.label + "。\n运行期间请保持手机解锁。");
         setRuntimeState(true);
         try {
-            TaskForegroundService.start(getApplicationContext());
+            TaskForegroundService.start(getApplicationContext(), category);
             Toast.makeText(this, "任务已启动", Toast.LENGTH_SHORT).show();
             handler.removeCallbacks(runningRefresh);
             handler.postDelayed(runningRefresh, 800L);
@@ -733,14 +685,12 @@ public class MainActivity extends Activity {
         } else {
             scheduleStatusText.setText("每日任务：未启用");
         }
-        int learned = TaskExecutor.getLearningCaseCount(this);
-        learningStatusText.setText("学习库：已保存 " + learned + " 个唯一案例");
         setRuntimeState(TaskExecutor.isRunning());
     }
 
     private void setRuntimeState(boolean running) {
         if (running) {
-            runtimeStatusText.setText(TaskExecutor.isLearningMode() ? "学习中" : "运行中");
+            runtimeStatusText.setText(TaskExecutor.getActiveCategoryLabel() + "运行中");
             runtimeStatusText.setTextColor(0xFF1D4ED8);
             runtimeStatusText.setBackgroundResource(R.drawable.bg_status_running);
         } else {
@@ -759,19 +709,10 @@ public class MainActivity extends Activity {
 
         String log = readRecentLog(file);
         logText.setText(log);
-        learningStatusText.setText(
-                "学习库：已保存 " + TaskExecutor.getLearningCaseCount(this) + " 个唯一案例");
 
         if (running) {
-            if (TaskExecutor.isLearningMode()) {
-                setStatusMessage(
-                        "真人示范学习正在记录。\n"
-                                + "程序不会主动点击/滑动；示范结束后切回本助手即可自动保存。");
-            } else {
-                setStatusMessage(
-                        "任务正在执行 · 日志会自动刷新。\n"
-                                + "切回本助手或点击“停止当前运行”都会立即停止主动操作。");
-            }
+            setStatusMessage(TaskExecutor.getActiveCategoryLabel() + "正在执行 · 日志会自动刷新。\n"
+                    + "切回本助手或点击“停止当前运行”都会停止操作。");
         } else if (userRequested) {
             setStatusMessage("日志已刷新 · "
                     + new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date()));
