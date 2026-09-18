@@ -3123,17 +3123,29 @@ public final class TaskExecutor {
                     ScreenOcr.Snapshot browseProbe =
                             captureOcrV45(suPath, "福利浏览倒计时确认");
                     String browseText = combinedTextV45(null, browseProbe);
+
+                    // V4.43.7: 完成态以右下角“小黄鱼”任务浮层消失为准。
+                    // OCR 可能把商品正文中的“滑动浏览9s”误识别为倒计时，即使真正
+                    // 的任务浮层已经消失；此时继续等待会把已完成任务卡死到保护上限。
+                    if (elapsed >= 15000L && !browseProbe.welfareFishVisible) {
+                        diagnostic("[福利浏览V4.43.7] ✅ 小黄鱼浮层已消失，确认浏览完成；忽略残留OCR倒计时："
+                                + extractBrowseCountdownV4433(browseText));
+                        break;
+                    }
+
                     if (containsBrowseCountdownV4433(browseText)) {
                         browseCompletionMisses = 0;
-                        diagnostic("[福利浏览V4.43.5] 任务倒计时仍存在，继续等待："
-                                + extractBrowseCountdownV4433(browseText));
+                        diagnostic("[福利浏览V4.43.7] 任务倒计时仍存在，继续等待："
+                                + extractBrowseCountdownV4433(browseText)
+                                + " / 小黄鱼=" + (browseProbe.welfareFishVisible ? "显示" : "未显示"));
                     } else {
                         browseCompletionMisses++;
-                        diagnostic("[福利浏览V4.43.5] 未识别到倒计时，确认次数="
-                                + browseCompletionMisses + "/2");
+                        diagnostic("[福利浏览V4.43.7] 未识别到倒计时，确认次数="
+                                + browseCompletionMisses + "/2"
+                                + " / 小黄鱼=" + (browseProbe.welfareFishVisible ? "显示" : "未显示"));
                         // 15 秒后倒计时消失 + 连续两次确认即可返回。
                         if (browseCompletionMisses >= 2 && elapsed >= 15000L) {
-                            diagnostic("[福利浏览V4.43.5] ✅ 已确认浏览完成，立即进入返回任务面板");
+                            diagnostic("[福利浏览V4.43.7] ✅ 已确认浏览完成，立即进入返回任务面板");
                             break;
                         }
                     }
