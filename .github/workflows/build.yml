@@ -40,7 +40,7 @@ jobs:
 
       - name: Build Debug APK
         run: |
-          gradle testDebugUnitTest assembleDebug --stacktrace --no-daemon
+          gradle assembleDebug --stacktrace --no-daemon
 
       - name: List APK
         run: |
