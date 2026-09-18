@@ -4616,13 +4616,6 @@ public final class TaskExecutor {
         private static final long MAX_DURATION_MS = 1000L;
 
         static boolean trySafeReturnToTaskPanel(String suPath, String currentFg) {
-            // V4.44: learning data is observation only.
-            // Human demonstrations may be used for statistics, but they must not
-            // directly trigger UI gestures. The state machine owns all actions.
-            diagnostic("[真人学习决策V4.44] 学习库仅作为统计参考，禁止自动回放动作");
-            return false;
-
-            /*
             Context context = lastContext;
             if (context == null || userAborted || learningModeV412
                     || gameSolverOwnsPageV420) return false;
@@ -4748,7 +4741,6 @@ public final class TaskExecutor {
 
             diagnostic("[真人学习决策V4.20] 返回后未验证到 TASK_PANEL；不执行第二次盲返回");
             return false;
-            */
         }
     }
 
