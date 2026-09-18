@@ -3,7 +3,8 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#F4F6FA"\n    android:fitsSystemWindows="true">
+    android:background="#F4F6FA"
+    android:fitsSystemWindows="true">
 
     <FrameLayout
         android:id="@+id/page_container"
