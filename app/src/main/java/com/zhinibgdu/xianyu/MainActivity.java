@@ -141,7 +141,6 @@ public class MainActivity extends Activity {
         Button schedule = findViewById(R.id.schedule_button);
         Button cancel = findViewById(R.id.cancel_button);
         Button execute = findViewById(R.id.execute_task_button);
-        Button stop = findViewById(R.id.stop_button);
         Button log = findViewById(R.id.log_button);
         Button clearLog = findViewById(R.id.clear_log_button);
         Button copyAllLog = findViewById(R.id.copy_all_log_button);
@@ -162,7 +161,6 @@ public class MainActivity extends Activity {
         schedule.setOnClickListener(v -> scheduleDailyTask());
         cancel.setOnClickListener(v -> cancelDailyTask());
         execute.setOnClickListener(v -> triggerSelectedTasks());
-        stop.setOnClickListener(v -> stopCurrentRun());
         log.setOnClickListener(v -> showStatus(true));
         clearLog.setOnClickListener(v -> confirmClearLog());
         copyAllLog.setOnClickListener(v -> copyAllLogToClipboard());
@@ -518,20 +516,6 @@ public class MainActivity extends Activity {
 
 
 
-    private void stopCurrentRun() {
-        if (!TaskExecutor.isRunning()) {
-            Toast.makeText(this, "当前没有运行任务", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        TaskExecutor.requestStop("用户点击“停止当前运行”");
-        setStatusMessage(
-                "已请求停止自动任务，后续主动 UI 操作将被立即拦截。"
-        );
-        handler.removeCallbacks(runningRefresh);
-        handler.postDelayed(runningRefresh, 500L);
-    }
-
     private void triggerSelectedTasks() {
         boolean local = localSwitch.isChecked();
         boolean video = videoSwitch.isChecked();
@@ -560,10 +544,10 @@ public class MainActivity extends Activity {
 
     private void triggerXianyuTask(TaskCategory category) {
         if (TaskExecutor.isRunning()) {
-            Toast.makeText(this, "请先停止当前任务", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "当前任务正在运行，请等待当前任务完成", Toast.LENGTH_SHORT).show();
             return;
         }
-        setStatusMessage("正在启动：" + category.label + "。\n运行期间请保持手机解锁。");
+        setStatusMessage("正在启动：" + category.label + "。\n运行期间请保持手机解锁；任务完成后会自动返回。");
         setRuntimeState(true);
         try {
             TaskForegroundService.start(getApplicationContext(), category);
@@ -734,7 +718,7 @@ public class MainActivity extends Activity {
 
         if (running) {
             setStatusMessage(TaskExecutor.getActiveCategoryLabel() + "正在执行 · 日志会自动刷新。\n"
-                    + "切回本助手或点击“停止当前运行”都会停止操作。");
+                    + "切回本助手或任务完成后会自动停止操作。");
         } else if (userRequested) {
             setStatusMessage("日志已刷新 · "
                     + new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date()));
