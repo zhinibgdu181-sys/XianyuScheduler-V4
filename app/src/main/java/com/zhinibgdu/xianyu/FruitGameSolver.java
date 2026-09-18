@@ -57,7 +57,7 @@ final class FruitGameSolver {
     private static final long SCREENSHOT_TIMEOUT_MS = 4200L;
     private static final long MAX_ROUND_MS = 30L * 60L * 1000L;
     private static final int MAX_PAIR_ACTIONS = 130;
-    private static final int MAX_RECOVERY_RETRY = 3;
+    private static final int MAX_RECOVERY_RETRY = 4;
     private static final int MAX_NO_ACTION_RETRY = 5;
     private static final long BLOCKED_POSITION_TTL_MS = 12_000L;
 
@@ -144,7 +144,7 @@ final class FruitGameSolver {
 
                 if (looksLikeFruitGame(firstText)
                         || (!looksLikeTaskPanel(firstText) && isRoundCompleted(firstText))) {
-                    recoveryCount = 0;
+                    entryRecoveryCount = 0;
                     confirmed = true;
                     break;
                 }
@@ -204,7 +204,6 @@ final class FruitGameSolver {
         int pairActions = 0;
         int noActionRetry = 0;
         boolean recovering = false;
-                    recoveryCount = 0;
         boolean fruitTapAttempted = false;
 
         // V4.36 本轮验证失败过的对子进入黑名单，不再重复尝试
