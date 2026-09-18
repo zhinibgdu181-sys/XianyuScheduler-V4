@@ -1963,6 +1963,17 @@ public final class TaskExecutor {
             String actionText = action.text == null ? "" : action.text.trim();
             String compact = actionText.replaceAll("\\s+", "");
 
+            // 已领取/已完成的状态不是可点击的奖励按钮。OCR 经常把“领取成功”
+            // 识别成右侧按钮文本；如果继续把它当 CLAIM，会在下一轮重复点击，
+            // 甚至把任务带到 Android 外部页。成功状态必须从候选动作中排除。
+            if (compact.contains("领取成功")
+                    || compact.contains("已领取")
+                    || compact.contains("已完成")
+                    || compact.contains("已签到")
+                    || compact.contains("签到成功")) {
+                continue;
+            }
+
             boolean isComplete = compact.contains("去完成");
             boolean isClaim = compact.contains("领取奖励")
                     || compact.contains("领取笑励");
@@ -2575,6 +2586,20 @@ public final class TaskExecutor {
                 return new TaskVerificationResultV411(
                         true, "claimed_row_disappeared", after);
             }
+
+            // “去浏览福利好物”本身是一个内部浏览任务：点击后留在闲鱼，
+            // 按任务时长完成浏览并自动滑动，然后返回任务面板。该类任务的
+            // 进度数字经常不会在返回后的首帧 OCR 中立即刷新，所以不能把
+            // “仍显示去完成”误判成失败。只在执行流程已经完整返回任务面板
+            // 且目标是这个确定的内部浏览任务时认定成功。
+            if (executionReturned
+                    && !claim
+                    && lastAfter != null
+                    && lastAfter.present
+                    && isDeterministicInternalBrowseTaskV4432(taskName)) {
+                return new TaskVerificationResultV411(
+                        true, "internal_browse_returned", lastAfter);
+            }
         }
 
         if (executionReturned && hasFreshPanelFrameV416 && !claim) {
@@ -2584,6 +2609,12 @@ public final class TaskExecutor {
                 false,
                 executionReturned ? "no_progress_change" : "execution_not_returned",
                 lastAfter == null ? before : lastAfter);
+    }
+
+    private static boolean isDeterministicInternalBrowseTaskV4432(String taskName) {
+        if (taskName == null) return false;
+        String n = taskName.replaceAll("\\s+", "");
+        return n.contains("去浏览福利好物");
     }
 
     private static ScreenOcr.Snapshot freshTaskPanelOcrV415() {
