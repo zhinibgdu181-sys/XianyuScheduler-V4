@@ -125,6 +125,7 @@ final class FruitGameSolver {
 
         // V4.36：进入水果任务后可能经历 loading / “开始游戏”首页。
         // 不再只看一帧就判死刑；最多等待 8 秒，并在出现开始页时主动点“开始游戏”。
+        int entryRecoveryCount = 0;
         int recoveryCount = 0;
         String firstText = "";
         boolean confirmed = false;
@@ -178,8 +179,8 @@ final class FruitGameSolver {
                 if (!host.sleep(600L, 900L)) return Result.ABORTED;
             } catch (RuntimeException e) {
                 if (host.aborted()) return Result.ABORTED;
-                if (++recoveryCount > MAX_RECOVERY_RETRY) return Result.SAFE_STOP_CLEAN;
-                host.log("[恢复V4.42] 进入确认重试 " + recoveryCount + "/" + MAX_RECOVERY_RETRY
+                if (++entryRecoveryCount > MAX_RECOVERY_RETRY) return Result.SAFE_STOP_CLEAN;
+                host.log("[恢复V4.42] 进入确认重试 " + entryRecoveryCount + "/" + MAX_RECOVERY_RETRY
                         + " / " + e.getClass().getSimpleName());
                 if (!host.sleep(300L, 500L)) return Result.ABORTED;
             }
