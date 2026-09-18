@@ -252,6 +252,26 @@ public final class TaskExecutor {
         }, "XianyuTask").start();
     }
 
+    private static void returnToApp(Context ctx) {
+        if (ctx == null) return;
+        try {
+            Intent launch = ctx.getPackageManager().getLaunchIntentForPackage(MODULE_PACKAGE);
+            if (launch == null) {
+                diagnostic("[完成] 未找到 APP 启动入口");
+                return;
+            }
+            launch.addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK
+                            | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            | Intent.FLAG_ACTIVITY_SINGLE_TOP
+            );
+            ctx.startActivity(launch);
+            diagnostic("[完成] 任务执行完毕，已返回本 APP");
+        } catch (Throwable t) {
+            diagnostic("返回本 APP 失败", t);
+        }
+    }
+
     private static void goHome(
             Context ctx
     ) {
@@ -402,6 +422,11 @@ public final class TaskExecutor {
             notifyTask(ctx, activeCategory.label, "正在扫描任务");
             if (i > 0 && !resetTaskPanelTop(suPath)) break;
             completed += scanAndExecuteTasks(suPath, ctx);
+        }
+
+        // 所有已开启分类执行完毕后，自动回到本 APP；随后前台服务在 finally 中停止。
+        if (!userAborted && !gameIncompleteHoldV421) {
+            returnToApp(ctx);
         }
 
         diagnostic(
