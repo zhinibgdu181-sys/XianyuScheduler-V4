@@ -1654,8 +1654,9 @@ public final class TaskExecutor {
                 String fingerprint = viewport.toString();
                 repeatedViewport = fingerprint.equals(exhaustedViewport) ? repeatedViewport + 1 : 0;
                 exhaustedViewport = fingerprint;
-                if (repeatedViewport >= 2) {
-                    diagnostic("[任务分类] 当前分类没有更多可执行任务：" + activeCategory.label);
+                if (repeatedViewport >= 1) {
+                    diagnostic("[任务分类] 检测到任务列表连续两次相同，已滑到底部；停止无效继续滑动："
+                            + activeCategory.label);
                     break;
                 }
                 if (!swipeUp(suPath)) {
@@ -2955,32 +2956,42 @@ public final class TaskExecutor {
                         markUserAbortV48("浏览任务期间用户接管");
                         return false;
                     }
-                    if (TARGET_PACKAGE.equals(fg)) {
+
+                    // 福利浏览接近结束时不要再发无意义滑动，避免已经完成的页面
+                    // 被继续拖动；先让倒计时自然归零，再立即进入返回流程。
+                    boolean browseNearCompletion = welfareBrowse
+                            && elapsed >= 15000L
+                            && browseCompletionMisses >= 0;
+                    if (TARGET_PACKAGE.equals(fg) && !browseNearCompletion) {
                         rootWithPath(
                                 suPath,
                                 "input swipe 720 2250 720 1050 420"
                         );
                         diagnostic("[执行] 内部浏览滑动，elapsed=" + elapsed + "ms");
+                    } else if (welfareBrowse && browseNearCompletion) {
+                        diagnostic("[福利浏览V4.43.5] 已进入完成确认阶段，暂停继续滑动");
                     }
                     nextBrowseSwipe += 2500L;
                 }
 
                 // 15 秒后开始确认闲鱼自己的“滑动浏览N秒”倒计时。
-                // 连续两次 OCR 都看不到该倒计时才允许提前结束；否则继续滑动/等待。
+                // 一旦确认倒计时已经消失，立即返回；只有 OCR 偶发漏识别时才需要
+                // 第二次确认。这样完成后不会额外等待几十秒。
                 if (welfareBrowse && elapsed >= nextBrowseCompletionProbe) {
                     ScreenOcr.Snapshot browseProbe =
                             captureOcrV45(suPath, "福利浏览倒计时确认");
                     String browseText = combinedTextV45(null, browseProbe);
                     if (containsBrowseCountdownV4433(browseText)) {
                         browseCompletionMisses = 0;
-                        diagnostic("[福利浏览V4.43.4] 任务倒计时仍存在，继续等待："
+                        diagnostic("[福利浏览V4.43.5] 任务倒计时仍存在，继续等待："
                                 + extractBrowseCountdownV4433(browseText));
                     } else {
                         browseCompletionMisses++;
-                        diagnostic("[福利浏览V4.43.3] 未识别到倒计时，确认次数="
+                        diagnostic("[福利浏览V4.43.5] 未识别到倒计时，确认次数="
                                 + browseCompletionMisses + "/2");
-                        if (browseCompletionMisses >= 3 && elapsed >= 30000L) {
-                            diagnostic("[福利浏览V4.43.4] ✅ 连续3次未识别到倒计时，确认浏览完成");
+                        // 15 秒后倒计时消失 + 连续两次确认即可返回。
+                        if (browseCompletionMisses >= 2 && elapsed >= 15000L) {
+                            diagnostic("[福利浏览V4.43.5] ✅ 已确认浏览完成，立即进入返回任务面板");
                             break;
                         }
                     }
