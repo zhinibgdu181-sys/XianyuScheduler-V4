@@ -43,7 +43,6 @@ public class MainActivity extends Activity {
     private TextView scheduleStatusText;
     private TextView runtimeStatusText;
     private TextView statusDetailText;
-    private TextView learningStatusText;
     private TextView automationFeedbackText;
     private TextView todayDateText;
     private TextView todaySummaryText;
@@ -102,7 +101,6 @@ public class MainActivity extends Activity {
         scheduleStatusText = findViewById(R.id.schedule_status_text);
         runtimeStatusText = findViewById(R.id.runtime_status_text);
         statusDetailText = findViewById(R.id.status_detail_text);
-        learningStatusText = findViewById(R.id.learning_status_text);
         automationFeedbackText = findViewById(R.id.automation_feedback_text);
         todayDateText = findViewById(R.id.today_date_text);
         todaySummaryText = findViewById(R.id.today_summary_text);
@@ -140,9 +138,10 @@ public class MainActivity extends Activity {
         Button schedule = findViewById(R.id.schedule_button);
         Button cancel = findViewById(R.id.cancel_button);
         Button test = findViewById(R.id.test_button);
-        Button learning = findViewById(R.id.learning_button);
         Button stop = findViewById(R.id.stop_button);
-        Button learningStop = findViewById(R.id.learning_stop_button);
+        Button xianyuLocal = findViewById(R.id.xianyu_local_task_button);
+        Button videoTask = findViewById(R.id.video_task_button);
+        Button gameTask = findViewById(R.id.game_task_button);
         Button log = findViewById(R.id.log_button);
         Button clearLog = findViewById(R.id.clear_log_button);
         Button copyAllLog = findViewById(R.id.copy_all_log_button);
@@ -152,9 +151,10 @@ public class MainActivity extends Activity {
         schedule.setOnClickListener(v -> scheduleDailyTask());
         cancel.setOnClickListener(v -> cancelDailyTask());
         test.setOnClickListener(v -> triggerXianyuTask());
-        learning.setOnClickListener(v -> triggerLearningMode());
+        xianyuLocal.setOnClickListener(v -> TaskDispatcher.dispatch(this, "xianyu"));
+        videoTask.setOnClickListener(v -> TaskDispatcher.dispatch(this, "video"));
+        gameTask.setOnClickListener(v -> TaskDispatcher.dispatch(this, "game"));
         stop.setOnClickListener(v -> stopCurrentRun());
-        learningStop.setOnClickListener(v -> stopLearningMode());
         log.setOnClickListener(v -> showStatus(true));
         clearLog.setOnClickListener(v -> confirmClearLog());
         copyAllLog.setOnClickListener(v -> copyAllLogToClipboard());
@@ -707,7 +707,6 @@ public class MainActivity extends Activity {
             scheduleStatusText.setText("每日任务：未启用");
         }
         int learned = TaskExecutor.getLearningCaseCount(this);
-        learningStatusText.setText("学习库：已保存 " + learned + " 个唯一案例");
         setRuntimeState(TaskExecutor.isRunning());
     }
 
@@ -732,8 +731,6 @@ public class MainActivity extends Activity {
 
         String log = readRecentLog(file);
         logText.setText(log);
-        learningStatusText.setText(
-                "学习库：已保存 " + TaskExecutor.getLearningCaseCount(this) + " 个唯一案例");
 
         if (running) {
             if (TaskExecutor.isLearningMode()) {
