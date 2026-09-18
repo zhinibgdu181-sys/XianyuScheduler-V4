@@ -394,68 +394,62 @@
                     android:textColor="#7A8190"
                     android:textSize="13sp" />
 
-                <!-- 每日定时：置于自动化页面最上方，保持独立长卡片 -->
+                <!-- 每日定时：顶部独立长卡片 -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="18dp"
                     android:background="@drawable/bg_card"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal"
+                    android:orientation="vertical"
                     android:padding="18dp">
 
-                    <LinearLayout
-                        android:layout_width="0dp"
+                    <TextView
+                        android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
+                        android:text="每日定时"
+                        android:textColor="#111827"
+                        android:textSize="18sp"
+                        android:textStyle="bold" />
 
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="每日定时"
-                            android:textColor="#374151"
-                            android:textSize="16sp"
-                            android:textStyle="bold" />
+                    <TextView
+                        android:id="@+id/schedule_status_text"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:text="每日任务：未启用"
+                        android:textColor="#6B7280"
+                        android:textSize="13sp" />
 
-                        <TextView
-                            android:id="@+id/schedule_status_text"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="5dp"
-                            android:text="每日任务：未启用"
-                            android:textColor="#111827"
-                            android:textSize="14sp"
-                            android:textStyle="bold" />
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/schedule_button"
+                            android:layout_width="0dp"
+                            android:layout_height="46dp"
+                            android:layout_weight="1"
+                            android:backgroundTint="#E9EEF8"
+                            android:text="设置时间"
+                            android:textColor="#2F6FED"
+                            android:textSize="13sp" />
+
+                        <Space
+                            android:layout_width="10dp"
+                            android:layout_height="1dp" />
+
+                        <Button
+                            android:id="@+id/cancel_button"
+                            android:layout_width="0dp"
+                            android:layout_height="46dp"
+                            android:layout_weight="1"
+                            android:backgroundTint="#F3F4F6"
+                            android:text="取消定时"
+                            android:textColor="#4B5563"
+                            android:textSize="13sp" />
                     </LinearLayout>
-
-                    <Button
-                        android:id="@+id/schedule_button"
-                        android:layout_width="wrap_content"
-                        android:layout_height="46dp"
-                        android:minWidth="0dp"
-                        android:backgroundTint="#E9EEF8"
-                        android:paddingStart="14dp"
-                        android:paddingEnd="14dp"
-                        android:text="设置时间"
-                        android:textColor="#2F6FED"
-                        android:textSize="13sp" />
-
-                    <Space
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <Button
-                        android:id="@+id/cancel_button"
-                        android:layout_width="wrap_content"
-                        android:layout_height="46dp"
-                        android:minWidth="0dp"
-                        android:backgroundTint="#F3F4F6"
-                        android:paddingStart="14dp"
-                        android:paddingEnd="14dp"
-                        android:text="取消"
-                        android:textColor="#4B5563"
-                        android:textSize="13sp" />
                 </LinearLayout>
 
                 <!-- 三类任务：每类独立长卡片 -->
@@ -622,16 +616,6 @@
                         android:textSize="13sp"
                         android:textStyle="bold" />
                 </LinearLayout>
-
-                <Button
-                    android:id="@+id/stop_button"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginTop="8dp"
-                    android:backgroundTint="#EEF1F5"
-                    android:text="停止当前运行"
-                    android:textColor="#374151"
-                    android:textSize="14sp" />
 
                 <TextView
                     android:id="@+id/automation_feedback_text"
