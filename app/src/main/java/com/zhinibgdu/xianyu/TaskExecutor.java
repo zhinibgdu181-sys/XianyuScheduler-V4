@@ -1703,6 +1703,7 @@ public final class TaskExecutor {
         int consecutiveEmptyCandidateScans = 0;
         boolean categoryExhausted = false;
         boolean categoryBlockedByUnfinishedTask = false;
+        int categoryTopRechecks = 0;
 
         for (int pass = 0; pass < 30; pass++) {
 
@@ -1819,7 +1820,18 @@ public final class TaskExecutor {
                 // OCR frame cannot produce a false "category completed" message.
                 consecutiveEmptyCandidateScans++;
                 if (consecutiveEmptyCandidateScans >= 3) {
-                    diagnostic("[任务分类] 连续3次未识别到任务，视为当前分类没有更多可执行任务："
+                    if (!categoryBlockedByUnfinishedTask
+                            && categoryTopRechecks < 2
+                            && resetTaskPanelTop(suPath)) {
+                        categoryTopRechecks++;
+                        consecutiveEmptyCandidateScans = 0;
+                        repeatedViewport = 0;
+                        exhaustedViewport = "";
+                        diagnostic("[任务分类] 当前页面未发现任务；回到顶部进行第"
+                                + categoryTopRechecks + "次全量复查，禁止把屏幕外任务误判为完成");
+                        continue;
+                    }
+                    diagnostic("[任务分类] 连续多次未识别到任务，且顶部复查后仍无可执行任务："
                             + activeCategory.label);
                     categoryExhausted = true;
                     break;
@@ -1850,8 +1862,10 @@ public final class TaskExecutor {
 
                 long cooldownRemain = TaskProfileStoreV48.cooldownRemainingMsV411(c.name);
                 if (cooldownRemain > 0L) {
+                    categoryBlockedByUnfinishedTask = true;
                     diagnostic("[冷却V4.11] 本轮暂不执行：" + c.name
-                            + "，剩余约" + Math.max(1L, cooldownRemain / 1000L) + "秒");
+                            + "，剩余约" + Math.max(1L, cooldownRemain / 1000L)
+                            + "秒；该任务仍未完成，禁止把分类判定为完成");
                     continue;
                 }
 
@@ -1895,7 +1909,18 @@ public final class TaskExecutor {
                 // 等同于“本分类全部完成”。给 OCR/XML 再留两轮确认机会，
                 // 防止某一帧漏掉未完成任务按钮后提前结束。
                 if (repeatedViewport >= 2) {
-                    diagnostic("[任务分类] 连续多次扫描仍无可执行任务，确认当前分类没有更多可执行任务："
+                    if (!categoryBlockedByUnfinishedTask
+                            && categoryTopRechecks < 2
+                            && resetTaskPanelTop(suPath)) {
+                        categoryTopRechecks++;
+                        repeatedViewport = 0;
+                        exhaustedViewport = "";
+                        consecutiveEmptyCandidateScans = 0;
+                        diagnostic("[任务分类] 已滑到重复视口；先回到顶部进行第"
+                                + categoryTopRechecks + "次全量复查，避免屏幕外未完成任务被漏掉");
+                        continue;
+                    }
+                    diagnostic("[任务分类] 连续多次扫描仍无可执行任务，且顶部复查后仍无可执行任务："
                             + activeCategory.label);
                     categoryExhausted = true;
                     break;
@@ -1910,6 +1935,7 @@ public final class TaskExecutor {
 
             repeatedViewport = 0;
             exhaustedViewport = "";
+            categoryTopRechecks = 0;
             String targetAttemptKey = normalizeTaskAttemptKeyV46(target.name);
             attemptsByTask.put(
                     targetAttemptKey,
@@ -2806,7 +2832,8 @@ public final class TaskExecutor {
         // task panel, do a single zero-wait verification pass and move on. Progress
         // text can update later; it must not stall the next visible task. Claims
         // keep a second chance because their row/button often changes in place.
-        int maxChecks = claim ? 2 : (hasFreshPanelFrameV416 ? 1 : 2);
+        boolean videoTask = containsAny(taskName, "视频");
+        int maxChecks = claim ? 2 : (videoTask ? 3 : (hasFreshPanelFrameV416 ? 1 : 2));
 
         // V4.15/V4.16: the recovery/conditional-back path has just OCR-confirmed the
         // task panel in most runs. Reuse that exact frame as check #1 instead of
@@ -3646,9 +3673,10 @@ public final class TaskExecutor {
 
         TaskProfileStoreV48.StrategyV49 videoStrategy =
                 TaskProfileStoreV48.chooseStrategyV49(taskName, 22000L, true, true);
-        long videoTimeout = Math.max(35000L, Math.min(55000L, videoStrategy.waitMs + 22000L));
+        long requiredWatchMs = Math.max(15000L, videoStrategy.waitMs);
+        long videoTimeout = Math.max(35000L, Math.min(55000L, requiredWatchMs + 22000L));
         diagnostic("[视频策略V4.11] " + videoStrategy.describe()
-                + " / timeout=" + videoTimeout + "ms");
+                + " / requiredWatch=" + requiredWatchMs + "ms / timeout=" + videoTimeout + "ms");
 
         long start = SystemClock.elapsedRealtime();
         boolean sawAd = false;
@@ -3710,17 +3738,31 @@ public final class TaskExecutor {
             }
 
             if (isTaskPageV45(null, ocr)) {
-                // 已经到任务面板就绝不再执行第二次返回，避免退过头。
-                diagnostic("[视频] ✅ 已回到真实任务面板，停止继续返回");
-                return true;
+                long elapsed = SystemClock.elapsedRealtime() - start;
+                if (elapsed >= requiredWatchMs) {
+                    // Only after the minimum watch window has elapsed may returning
+                    // to the task panel be treated as a completed execution.
+                    diagnostic("[视频] ✅ 已回到真实任务面板，且已满足最短观看时长："
+                            + elapsed + "ms；进入完成验证");
+                    return true;
+                }
+                diagnostic("[视频] 已回任务面板但观看时间不足："
+                        + elapsed + "/" + requiredWatchMs + "ms；继续等待，禁止提前判定完成");
+                continue;
             }
 
             // Every fourth OCR poll, allow one XML fallback for hard pages.
             if (loop % 4 == 0) {
                 String xml = dumpUi(suPath);
                 if (isTaskPageV45(xml, ocr)) {
-                    diagnostic("[视频] ✅ XML确认已在任务面板，停止继续返回");
-                    return true;
+                    long elapsed = SystemClock.elapsedRealtime() - start;
+                    if (elapsed >= requiredWatchMs) {
+                        diagnostic("[视频] ✅ XML确认已在任务面板，且已满足最短观看时长："
+                                + elapsed + "ms；进入完成验证");
+                        return true;
+                    }
+                    diagnostic("[视频] XML确认回到任务面板，但观看时间不足："
+                            + elapsed + "/" + requiredWatchMs + "ms；继续等待");
                 }
             }
 
