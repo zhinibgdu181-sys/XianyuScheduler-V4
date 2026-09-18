@@ -13,21 +13,21 @@
         android:layout_weight="1">
 
         <!-- 首页：权限 + 功能说明 -->
-        <ScrollView
+        <LinearLayout
             android:id="@+id/page_home"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:fillViewport="true"
+            android:orientation="vertical"
             android:clipToPadding="false">
 
             <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
                 android:orientation="vertical"
                 android:paddingStart="18dp"
-                android:paddingTop="24dp"
+                android:paddingTop="18dp"
                 android:paddingEnd="18dp"
-                android:paddingBottom="30dp">
+                android:paddingBottom="12dp">
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -221,7 +221,7 @@
 
 
             </LinearLayout>
-        </ScrollView>
+        </LinearLayout>
 
         <!-- 今日：当天已验证完成的任务 -->
         <ScrollView
@@ -233,12 +233,12 @@
 
             <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
                 android:orientation="vertical"
                 android:paddingStart="18dp"
-                android:paddingTop="24dp"
+                android:paddingTop="18dp"
                 android:paddingEnd="18dp"
-                android:paddingBottom="30dp">
+                android:paddingBottom="12dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -327,11 +327,11 @@
         </ScrollView>
 
         <!-- 自动化：定时 + 三类独立任务 -->
-        <ScrollView
+        <LinearLayout
             android:id="@+id/page_automation"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:fillViewport="true"
+            android:orientation="vertical"
             android:visibility="gone">
 
             <LinearLayout
@@ -593,7 +593,7 @@
                     android:textColor="#6B7280"
                     android:textSize="13sp" />
             </LinearLayout>
-        </ScrollView>
+        </LinearLayout>
 
         <!-- 日志 -->
         <ScrollView
