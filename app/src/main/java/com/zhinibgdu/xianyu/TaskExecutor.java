@@ -2611,6 +2611,24 @@ public final class TaskExecutor {
                 lastAfter == null ? before : lastAfter);
     }
 
+    private static boolean isWelfareBrowseTaskV4433(String taskName) {
+        if (taskName == null) return false;
+        return taskName.replaceAll("\\s+", "").contains("去浏览福利好物");
+    }
+
+    private static boolean containsBrowseCountdownV4433(String text) {
+        return text != null
+                && Pattern.compile("滑动浏览\\s*\\d+\\s*(?:s|秒)?",
+                Pattern.CASE_INSENSITIVE).matcher(text).find();
+    }
+
+    private static String extractBrowseCountdownV4433(String text) {
+        if (text == null) return "";
+        Matcher m = Pattern.compile("滑动浏览\\s*\\d+\\s*(?:s|秒)?",
+                Pattern.CASE_INSENSITIVE).matcher(text);
+        return m.find() ? m.group() : "仍在浏览";
+    }
+
     private static boolean isDeterministicInternalBrowseTaskV4432(String taskName) {
         if (taskName == null) return false;
         String n = taskName.replaceAll("\\s+", "");
@@ -2889,8 +2907,17 @@ public final class TaskExecutor {
             long nextBrowseSwipe = fixedDuration(2500L, 2300L, 2700L);
             long nextFgCheck = 0L;
             long systemTransitSince = 0L;
+            long nextBrowseCompletionProbe = 15000L;
+            int browseCompletionMisses = 0;
 
-            while (SystemClock.elapsedRealtime() - started < waitMs) {
+            // 闲鱼“滑动浏览15s”页面实际存在一个独立倒计时。
+            // 15 秒是最低要求，不等于我们的自动化可以在 15 秒整立即退出。
+            // 日志已证明 15 秒结束时页面仍显示“滑动浏览8s/7s”，所以继续等待
+            // 直到倒计时消失；最多给 28 秒保护上限，避免页面异常时无限等待。
+            boolean welfareBrowse = isWelfareBrowseTaskV4433(taskName);
+            long effectiveWaitMs = welfareBrowse ? Math.max(waitMs, 28000L) : waitMs;
+
+            while (SystemClock.elapsedRealtime() - started < effectiveWaitMs) {
                 if (!paceSleepV415(170L, 290L)) return false;
 
                 long elapsed = SystemClock.elapsedRealtime() - started;
@@ -2921,7 +2948,8 @@ public final class TaskExecutor {
                     }
                 }
 
-                if (isInternalBrowse && elapsed >= nextBrowseSwipe) {
+                if (isInternalBrowse && elapsed >= nextBrowseSwipe
+                        && (!welfareBrowse || elapsed < 27000L)) {
                     String fg = getFg(suPath, false);
                     if (MODULE_PACKAGE.equals(fg)) {
                         markUserAbortV48("浏览任务期间用户接管");
@@ -2935,6 +2963,28 @@ public final class TaskExecutor {
                         diagnostic("[执行] 内部浏览滑动，elapsed=" + elapsed + "ms");
                     }
                     nextBrowseSwipe += 2500L;
+                }
+
+                // 15 秒后开始确认闲鱼自己的“滑动浏览N秒”倒计时。
+                // 连续两次 OCR 都看不到该倒计时才允许提前结束；否则继续滑动/等待。
+                if (welfareBrowse && elapsed >= nextBrowseCompletionProbe) {
+                    ScreenOcr.Snapshot browseProbe =
+                            captureOcrV45(suPath, "福利浏览倒计时确认");
+                    String browseText = combinedTextV45(null, browseProbe);
+                    if (containsBrowseCountdownV4433(browseText)) {
+                        browseCompletionMisses = 0;
+                        diagnostic("[福利浏览V4.43.3] 任务倒计时仍存在，继续等待："
+                                + extractBrowseCountdownV4433(browseText));
+                    } else {
+                        browseCompletionMisses++;
+                        diagnostic("[福利浏览V4.43.3] 未识别到倒计时，确认次数="
+                                + browseCompletionMisses + "/2");
+                        if (browseCompletionMisses >= 2 && elapsed >= 16000L) {
+                            diagnostic("[福利浏览V4.43.3] ✅ 倒计时已消失，提前结束等待");
+                            break;
+                        }
+                    }
+                    nextBrowseCompletionProbe += 1000L;
                 }
             }
 
