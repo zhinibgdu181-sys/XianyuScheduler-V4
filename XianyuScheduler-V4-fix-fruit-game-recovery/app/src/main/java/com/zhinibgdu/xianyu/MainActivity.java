@@ -509,7 +509,9 @@ public class MainActivity extends Activity {
     }
 
     private void triggerLearningMode() {
-        if (TaskExecutor.isRunning()) {
+        Toast.makeText(this, "真人学习模块已移除，请使用自动任务", Toast.LENGTH_SHORT).show();
+        return;
+        /*if (TaskExecutor.isRunning()) {
             setStatusMessage("当前已有运行实例，请先停止当前任务。");
             Toast.makeText(this, "已有任务正在运行", Toast.LENGTH_SHORT).show();
             return;
@@ -531,7 +533,7 @@ public class MainActivity extends Activity {
             setStatusMessage("启动学习模式失败：" + t.getClass().getSimpleName()
                     + "：" + t.getMessage());
             Toast.makeText(this, "启动学习模式失败", Toast.LENGTH_LONG).show();
-        }
+        }*/
     }
 
     private void stopLearningMode() {

@@ -284,11 +284,11 @@ public final class TaskExecutor {
     }
 
     public static void runLearning(Context appContext) {
-        runLearning(appContext, null);
+        run(appContext, null);
     }
 
     public static void runLearning(Context appContext, Runnable onComplete) {
-        startRunV412(appContext, onComplete, true);
+        run(appContext, onComplete);
     }
 
     private static synchronized void startRunV412(

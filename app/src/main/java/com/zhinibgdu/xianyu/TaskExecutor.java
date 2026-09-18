@@ -1571,10 +1571,8 @@ public final class TaskExecutor {
             Context ctx
     ) {
 
-        // V4.11: prepare schema, remove duplicate/stale cases, and keep one
-        // canonical record for each identical case.
-        TaskProfileStoreV48.prepareV411();
-        TaskProfileStoreV48.compactUniqueCases();
+        // V4.43: human feature/profile learning removed.
+        // Task execution uses OCR + fixed rules only.
 
         String suPath =
                 findSuPathWithRetry();

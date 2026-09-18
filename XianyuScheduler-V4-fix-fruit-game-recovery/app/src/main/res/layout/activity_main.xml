@@ -458,6 +458,7 @@
                         android:textSize="13sp" />
 
                     <Button
+                        android:visibility="gone"
                         android:id="@+id/learning_button"
                         android:layout_width="match_parent"
                         android:layout_height="50dp"
@@ -469,6 +470,7 @@
                         android:textStyle="bold" />
 
                     <Button
+                        android:visibility="gone"
                         android:id="@+id/learning_stop_button"
                         android:layout_width="match_parent"
                         android:layout_height="46dp"
