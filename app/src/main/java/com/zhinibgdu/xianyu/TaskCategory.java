@@ -2,7 +2,7 @@ package com.zhinibgdu.xianyu;
 
 /** Task routing is decided before any task button is clicked. */
 public enum TaskCategory {
-    ALL("自动任务"), LOCAL("闲鱼本地任务"), VIDEO("视频任务"), GAME("小游戏任务");
+    ALL("自动任务"), LOCAL("闲鱼本地任务"), VIDEO("视频任务"), GAME("小游戏任务"), JUMP("跳转任务");
     public final String label;
     TaskCategory(String label) { this.label = label; }
     public static TaskCategory fromMode(String mode) {
@@ -21,7 +21,7 @@ public enum TaskCategory {
         if (has(n, "支付宝", "蚂蚁庄园", "农场", "芭芭农场", "头条", "天猫",
                 "百亿补贴", "淘宝", "飞猪", "高德", "饿了么", "点淘", "试玩",
                 "淘特", "百度", "大众点评", "美团", "快手", "一淘", "逛逛",
-                "闪购", "领积分", "赚零花", "短视频")) return null;
+                "闪购", "领积分", "赚零花", "短视频")) return JUMP;
 
         if (has(n, "消了还想", "还想消", "点点消", "消不停",
                 "水果", "麻将", "小游戏", "玩1关", "玩游戏")) return GAME;
@@ -34,7 +34,6 @@ public enum TaskCategory {
                 "去浏览福利好物", "浏览福利好物", "访问闲鱼币",
                 "领取闲鱼币", "闲鱼币", "搜一搜", "搜索", "搜商品")) return LOCAL;
 
-        return null;
         return null;
     }
     private static boolean has(String text, String... keys) {
