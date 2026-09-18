@@ -28,7 +28,7 @@ android {
     signingConfigs {
         create("stable") {
             if (signingPropsFile.exists()) {
-                storeFile = file(signingProps["storeFile"] as String)
+                storeFile = rootProject.file(signingProps["storeFile"] as String)
                 storePassword = signingProps["storePassword"] as String
                 keyAlias = signingProps["keyAlias"] as String
                 keyPassword = signingProps["keyPassword"] as String
