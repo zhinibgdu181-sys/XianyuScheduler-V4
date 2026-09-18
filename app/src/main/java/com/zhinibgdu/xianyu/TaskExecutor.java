@@ -192,6 +192,9 @@ public final class TaskExecutor {
     }
 
     private static volatile TaskCategory activeCategory = TaskCategory.ALL;
+    // V4.43.8: a category may finish scanning without actually being complete.
+    // Keep this result separate so execute() never returns to the scheduler app on an unresolved category.
+    private static volatile boolean lastCategoryExhaustedV438 = false;
 
     public static String getActiveCategoryLabel() {
         return activeCategory.label;
@@ -252,7 +255,7 @@ public final class TaskExecutor {
         }, "XianyuTask").start();
     }
 
-    private static void returnToApp(Context ctx) {
+    private static void returnToApp(Context ctx, String suPath) {
         if (ctx == null) return;
         try {
             Intent launch = ctx.getPackageManager().getLaunchIntentForPackage(MODULE_PACKAGE);
@@ -266,7 +269,20 @@ public final class TaskExecutor {
                             | Intent.FLAG_ACTIVITY_SINGLE_TOP
             );
             ctx.startActivity(launch);
-            diagnostic("[完成] 任务执行完毕，已返回本 APP");
+            diagnostic("[完成] 所有任务分类均已确认完成，正在返回定时任务 APP");
+
+            // startActivity() 只是发起启动请求，不能证明目标已经成为前台。
+            // 必须实际轮询前台包名，确认 com.zhinibgdu.xianyu 后才能记录“已返回”。
+            long deadline = SystemClock.elapsedRealtime() + 5000L;
+            while (!userAborted && SystemClock.elapsedRealtime() < deadline) {
+                String fg = getFg(suPath, false);
+                if (MODULE_PACKAGE.equals(fg)) {
+                    diagnostic("[完成] 已确认返回定时任务 APP：" + MODULE_PACKAGE);
+                    return;
+                }
+                sleepAbortableV48(180L);
+            }
+            diagnostic("[完成] ⚠️ 已发起返回定时任务 APP，但 5 秒内未确认其处于前台");
         } catch (Throwable t) {
             diagnostic("返回本 APP 失败", t);
         }
@@ -410,6 +426,7 @@ public final class TaskExecutor {
         }
 
         int completed = 0;
+        boolean allEnabledCategoriesFinished = true;
         TaskCategory requested = activeCategory;
         TaskCategory[] categories = requested == TaskCategory.ALL
                 ? new TaskCategory[]{TaskCategory.LOCAL, TaskCategory.VIDEO, TaskCategory.GAME, TaskCategory.JUMP}
@@ -422,11 +439,16 @@ public final class TaskExecutor {
             notifyTask(ctx, activeCategory.label, "正在扫描任务");
             if (i > 0 && !resetTaskPanelTop(suPath)) break;
             completed += scanAndExecuteTasks(suPath, ctx);
+            if (!lastCategoryExhaustedV438 && !userAborted && !gameIncompleteHoldV421) {
+                allEnabledCategoriesFinished = false;
+                diagnostic("[任务分类] " + activeCategory.label + " 尚未确认完成，禁止提前返回定时任务 APP");
+                break;
+            }
         }
 
-        // 所有已开启分类执行完毕后，自动回到本 APP；随后前台服务在 finally 中停止。
-        if (!userAborted && !gameIncompleteHoldV421) {
-            returnToApp(ctx);
+        // 只有所有已开启分类都明确确认“没有更多未完成任务”后，才返回定时任务 APP。
+        if (!userAborted && !gameIncompleteHoldV421 && allEnabledCategoriesFinished) {
+            returnToApp(ctx, suPath);
         }
 
         diagnostic(
@@ -1594,6 +1616,7 @@ public final class TaskExecutor {
         int repeatedViewport = 0;
         int consecutiveEmptyCandidateScans = 0;
         boolean categoryExhausted = false;
+        boolean categoryBlockedByUnfinishedTask = false;
 
         for (int pass = 0; pass < 30; pass++) {
 
@@ -1682,7 +1705,9 @@ public final class TaskExecutor {
             // OCR 可能只识别出当前屏幕的一部分按钮。即使已经有 OCR 候选，
             // 也补做一次 XML 候选合并，避免“还有未完成任务但 OCR 漏掉了按钮”
             // 时直接把当前分类判定为没有任务。
-            if (xml == null && !candidates.isEmpty()) {
+            if (xml == null) {
+                // OCR 漏掉整屏按钮时，必须仍然做一次 XML 兜底；不能因为 OCR=0
+                // 连续几次就把分类误判为完成。
                 xml = dumpUi(suPath);
             }
             if (xml != null) {
@@ -1725,9 +1750,11 @@ public final class TaskExecutor {
             TaskCandidate target = null;
             int targetPriority = Integer.MAX_VALUE;
 
+            boolean hasCurrentCategoryUnfinished = false;
             for (TaskCandidate c : candidates) {
                 if (c == null || c.bounds().isEmpty()) continue;
                 if (TaskCategory.classify(c.name) != activeCategory) continue;
+                hasCurrentCategoryUnfinished = true;
 
                 if (shouldSkip(c.name)) {
                     diagnostic("[跳过] " + c.name);
@@ -1747,11 +1774,14 @@ public final class TaskExecutor {
                 int maxAttempts = maxAttemptsForTaskV46(c.name, c.isClaimReward);
 
                 if (attempts >= maxAttempts) {
-                    diagnostic("[跳过] 已达到本轮尝试上限 "
+                    categoryBlockedByUnfinishedTask = true;
+                    diagnostic("[阻塞] 未完成任务已达到本轮尝试上限，不能把分类当成完成：" 
                             + attempts + "/" + maxAttempts + "：" + c.name);
                     continue;
                 }
 
+                // executed 只表示“已验证成功”的任务。失败/未验证任务绝不能
+                // 因为曾经点击过一次就永久排除，否则会造成“任务还在，但扫描认为没任务”。
                 if (!isRepeatableTaskV46(c.name)
                         && executed.contains(c.key())) {
                     continue;
@@ -1765,6 +1795,11 @@ public final class TaskExecutor {
             }
 
             if (target == null) {
+                if (hasCurrentCategoryUnfinished && categoryBlockedByUnfinishedTask) {
+                    diagnostic("[任务分类] 检测到仍未完成的 " + activeCategory.label
+                            + " 任务，但本轮尝试已耗尽；禁止宣称分类完成，也禁止返回定时任务 APP");
+                    break;
+                }
                 StringBuilder viewport = new StringBuilder();
                 for (TaskCandidate c : candidates) viewport.append(c.key()).append('|');
                 String fingerprint = viewport.toString();
@@ -1794,7 +1829,6 @@ public final class TaskExecutor {
                     targetAttemptKey,
                     attemptsByTask.getOrDefault(targetAttemptKey, 0) + 1
             );
-            executed.add(target.key());
 
             diagnostic("[任务] " + target.name
                     + " / claim=" + target.isClaimReward
@@ -1858,6 +1892,9 @@ public final class TaskExecutor {
             long elapsed = SystemClock.elapsedRealtime() - taskStart;
 
             if (verification.verified) {
+                // 只有真正验证完成后才加入 executed。这样点击失败或验证失败的任务
+                // 会在后续扫描中继续被发现、滚动到并重试。
+                executed.add(target.key());
                 flow.move(TaskRunStateV411.VERIFIED, verification.reason);
                 completed++;
                 TaskProfileStoreV48.recordSuccess(target.name, elapsed);
@@ -1909,6 +1946,7 @@ public final class TaskExecutor {
         }
 
         if (categoryExhausted) {
+            lastCategoryExhaustedV438 = true;
             String finishedMessage = activeCategory.label
                     + "已完成：当前分类没有更多可执行任务，本分类已验证完成 "
                     + completed + " 个任务";
