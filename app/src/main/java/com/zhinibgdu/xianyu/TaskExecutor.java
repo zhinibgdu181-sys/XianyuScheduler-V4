@@ -471,6 +471,12 @@ public final class TaskExecutor {
             return false;
         }
 
+        // 闲鱼启动后偶尔会先展示全屏广告。先专门处理广告页，再开始导航，
+        // 避免把广告当成未知子页面或直接误点右下角“我的”。
+        if (!dismissOpeningAdV47(suPath)) {
+            diagnostic("[广告恢复] 启动广告处理失败，继续使用安全页面探测");
+        }
+
         PageProbeV411 page;
 
         // InitActivity can restore a product detail page. Identify it before tapping.
@@ -619,6 +625,59 @@ public final class TaskExecutor {
 
         diagnostic("❌ [极速导航V4.26] 无法打开‘得骰子赚闲鱼币’任务面板");
         return false;
+    }
+
+    private static boolean dismissOpeningAdV47(String suPath) {
+        if (userAborted || !ensureFg(suPath)) return false;
+
+        long end = SystemClock.elapsedRealtime() + 6500L;
+        int pass = 0;
+        boolean sawAd = false;
+
+        while (SystemClock.elapsedRealtime() < end) {
+            if (userAborted || physicalTouchDetected) return false;
+
+            ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "启动广告检查#" + (++pass));
+            String text = ocr == null ? "" : ocr.fullText;
+            if (text == null) text = "";
+
+            boolean adLike = text.contains("跳转至详情页面或第三方应用")
+                    || (text.contains("滑动或点击") && text.contains("第三方应用"))
+                    || text.contains("跳过广告")
+                    || text.contains("广告");
+            if (!adLike) {
+                return true;
+            }
+
+            sawAd = true;
+
+            // 最优先点击广告右上角的“跳过广告 N”。
+            if (clickOcrTextAnyV45(suPath, ocr, false, "跳过广告")) {
+                diagnostic("[广告恢复] 已点击‘跳过广告’");
+                sleepAbortableV48(500L);
+                ScreenOcr.Snapshot after = captureOcrV45(suPath, "跳过广告后检查");
+                String afterText = after == null ? "" : after.fullText;
+                if (afterText == null) afterText = "";
+                if (!afterText.contains("跳转至详情页面或第三方应用")
+                        && !afterText.contains("滑动或点击")) {
+                    return true;
+                }
+                continue;
+            }
+
+            // 没有跳过按钮时先等待广告倒计时结束，不直接点击广告主体。
+            if (!sleepAbortableV48(700L)) return false;
+        }
+
+        if (sawAd) {
+            diagnostic("[广告恢复] 广告页在等待窗口内未出现可点击的‘跳过广告’，执行一次返回");
+            if (!ensureFg(suPath)) return false;
+            RootResult back = rootWithPath(suPath, "input keyevent KEYCODE_BACK");
+            if (back.exitCode != 0 || !sleepAbortableV48(650L)) return false;
+            return ensureFg(suPath);
+        }
+
+        return true;
     }
 
     private static boolean isFastNavKnownPageV420(PageKindV411 kind) {
