@@ -1679,8 +1679,25 @@ public final class TaskExecutor {
             List<TaskCandidate> candidates =
                     findTaskCandidatesOcrV45(taskOcr);
 
-            if (candidates.isEmpty() && xml != null) {
-                candidates = findTaskCandidates(xml);
+            // OCR 可能只识别出当前屏幕的一部分按钮。即使已经有 OCR 候选，
+            // 也补做一次 XML 候选合并，避免“还有未完成任务但 OCR 漏掉了按钮”
+            // 时直接把当前分类判定为没有任务。
+            if (xml == null && !candidates.isEmpty()) {
+                xml = dumpUi(suPath);
+            }
+            if (xml != null) {
+                List<TaskCandidate> xmlCandidates = findTaskCandidates(xml);
+                if (!xmlCandidates.isEmpty()) {
+                    Set<String> candidateKeys = new HashSet<>();
+                    for (TaskCandidate existing : candidates) {
+                        if (existing != null) candidateKeys.add(existing.key());
+                    }
+                    for (TaskCandidate extra : xmlCandidates) {
+                        if (extra != null && candidateKeys.add(extra.key())) {
+                            candidates.add(extra);
+                        }
+                    }
+                }
             }
 
             diagnostic("候选任务=" + candidates.size());
@@ -1753,8 +1770,11 @@ public final class TaskExecutor {
                 String fingerprint = viewport.toString();
                 repeatedViewport = fingerprint.equals(exhaustedViewport) ? repeatedViewport + 1 : 0;
                 exhaustedViewport = fingerprint;
-                if (repeatedViewport >= 1) {
-                    diagnostic("[任务分类] 检测到任务列表连续两次相同，已滑到底部；停止无效继续滑动："
+                // 页面指纹相同只说明本次滑动没有带来新画面，不能立刻
+                // 等同于“本分类全部完成”。给 OCR/XML 再留两轮确认机会，
+                // 防止某一帧漏掉未完成任务按钮后提前结束。
+                if (repeatedViewport >= 2) {
+                    diagnostic("[任务分类] 连续多次扫描仍无可执行任务，确认当前分类没有更多可执行任务："
                             + activeCategory.label);
                     categoryExhausted = true;
                     break;
