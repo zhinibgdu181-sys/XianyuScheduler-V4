@@ -410,6 +410,33 @@
                         android:textSize="15sp"
                         android:textStyle="bold" />
 
+                    <Switch
+                        android:id="@+id/switch_local_task"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="10dp"
+                        android:text="启用咸鱼本地任务"
+                        android:textColor="#374151"
+                        android:textSize="14sp" />
+
+                    <Switch
+                        android:id="@+id/switch_video_task"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="4dp"
+                        android:text="启用视频任务"
+                        android:textColor="#374151"
+                        android:textSize="14sp" />
+
+                    <Switch
+                        android:id="@+id/switch_game_task"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="4dp"
+                        android:text="启用小游戏任务"
+                        android:textColor="#374151"
+                        android:textSize="14sp" />
+
                     <Button
                         android:id="@+id/test_button"
                         android:layout_width="match_parent"
