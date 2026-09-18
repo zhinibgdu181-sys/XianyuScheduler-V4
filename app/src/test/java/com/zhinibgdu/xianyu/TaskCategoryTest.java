@@ -10,9 +10,10 @@ public class TaskCategoryTest {
         assertEquals(TaskCategory.VIDEO, TaskCategory.classify("观看视频领取奖励 (0/3)"));
         assertEquals(TaskCategory.GAME, TaskCategory.classify("去消了还想消玩1关"));
         assertEquals(TaskCategory.GAME, TaskCategory.classify("去点点消不停玩１关"));
-        assertNull(TaskCategory.classify("去逛一逛芭芭农场"));
-        assertNull(TaskCategory.classify("去支付宝农场领水果"));
-        assertNull(TaskCategory.classify("点闪购商品领叠加红包"));
+        assertEquals(TaskCategory.JUMP, TaskCategory.classify("去逛一逛芭芭农场"));
+        assertEquals(TaskCategory.JUMP, TaskCategory.classify("去支付宝农场领水果"));
+        assertEquals(TaskCategory.JUMP, TaskCategory.classify("点闪购商品领叠加红包"));
+        assertEquals(TaskCategory.JUMP, TaskCategory.classify("去妈蚁庄园逛一逛"));
     }
     @Test public void videoRewardDoesNotLaunchGameSolver() {
         assertEquals(TaskCategory.VIDEO, TaskCategory.classify("看视频领取小游戏奖励"));
