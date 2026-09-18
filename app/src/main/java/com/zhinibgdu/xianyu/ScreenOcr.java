@@ -173,6 +173,11 @@ final class ScreenOcr {
             this.welfareFishVisible = welfareFishVisible;
         }
 
+        /** Backward-compatible constructor for existing unit-test fixtures. */
+        Snapshot(String fullText, List<Item> items, int width, int height) {
+            this(fullText, items, width, height, false);
+        }
+
         static Snapshot empty() {
             return new Snapshot("", Collections.emptyList(), 0, 0, false);
         }
