@@ -74,10 +74,10 @@ public class FruitGameRecoveryTest {
         return FruitGameSolver.solveOneRound(context, "su", host);
     }
 
-    @Test public void lowDetectionWaitsForThreeFreshFramesBeforeStopping() {
+    @Test public void lowDetectionWaitsForFiveFreshFramesBeforeStopping() {
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
-        assertEquals(4, captures); // original + three retries
-        assertEquals(3, host.countLogs("[无动作V4.42]"));
+        assertEquals(6, captures); // original + five no-action retries
+        assertEquals(5, host.countLogs("[无动作V4.42]"));
         assertEquals(0, host.taps);
     }
 
@@ -93,10 +93,10 @@ public class FruitGameRecoveryTest {
     @Test public void threeScreenshotFailuresCanRecoverOnFourthCapture() {
         frames.addAll(Arrays.asList(null, null, null));
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
-        assertEquals(7, captures);
+        assertEquals(9, captures);
         assertEquals(3, host.countLogs("[恢复V4.42] 重新截图"));
         assertEquals(1, host.countLogs("[恢复V4.42] 已重新确认"));
-        assertEquals(3, host.countLogs("[无动作V4.42]"));
+        assertEquals(5, host.countLogs("[无动作V4.42]"));
     }
 
     @Test public void fourthConsecutiveScreenshotFailureStops() {
@@ -110,7 +110,7 @@ public class FruitGameRecoveryTest {
     @Test public void successfulObservationResetsRecoveryBudget() {
         frames.addAll(Arrays.asList(null, null, null, bitmap(SKY), null, null, null));
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
-        assertEquals(10, captures);
+        assertEquals(12, captures);
         assertEquals(6, host.countLogs("[恢复V4.42] 重新截图"));
         assertEquals(2, host.countLogs("[恢复V4.42] 已重新确认"));
     }
@@ -122,7 +122,7 @@ public class FruitGameRecoveryTest {
         };
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
         assertEquals(1, host.countLogs("[恢复V4.42] 进入确认重试"));
-        assertEquals(4, captures);
+        assertEquals(6, captures);
     }
 
     @Test public void persistentEntryOcrExceptionIsBounded() {
@@ -135,7 +135,7 @@ public class FruitGameRecoveryTest {
     @Test public void missingRemainingBaselineRecoversBeforeDecisions() {
         host.ocr = reason -> snapshot(host.ocrCalls == 1 ? "第1关 消除 打乱" : GAME);
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
-        assertEquals(4, captures);
+        assertEquals(6, captures);
         assertEquals(0, host.taps);
     }
 
