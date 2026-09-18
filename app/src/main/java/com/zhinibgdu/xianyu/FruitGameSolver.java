@@ -8,9 +8,11 @@ import android.os.SystemClock;
 import java.io.File;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -57,6 +59,7 @@ final class FruitGameSolver {
     private static final int MAX_PAIR_ACTIONS = 130;
     private static final int MAX_RECOVERY_RETRY = 3;
     private static final int MAX_NO_ACTION_RETRY = 3;
+    private static final long BLOCKED_POSITION_TTL_MS = 12_000L;
 
     // V4.38.0：三槽二消模型。槽位在中央竖井中从下往上堆叠。
     // 这些比例来自用户提供的 709x1536 连续实机截图，并按屏幕尺寸归一化。
@@ -101,7 +104,7 @@ final class FruitGameSolver {
     };
 
     private static final Pattern REMAINING_PATTERN =
-            Pattern.compile("剩余\\s*([0-9]{1,4})");
+            Pattern.compile("剩(?:余|餘|馀|小|数)?\\s*[:：]?\\s*(\\d{1,4})");
     private static final Pattern PERCENT_PATTERN =
             Pattern.compile("([0-9]{1,3})\\s*%");
 
@@ -206,10 +209,12 @@ final class FruitGameSolver {
         // 本局被证实“点击后仍停在原位”的水果位置。棋盘未变化时不再点它；
         // 一旦有一对成功消除、棋盘重新下落，就清空这些旧位置。
         Set<String> blockedPositions = new HashSet<>();
+        Map<String, Long> blockedPositionTtl = new HashMap<>();
 
         while (!host.aborted()
                 && pairActions < MAX_PAIR_ACTIONS
                 && SystemClock.elapsedRealtime() - started < MAX_ROUND_MS) {
+            pruneBlockedPositions(blockedPositions, blockedPositionTtl, SystemClock.elapsedRealtime());
 
             GameFrame frame = null;
             PostTapObservation ownedAfterA = null;
@@ -333,8 +338,6 @@ final class FruitGameSolver {
                         : " / 无安全动作"));
 
                 if (trayChoice == null && pair == null && safePush == null) {
-                    // Log the original decision frame, before recycling or OCR can change it.
-                    // Keep diagnostics bounded; do not change matching or retry decisions.
                     if (noActionRetry == 0 || noActionRetry == MAX_NO_ACTION_RETRY) {
                         logNoActionTrayDiagnostics(host, frame, tray, objects, drop, blockedPositions);
                     }
@@ -417,6 +420,7 @@ final class FruitGameSolver {
                         pairActions++;
                         remaining = verify.afterRemaining;
                         blockedPositions.clear();
+                        blockedPositionTtl.clear();
                         host.log("[水果V4.38.0] ✅ 槽位二消确认：剩余 "
                                 + beforeRemaining + "→" + remaining
                                 + " / 槽位 " + beforeTrayCount + "→" + afterTrayCount);
@@ -432,10 +436,9 @@ final class FruitGameSolver {
                         continue;
                     }
                     if (afterTrayCount == beforeTrayCount) {
-                        blockedPositions.add(positionKeyV4361(target));
+                        markBlockedPosition(blockedPositions, blockedPositionTtl, target);
                         host.log("[槽位V4.38.0] 点击后槽位未变化；该位置加入本轮黑名单，不连续点击");
                         if (beforeTrayCount >= TRAY_CAPACITY) {
-                            // 满槽状态下一次错误点击可能已经触发失败界面，不做第二次尝试。
                             return Result.SAFE_STOP_DIRTY;
                         }
                         continue;
@@ -468,7 +471,6 @@ final class FruitGameSolver {
                         if (host.aborted()) return Result.ABORTED;
                         throw new RecoverableObservationException("水果点击发送失败，重新观察真实槽位");
                     }
-                    // 恢复V4.38的稳定等待；不再使用V4.40的200ms级激进等待。
                     if (!host.sleep(850L, 1050L)) return Result.ABORTED;
 
                     PostTapObservation afterPush = observeTrayAfterTap(
@@ -487,7 +489,6 @@ final class FruitGameSolver {
                         continue;
                     }
 
-                    // 如果候选其实和当前TOP同类，视觉分类可能漏掉，但真实槽位会减少1。
                     if (beforeTrayCount == 1 && afterTrayCount == 0) {
                         RemainingVerification verify = verifyPairRemaining(
                                 host, beforeRemaining, pairActions + 1, "压栈意外命中TOP");
@@ -497,13 +498,14 @@ final class FruitGameSolver {
                         pairActions++;
                         remaining = verify.afterRemaining;
                         blockedPositions.clear();
+                        blockedPositionTtl.clear();
                         host.log("[栈模型V4.41.0] ✅ 实际发生TOP二消：剩余 "
                                 + beforeRemaining + "→" + remaining);
                         continue;
                     }
 
                     if (afterTrayCount == beforeTrayCount) {
-                        blockedPositions.add(positionKeyV4361(target));
+                        markBlockedPosition(blockedPositions, blockedPositionTtl, target);
                         host.log("[栈模型V4.41.0] 压栈点击未生效；坐标加入黑名单，重新规划");
                         continue;
                     }
@@ -563,12 +565,13 @@ final class FruitGameSolver {
                     pairActions++;
                     remaining = verify.afterRemaining;
                     blockedPositions.clear();
+                    blockedPositionTtl.clear();
                     host.log("[水果V4.38.0] ✅ A直接与原槽水果二消；取消计划B");
                     continue;
                 }
 
                 if (afterATrayCount == beforeTrayCount) {
-                    blockedPositions.add(positionKeyV4361(pair.a));
+                    markBlockedPosition(blockedPositions, blockedPositionTtl, pair.a);
                     safeRecycle(afterAObs.frame.bitmap);
                     host.log("[点击验证V4.38.0] A未进入槽位 / 槽位仍=" + beforeTrayCount
                             + " / 对象基线=" + beforeObjectCount
@@ -647,6 +650,7 @@ final class FruitGameSolver {
                     pairActions++;
                     remaining = verify.afterRemaining;
                     blockedPositions.clear();
+                    blockedPositionTtl.clear();
                     host.log("[水果V4.38.0] ✅ 棋盘对子确认：剩余 "
                             + beforeRemaining + "→" + remaining
                             + " / 槽位 " + beforeTrayCount + "→" + afterBTrayCount);
@@ -654,7 +658,7 @@ final class FruitGameSolver {
                 }
 
                 if (afterBTrayCount == beforeTrayCount + 1) {
-                    blockedPositions.add(positionKeyV4361(reacquiredB));
+                    markBlockedPosition(blockedPositions, blockedPositionTtl, reacquiredB);
                     host.log("[槽位V4.38.0] B未完成二消，A仍留在槽中；"
                             + "不再追点，下一轮按真实槽位继续");
                     continue;
@@ -711,6 +715,31 @@ final class FruitGameSolver {
         DISMISSED,
         FAILED,
         ABORTED
+    }
+
+    private static void pruneBlockedPositions(Set<String> blockedPositions,
+                                             Map<String, Long> blockedPositionTtl,
+                                             long nowMs) {
+        if (blockedPositions == null || blockedPositionTtl == null) return;
+        List<String> expired = new ArrayList<>();
+        for (Map.Entry<String, Long> entry : blockedPositionTtl.entrySet()) {
+            if (entry.getValue() <= nowMs) {
+                expired.add(entry.getKey());
+            }
+        }
+        for (String key : expired) {
+            blockedPositions.remove(key);
+            blockedPositionTtl.remove(key);
+        }
+    }
+
+    private static void markBlockedPosition(Set<String> blockedPositions,
+                                            Map<String, Long> blockedPositionTtl,
+                                            FruitObject target) {
+        if (blockedPositions == null || blockedPositionTtl == null || target == null) return;
+        String key = positionKeyV4361(target);
+        blockedPositions.add(key);
+        blockedPositionTtl.put(key, SystemClock.elapsedRealtime() + BLOCKED_POSITION_TTL_MS);
     }
 
     /**
@@ -1266,13 +1295,28 @@ final class FruitGameSolver {
     }
 
     private static int parseRemaining(String text) {
-        Matcher m = REMAINING_PATTERN.matcher(normalize(text));
-        if (!m.find()) return -1;
-        try {
-            return Integer.parseInt(m.group(1));
-        } catch (Throwable ignored) {
-            return -1;
+        String normalized = normalize(text);
+        if (normalized.isEmpty()) return -1;
+
+        Matcher m = REMAINING_PATTERN.matcher(normalized);
+        if (m.find()) {
+            try {
+                return Integer.parseInt(m.group(1));
+            } catch (Throwable ignored) {
+                // fall through to more permissive parsing below
+            }
         }
+
+        // OCR 里经常把“余/餘/馀/小”识别混淆；再兜底一层从“剩”字附近挖数字。
+        Matcher fallback = Pattern.compile("剩(?:余|餘|馀|小|数)?\\s*[:：]?\\s*([0-9]{1,4})")
+                .matcher(normalized);
+        if (fallback.find()) {
+            try {
+                return Integer.parseInt(fallback.group(1));
+            } catch (Throwable ignored) {
+            }
+        }
+        return -1;
     }
 
     private static int parsePercent(String text) {
@@ -1452,7 +1496,7 @@ final class FruitGameSolver {
      * Coarse samples reject candidates cheaply; all foreground samples verify the hit.
      */
     private static void recoverTouchingFruit(List<FruitObject> result, int[] pixels,
-                                            int width, int height, int roiTop, int roiBottom) {
+                                             int width, int height, int roiTop, int roiBottom) {
         List<FruitObject> templates = new ArrayList<>();
         for (FruitObject f : result) {
             boolean duplicate = false;
@@ -1528,7 +1572,7 @@ final class FruitGameSolver {
     }
 
     private static FruitObject observedTemplate(FruitObject t, int[] pixels, int width,
-                                                int x, int y, int bw, int bh) {
+                                                 int x, int y, int bw, int bh) {
         float[] rgb = new float[GRID*GRID*3];
         float[] hist = new float[72];
         boolean[] shape = new boolean[GRID*GRID];
@@ -2430,4 +2474,6 @@ final class FruitGameSolver {
             this.compactness = compactness;
         }
     }
-             }
+
+    private static final boolean ENABLE_FRUIT_DECISION_DEBUG = false;
+}
