@@ -1,11 +1,14 @@
 package com.zhinibgdu.xianyu;
 
-/** An OCR miss or an unexpected count change is not evidence of a cleared slot. */
+/** OCR jitter, a transient miss, or a momentary count bounce should not be treated as proof that no pair was cleared. */
 final class PairVerification {
     private PairVerification() {}
 
     static boolean confirmed(int before, int after) {
-        return before >= 2 && after >= 0 && before - after == 2;
+        if (before < 2 || after < 0 || before <= after) {
+            return false;
+        }
+        return before - after >= 2;
     }
 
     /** True only when a previously visible task row is no longer visible. */
