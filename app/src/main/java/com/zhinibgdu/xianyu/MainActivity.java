@@ -44,7 +44,6 @@ public class MainActivity extends Activity {
     private TextView scheduleStatusText;
     private TextView runtimeStatusText;
     private TextView statusDetailText;
-    private TextView automationFeedbackText;
     private TextView todayDateText;
     private TextView todaySummaryText;
     private TextView todayCompletedText;
@@ -105,7 +104,6 @@ public class MainActivity extends Activity {
         scheduleStatusText = findViewById(R.id.schedule_status_text);
         runtimeStatusText = findViewById(R.id.runtime_status_text);
         statusDetailText = findViewById(R.id.status_detail_text);
-        automationFeedbackText = findViewById(R.id.automation_feedback_text);
         todayDateText = findViewById(R.id.today_date_text);
         todaySummaryText = findViewById(R.id.today_summary_text);
         todayCompletedText = findViewById(R.id.today_completed_text);
@@ -262,7 +260,6 @@ public class MainActivity extends Activity {
 
     private void setStatusMessage(CharSequence message) {
         if (statusDetailText != null) statusDetailText.setText(message);
-        if (automationFeedbackText != null) automationFeedbackText.setText(message);
     }
 
     private void refreshTodayCompleted() {
