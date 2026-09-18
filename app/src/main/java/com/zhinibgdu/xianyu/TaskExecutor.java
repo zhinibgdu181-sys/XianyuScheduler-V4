@@ -56,7 +56,7 @@ public final class TaskExecutor {
                     + "/com.taobao.fleamarket.home.activity.InitActivity";
 
     private static final String NOTIFICATION_CHANNEL =
-            "xianyu_task_v2";
+            "xianyu_task_v3";
 
     private static final int NOTIFICATION_ID =
             18008;
@@ -243,7 +243,7 @@ public final class TaskExecutor {
                 ScreenOcr.close();
                 inBounceTask = false;
                 diagnostic("========== 任务结束 ==========");
-                notifyTask(lastContext, activeCategory.label, userAborted ? "任务已中止" : "任务已结束");
+                notifyTask(lastContext, activeCategory.label, userAborted ? "任务已中止" : "任务已结束，已返回 APP");
                 running = false;
                 if (complete != null) {
                     try { complete.run(); } catch (Throwable t) { diagnostic("完成回调异常", t); }
