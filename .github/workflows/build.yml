@@ -38,6 +38,22 @@ jobs:
           java -version
           gradle --version
 
+      - name: Prepare stable signing
+        if: ${{ secrets.XIANYU_KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_B64: ${{ secrets.XIANYU_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.XIANYU_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.XIANYU_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.XIANYU_KEY_PASSWORD }}
+        run: |
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > xianyu-release.jks
+          cat > signing.properties <<EOF
+          storeFile=xianyu-release.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+
       - name: Build Debug APK
         run: |
           gradle testDebugUnitTest assembleDebug --stacktrace --no-daemon
@@ -49,6 +65,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: xianyu-v4.43.1-debug
+          name: xianyu-v4.43.3-debug
           path: app/build/outputs/apk/**/*.apk
           if-no-files-found: error
