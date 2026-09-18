@@ -100,6 +100,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         LegacyDataCleanup.remove(getApplicationContext());
         setContentView(R.layout.activity_main);
+        applySystemBarInsets();
 
         scheduleStatusText = findViewById(R.id.schedule_status_text);
         runtimeStatusText = findViewById(R.id.runtime_status_text);
@@ -446,6 +447,36 @@ public class MainActivity extends Activity {
             this.suDetected = suDetected;
             this.suPath = suPath;
         }
+    }
+
+    private void applySystemBarInsets() {
+        try {
+            getWindow().setStatusBarColor(0xFFF4F6FA);
+            getWindow().setNavigationBarColor(0xFFF4F6FA);
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+            );
+        } catch (Throwable ignored) {
+        }
+
+        View content = findViewById(android.R.id.content);
+        if (content == null) return;
+        content.setOnApplyWindowInsetsListener((v, insets) -> {
+            int top = 0;
+            int bottom = 0;
+            if (Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets bars = insets.getInsets(
+                        android.view.WindowInsets.Type.systemBars());
+                top = bars.top;
+                bottom = bars.bottom;
+            } else {
+                top = insets.getSystemWindowInsetTop();
+                bottom = insets.getSystemWindowInsetBottom();
+            }
+            v.setPadding(v.getPaddingLeft(), top, v.getPaddingRight(), bottom);
+            return insets;
+        });
+        content.requestApplyInsets();
     }
 
     private void showDataPaths() {
