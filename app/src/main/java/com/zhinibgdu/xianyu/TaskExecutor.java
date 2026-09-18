@@ -229,7 +229,7 @@ public final class TaskExecutor {
         gameIncompleteTaskV421 = "";
         invalidateOcrCacheV411();
         lastTaskPanelOcrAtV415 = 0L;
-        diagnostic("========== " + activeCategory.label + "开始 · V4.43.0 ==========");
+        diagnostic("========== " + activeCategory.label + "开始 · V4.43.1 ==========");
         notifyTask(lastContext, activeCategory.label, "任务已启动");
         new Thread(() -> {
             try {
@@ -447,30 +447,15 @@ public final class TaskExecutor {
 
         PageProbeV411 page;
 
-        // V4.23 fresh-launch fast path:
-        // 1) optimistically tap the stable bottom "我的" once;
-        // 2) perform only ONE OCR probe instead of looping 2-3 times;
-        // 3) if InitActivity restored a deep Xianyu sub-page, recover one level
-        //    at a time with an edge-back and re-probe. This keeps the common
-        //    HOME -> MINE path fast without assuming InitActivity always lands HOME.
+        // InitActivity can restore a product detail page. Identify it before tapping.
         if (freshLaunchV421) {
-            if (!paceSleepV415(220L, 340L)) return false;
-            diagnostic("[极速导航V4.26] 新启动闲鱼，先尝试一次底部‘我的’快速点击");
-            boolean tappedMine = tapByRatioV43(
-                    suPath, 0.885f, 0.950f, "极速导航V4.23-首页-我的", true);
-            if (tappedMine && !paceSleepV415(420L, 620L)) return false;
-
-            page = probePageV411(suPath, "极速导航V4.23/新启动单次确认");
-
-            // If a previous deep H5/game/treasure page was restored, the bottom
-            // navigation tap may be meaningless. Do not wait through three OCR
-            // rounds; back out at most twice and classify after each step.
+            if (!sleepAbortableV48(500L)) return false;
+            invalidateOcrCacheV411();
+            page = probePageV411(suPath, "启动后先确认当前页面");
             int deepRecovery = 0;
             while (!userAborted
                     && page != null
-                    && (page.kind == PageKindV411.UNKNOWN_XIANYU
-                        || page.kind == PageKindV411.FRUIT_PAIR_GAME
-                        || page.kind == PageKindV411.MAHJONG_PAIR_GAME)
+                    && page.kind == PageKindV411.UNKNOWN_XIANYU
                     && deepRecovery < 2) {
                 deepRecovery++;
                 diagnostic("[极速导航V4.26] 新启动恢复到旧子页面：" + page.kind
@@ -1733,6 +1718,9 @@ public final class TaskExecutor {
             }
 
             if (userAborted) break;
+            if (ChannelGoodsTask.matches(target.name) && !executionReturned) {
+                attemptsByTask.put(targetAttemptKey, maxAttemptsForTaskV46(target.name, target.isClaimReward));
+            }
 
             flow.move(TaskRunStateV411.VERIFYING,
                     "executionReturned=" + executionReturned);
@@ -2731,6 +2719,78 @@ public final class TaskExecutor {
         diagnostic("[游戏独占V4.26] UNLOCK " + old + " / " + taskName);
     }
 
+    private static boolean executeChannelGoodsTask(String suPath) {
+        return ChannelGoodsTask.run(new ChannelGoodsTask.Host() {
+            final Set<String> visited = new HashSet<>();
+            ScreenOcr.Snapshot list = ScreenOcr.Snapshot.empty();
+
+            ScreenOcr.Snapshot fresh(String reason) {
+                invalidateOcrCacheV411();
+                return captureOcrV45(suPath, "好物点击/" + reason);
+            }
+
+            @Override public boolean aborted() { return userAborted || physicalTouchDetected; }
+            @Override public void log(String message) { diagnostic("[好物点击] " + message); }
+
+            @Override public int remaining() {
+                if (aborted() || !ensureFg(suPath)) return -1;
+                // Allow the channel/counter to finish loading before acting.
+                for (int i = 0; i < 3; i++) {
+                    if (!sleepAbortableV48(650L)) return -1;
+                    list = fresh("读取剩余数量");
+                    int n = ChannelGoodsTask.remaining(list.fullText);
+                    if (n >= 0) return n;
+                }
+                return -1;
+            }
+
+            @Override public boolean openNextProduct() {
+                for (int page = 0; page < 4 && !aborted(); page++) {
+                    if (ChannelGoodsTask.remaining(list.fullText) < 0) return false;
+                    for (ScreenOcr.Item item : list.items) {
+                        String key = item.text.replaceAll("\\s+", "");
+                        if (!ChannelGoodsTask.productTitle(key) || visited.contains(key)) continue;
+                        if (item.bounds.left < 0 || item.bounds.right > list.width
+                                || item.bounds.top < list.height * 0.22f
+                                || item.bounds.bottom > list.height * 0.91f) continue;
+                        if (!ensureFg(suPath) || aborted()) return false;
+                        visited.add(key);
+                        log("打开商品：" + key);
+                        RootResult tap = rootWithPath(suPath, "input tap " + item.centerX() + " " + item.centerY());
+                        if (tap.exitCode != 0) return false;
+                        for (int retry = 0; retry < 3; retry++) {
+                            if (!sleepAbortableV48(900L) || !ensureFg(suPath)) return false;
+                            ScreenOcr.Snapshot detail = fresh("确认商品详情");
+                            if (ChannelGoodsTask.remaining(detail.fullText) < 0
+                                    && containsAny(detail.fullText, "我想要", "立即购买", "聊一聊")) {
+                                log("已进入商品详情，停留后返回；不操作购买或聊天按钮");
+                                return sleepAbortableV48(1800L);
+                            }
+                        }
+                        log("未能确认商品详情，停止本轮");
+                        return false;
+                    }
+                    if (page == 3) break;
+                    if (!ensureFg(suPath) || aborted()) return false;
+                    int x = list.width / 2;
+                    RootResult swipe = rootWithPath(suPath, "input swipe " + x + " "
+                            + list.height * 4 / 5 + " " + x + " " + list.height * 2 / 5 + " 420");
+                    if (swipe.exitCode != 0 || !sleepAbortableV48(700L)) return false;
+                    list = fresh("查找未访问商品");
+                }
+                log("没有可靠识别到新的商品标题，停止点击");
+                return false;
+            }
+
+            @Override public boolean returnToList() {
+                if (aborted() || !ensureFg(suPath)) return false;
+                // Exactly one back from a verified detail page. No blind repeated back.
+                return preferredRightBackOnceV410(suPath, "商品详情返回频道")
+                        && sleepAbortableV48(800L);
+            }
+        });
+    }
+
     private static boolean executeSingleTask(
             String suPath,
             String taskName
@@ -2741,6 +2801,7 @@ public final class TaskExecutor {
         if (TaskCategory.classify(taskName) == TaskCategory.VIDEO) {
             return executeVideoTaskPolling(suPath, taskName);
         }
+        if (ChannelGoodsTask.matches(taskName)) return executeChannelGoodsTask(suPath);
         GameDispatchV420 gameDispatch = resolveGameDispatchV420(suPath, taskName);
         if (gameDispatch == GameDispatchV420.FRUIT) {
             diagnostic("[页面分流V4.20] " + taskName + " → FRUIT_PAIR_GAME");
@@ -4235,9 +4296,11 @@ public final class TaskExecutor {
         if (snapshot == null || snapshot.isEmpty()) return false;
 
         String[] popupTexts = {
-                "开心收下", "立即领取", "收下", "我知道了", "知道啦", "关闭"
+                "我知道了", "知道啦", "关闭"
         };
         for (String t : popupTexts) {
+            ScreenOcr.Item acknowledgement = snapshot.findBest(t);
+            if (acknowledgement == null || !t.equals(acknowledgement.text.trim())) continue;
             if (clickOcrTextAnyV45(suPath, snapshot, false, t)) {
                 diagnostic("[弹窗] OCR快速关闭：" + t);
                 return true;
@@ -4246,22 +4309,7 @@ public final class TaskExecutor {
         return false;
     }
 
-    /**
-     * V4.8.1：广告/外部页退出使用“侧边返回手势”，绝不使用上滑。
-     *
-     * 用户设备使用全面屏手势：
-     * - 左/右侧边向屏幕内滑 = 返回
-     * - 底部向上滑 = 回桌面
-     *
-     * 因此这里连续执行两次左右侧边返回手势。
-     * 第一次从左侧边缘向右滑，第二次从右侧边缘向左滑。
-     */
-    /**
-     * V4.11 条件式系统返回（沿用 V4.10 方法名以减少改动面）。
-     * 默认使用用户最熟悉的动作：从最右屏幕边缘、约 75% 屏高向内滑。
-     * 每次手势后立即检查：若已回到闲鱼任务面板就停止，绝不盲目再退一级。
-     * 默认优先 RIGHT_RIGHT；若两次右侧返回仍未恢复，再用左侧边缘兜底。
-     */
+    /** One edge-back gesture; callers verify the resulting page before continuing. */
     private static boolean preferredRightBackOnceV410(String suPath, String reason) {
         if (userAborted) return false;
         int[] screen = getScreenSizeV43(suPath);
@@ -4280,69 +4328,21 @@ public final class TaskExecutor {
     private static boolean conditionalBackRecoveryV410(
             String suPath, String taskName, String reason
     ) {
-        if (userAborted) return false;
-        if (gameSolverOwnsPageV420) {
-            diagnostic("[游戏独占V4.26] 拦截条件返回：" + reason
-                    + " / owner=" + gameSolverKindV420);
-            return false;
-        }
-        int[] screen = getScreenSizeV43(suPath);
-        if (screen == null) return false;
-        int width = screen[0], height = screen[1];
-        int y = Math.round(height * 0.75f);
-        int rightStart = Math.max(1, width - 2);
-        int rightEnd = Math.round(width * 0.76f);
-        int leftStart = 1;
-        int leftEnd = Math.round(width * 0.24f);
-
-        // 若调用时已经在任务页，直接成功，不能再返回。
-        if (isTaskPanelNowV410(suPath)) {
-            diagnostic("[条件返回V4.11] 已在任务面板，不执行返回：" + reason);
-            return true;
-        }
-
-        diagnostic("[条件返回V4.11] " + reason
-                + " / 首选=右侧最边缘 / y=" + y + "(~75%H)");
-
-        for (int i = 1; i <= 2; i++) {
+        if (userAborted || gameSolverOwnsPageV420 || gameIncompleteHoldV421) return false;
+        for (int i = 0; i <= 3; i++) {
             if (userAborted) return false;
-            RootResult r = rootWithPath(suPath, "input swipe "
-                    + rightStart + " " + y + " " + rightEnd + " " + y + " 260");
-            if (r.exitCode != 0) break;
-            diagnostic("[条件返回V4.11] 右侧返回第" + i + "次：x="
-                    + rightStart + " → " + rightEnd + "，y=" + y);
-            if (!sleepAbortableV48(140L)) return false;
-            if (MODULE_PACKAGE.equals(getFg(suPath, false))) {
-                markUserAbortV48("返回期间检测到用户切回助手");
-                return false;
+            invalidateOcrCacheV411();
+            PageProbeV411 page = probePageV411(suPath, "返回检查/" + reason);
+            if (userAborted || page.kind == PageKindV411.MODULE_APP) return false;
+            if (page.kind == PageKindV411.TASK_PANEL) return true;
+            if (page.kind == PageKindV411.MINE || page.kind == PageKindV411.XIANYU_HOME
+                    || page.kind == PageKindV411.COIN_HOME) {
+                diagnostic("[条件返回] 已到 " + page.kind + "，停止后退，直接导航到任务面板");
+                return enterViaMineCoin(suPath);
             }
-            if (isTaskPanelNowV410(suPath)) {
-                TaskProfileStoreV48.setReturnStrategyV410(taskName, "RIGHT_" + i, i, 0.75f);
-                diagnostic("[条件返回V4.11] ✅ 第" + i + "次右侧返回后已到任务面板，停止继续返回");
-                return true;
-            }
+            if (i == 3 || !preferredRightBackOnceV410(suPath, reason)
+                    || !sleepAbortableV48(650L)) break;
         }
-
-        // 两次右侧都没有恢复时，左侧边缘只作为兜底；同样每次后检查。
-        for (int i = 1; i <= 2; i++) {
-            if (userAborted) return false;
-            RootResult r = rootWithPath(suPath, "input swipe "
-                    + leftStart + " " + y + " " + leftEnd + " " + y + " 260");
-            if (r.exitCode != 0) break;
-            diagnostic("[条件返回V4.11] 左侧兜底第" + i + "次：x="
-                    + leftStart + " → " + leftEnd + "，y=" + y);
-            if (!sleepAbortableV48(140L)) return false;
-            if (MODULE_PACKAGE.equals(getFg(suPath, false))) {
-                markUserAbortV48("返回期间检测到用户切回助手");
-                return false;
-            }
-            if (isTaskPanelNowV410(suPath)) {
-                TaskProfileStoreV48.setReturnStrategyV410(taskName, "LEFT_" + i, i, 0.75f);
-                diagnostic("[条件返回V4.11] ✅ 左侧兜底恢复成功，停止继续返回");
-                return true;
-            }
-        }
-
         TaskProfileStoreV48.recordFailure(taskName, "conditional_back_not_recovered");
         return false;
     }
