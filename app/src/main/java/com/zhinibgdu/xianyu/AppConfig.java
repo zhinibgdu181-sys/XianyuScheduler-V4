@@ -12,6 +12,7 @@ public final class AppConfig {
     private static final String KEY_LOCAL_TASK = "enable_local_task";
     private static final String KEY_VIDEO_TASK = "enable_video_task";
     private static final String KEY_GAME_TASK = "enable_game_task";
+    private static final String KEY_JUMP_TASK = "enable_jump_task";
 
     public static final int DEFAULT_HOUR = 9;
     public static final int DEFAULT_MINUTE = 0;
@@ -59,11 +60,16 @@ public final class AppConfig {
         return prefs(context).getBoolean(KEY_GAME_TASK, false);
     }
 
-    public static void saveTaskSwitches(Context context, boolean local, boolean video, boolean game) {
+    public static boolean isJumpTaskEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_JUMP_TASK, false);
+    }
+
+    public static void saveTaskSwitches(Context context, boolean local, boolean video, boolean game, boolean jump) {
         prefs(context).edit()
                 .putBoolean(KEY_LOCAL_TASK, local)
                 .putBoolean(KEY_VIDEO_TASK, video)
                 .putBoolean(KEY_GAME_TASK, game)
+                .putBoolean(KEY_JUMP_TASK, jump)
                 .apply();
     }
 
