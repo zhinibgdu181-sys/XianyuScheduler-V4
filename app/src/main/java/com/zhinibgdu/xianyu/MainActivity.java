@@ -554,7 +554,7 @@ public class MainActivity extends Activity {
         boolean jump = jumpSwitch.isChecked();
 
         if (!local && !video && !game && !jump) {
-            setStatusMessage("当前三个任务开关均已关闭。请至少开启一个任务后再点击“执行任务”。");
+            setStatusMessage("当前任务开关均已关闭。请至少开启一个任务后再点击“执行任务”。");
             Toast.makeText(this, "请至少开启一个任务", Toast.LENGTH_SHORT).show();
             return;
         }
@@ -569,8 +569,12 @@ public class MainActivity extends Activity {
             if (selected.length() > 0) selected.append("、");
             selected.append("小游戏任务");
         }
+        if (jump) {
+            if (selected.length() > 0) selected.append("、");
+            selected.append("跳转任务");
+        }
 
-        setStatusMessage("已选择：" + selected + "。\n点击“执行任务”后将按本地 → 视频 → 小游戏顺序执行。");
+        setStatusMessage("已选择：" + selected + "。\n点击“执行任务”后将按本地 → 视频 → 小游戏 → 跳转顺序执行。");
         triggerXianyuTask(TaskCategory.ALL);
     }
 
