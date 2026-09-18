@@ -394,11 +394,75 @@
                     android:textColor="#7A8190"
                     android:textSize="13sp" />
 
-                <!-- 三类任务：每类独立长卡片 -->
+                <!-- 每日定时：置于自动化页面最上方，保持独立长卡片 -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="18dp"
+                    android:background="@drawable/bg_card"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:padding="18dp">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="每日定时"
+                            android:textColor="#374151"
+                            android:textSize="16sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/schedule_status_text"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="5dp"
+                            android:text="每日任务：未启用"
+                            android:textColor="#111827"
+                            android:textSize="14sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <Button
+                        android:id="@+id/schedule_button"
+                        android:layout_width="wrap_content"
+                        android:layout_height="46dp"
+                        android:minWidth="0dp"
+                        android:backgroundTint="#E9EEF8"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"
+                        android:text="设置时间"
+                        android:textColor="#2F6FED"
+                        android:textSize="13sp" />
+
+                    <Space
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <Button
+                        android:id="@+id/cancel_button"
+                        android:layout_width="wrap_content"
+                        android:layout_height="46dp"
+                        android:minWidth="0dp"
+                        android:backgroundTint="#F3F4F6"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"
+                        android:text="取消"
+                        android:textColor="#4B5563"
+                        android:textSize="13sp" />
+                </LinearLayout>
+
+                <!-- 三类任务：每类独立长卡片 -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
                     android:background="@drawable/bg_card"
                     android:gravity="center_vertical"
                     android:orientation="horizontal"
@@ -512,16 +576,52 @@
                         android:contentDescription="小游戏任务开关" />
                 </LinearLayout>
 
-                <Button
-                    android:id="@+id/execute_task_button"
+                <!-- 手动执行：与三类任务保持同样的长卡片视觉结构 -->
+                <LinearLayout
                     android:layout_width="match_parent"
-                    android:layout_height="52dp"
-                    android:layout_marginTop="14dp"
-                    android:backgroundTint="#2F6FED"
-                    android:text="执行任务"
-                    android:textColor="#FFFFFF"
-                    android:textSize="15sp"
-                    android:textStyle="bold" />
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/bg_card"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:padding="18dp">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="执行任务"
+                            android:textColor="#374151"
+                            android:textSize="16sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="5dp"
+                            android:text="立即按当前已开启的任务分类执行"
+                            android:textColor="#9CA3AF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <Button
+                        android:id="@+id/execute_task_button"
+                        android:layout_width="wrap_content"
+                        android:layout_height="46dp"
+                        android:minWidth="0dp"
+                        android:backgroundTint="#2F6FED"
+                        android:paddingStart="18dp"
+                        android:paddingEnd="18dp"
+                        android:text="立即执行"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
 
                 <Button
                     android:id="@+id/stop_button"
