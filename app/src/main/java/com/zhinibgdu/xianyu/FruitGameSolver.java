@@ -1846,12 +1846,16 @@ final class FruitGameSolver {
                         a.centerY >= b.centerY ? a : b, a.centerY >= b.centerY ? b : a, sim.score,
                         1.0 - sim.rgbMad, sim.histCos, sim.shapeIou, decision,
                         lowerBoth, compactness);
-                if (best == null || candidate.lowerBoth > best.lowerBoth + 0.015
-                        || (Math.abs(candidate.lowerBoth - best.lowerBoth) <= 0.015
-                        && candidate.decisionScore > best.decisionScore)) {
+                if (best == null
+                        || candidate.decisionScore > best.decisionScore + 0.01
+                        || (Math.abs(candidate.decisionScore - best.decisionScore) <= 0.01
+                        && candidate.lowerBoth > best.lowerBoth + 0.015)) {
                     best = candidate;
                 }
             }
+        }
+        if (ENABLE_FRUIT_DECISION_DEBUG && best != null) {
+            // 决策由上层统一输出，保留此处作为V4.42.4评分入口。
         }
         return best;
     }
