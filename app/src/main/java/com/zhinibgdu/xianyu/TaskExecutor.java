@@ -12,6 +12,7 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.SystemClock;
 import android.util.Log;
+import android.widget.Toast;
 
 import org.w3c.dom.Document;
 import org.w3c.dom.Node;
@@ -255,36 +256,95 @@ public final class TaskExecutor {
         }, "XianyuTask").start();
     }
 
-    private static void returnToApp(Context ctx, String suPath) {
-        if (ctx == null) return;
+    /**
+     * Return to the scheduler app and verify that it actually became the foreground app.
+     *
+     * The previous implementation only relied on Context.startActivity(). On this device
+     * the request could be issued while Xianyu was still foreground, so the executor waited
+     * five seconds and then ended without returning to the scheduler. Use the already
+     * authorized ROOT shell as the primary launch path, then verify the real foreground
+     * package before declaring completion and showing the completion Toast.
+     */
+    private static boolean returnToApp(Context ctx, String suPath) {
+        if (ctx == null) return false;
         try {
-            Intent launch = ctx.getPackageManager().getLaunchIntentForPackage(MODULE_PACKAGE);
-            if (launch == null) {
-                diagnostic("[完成] 未找到 APP 启动入口");
-                return;
-            }
-            launch.addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK
-                            | Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            | Intent.FLAG_ACTIVITY_SINGLE_TOP
-            );
-            ctx.startActivity(launch);
-            diagnostic("[完成] 所有任务分类均已确认完成，正在返回定时任务 APP");
+            final String component = MODULE_PACKAGE + "/" + MODULE_PACKAGE + ".MainActivity";
+            boolean launchRequested = false;
 
-            // startActivity() 只是发起启动请求，不能证明目标已经成为前台。
-            // 必须实际轮询前台包名，确认 com.zhinibgdu.xianyu 后才能记录“已返回”。
-            long deadline = SystemClock.elapsedRealtime() + 5000L;
+            // Primary path: ROOT am start is reliable even when this code is running from
+            // the foreground service while Xianyu owns the screen.
+            if (suPath != null && !suPath.trim().isEmpty()) {
+                RootResult rootLaunch = rootWithPath(
+                        suPath,
+                        "am start -n " + component
+                );
+                launchRequested = rootLaunch.exitCode == 0;
+                diagnostic("[完成] ROOT 返回定时任务 APP：exit=" + rootLaunch.exitCode
+                        + " output=" + trimForLog(rootLaunch.stdout, 300));
+            }
+
+            // Fallback: normal Android launch if the ROOT launch was rejected.
+            if (!launchRequested) {
+                Intent launch = ctx.getPackageManager().getLaunchIntentForPackage(MODULE_PACKAGE);
+                if (launch == null) {
+                    diagnostic("[完成] 未找到 APP 启动入口");
+                    return false;
+                }
+                launch.addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK
+                                | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                );
+                ctx.startActivity(launch);
+                launchRequested = true;
+                diagnostic("[完成] 已发起 Android 返回定时任务 APP");
+            }
+
+            diagnostic("[完成] 正在确认定时任务 APP 已进入前台");
+
+            // Give Android a little more time than the old 5-second window. Do not
+            // report success until the foreground package is actually our package.
+            final long deadline = SystemClock.elapsedRealtime() + 8000L;
+            int retry = 0;
             while (!userAborted && SystemClock.elapsedRealtime() < deadline) {
                 String fg = getFg(suPath, false);
                 if (MODULE_PACKAGE.equals(fg)) {
                     diagnostic("[完成] 已确认返回定时任务 APP：" + MODULE_PACKAGE);
-                    return;
+                    showTaskCompletionToast(ctx, activeCategory.label + "已完成");
+                    return true;
                 }
-                sleepAbortableV48(180L);
+
+                // If Android did not honor the first launch request, retry through ROOT
+                // once after a short delay rather than silently ending on Xianyu.
+                if (retry < 2 && SystemClock.elapsedRealtime() + 2500L < deadline) {
+                    sleepAbortableV48(350L);
+                    retry++;
+                    if (suPath != null && !suPath.trim().isEmpty()) {
+                        rootWithPath(suPath, "am start -n " + component);
+                        diagnostic("[完成] 重试返回定时任务 APP #" + retry);
+                    }
+                } else {
+                    sleepAbortableV48(180L);
+                }
             }
-            diagnostic("[完成] ⚠️ 已发起返回定时任务 APP，但 5 秒内未确认其处于前台");
+
+            diagnostic("[完成] ⚠️ 已尝试返回定时任务 APP，但仍未确认其处于前台；不显示完成提示");
+            return false;
         } catch (Throwable t) {
             diagnostic("返回本 APP 失败", t);
+            return false;
+        }
+    }
+
+    /** Show the same native Android Toast style used by the ROOT authorization message. */
+    private static void showTaskCompletionToast(Context ctx, String message) {
+        if (ctx == null) return;
+        try {
+            ctx.getMainExecutor().execute(() ->
+                    Toast.makeText(ctx.getApplicationContext(), message, Toast.LENGTH_SHORT).show()
+            );
+        } catch (Throwable t) {
+            diagnostic("[完成] 显示任务完成提示失败", t);
         }
     }
 
