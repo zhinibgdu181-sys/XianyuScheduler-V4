@@ -138,6 +138,12 @@ public final class TaskExecutor {
     private static volatile boolean physicalTouchDetected = false;
     private static volatile long physicalTouchAt = 0L;
     private static volatile String physicalTouchDevice = "";
+    // V4.64: the automation still stops immediately on real touch, but a passive
+    // observer keeps learning from the human continuation instead of discarding it.
+    private static volatile String currentExecutingTaskV464 = "";
+    private static volatile boolean humanTeachingStartedV464 = false;
+    private static final long HUMAN_TEACHING_WINDOW_MS_V464 = 90_000L;
+    private static final long HUMAN_TEACHING_SAMPLE_MS_V464 = 950L;
     private static volatile Process touchMonitorProcess;
     private static volatile Thread touchMonitorThread;
 
@@ -237,6 +243,8 @@ public final class TaskExecutor {
         gameIncompleteTaskV421 = "";
         lastTaskAbandonedV460 = false;
         lastTaskAbandonedReasonV460 = "";
+        currentExecutingTaskV464 = "";
+        humanTeachingStartedV464 = false;
         invalidateOcrCacheV411();
         lastTaskPanelOcrAtV415 = 0L;
         diagnostic("[数据路径] " + buildDataPathsLogV435(lastContext));
@@ -250,7 +258,9 @@ public final class TaskExecutor {
                 sendStatus("", "FAILED", "任务线程异常：" + t.getClass().getSimpleName());
             } finally {
                 stopPhysicalTouchMonitorV48();
-                ScreenOcr.close();
+                if (!humanTeachingStartedV464) {
+                    ScreenOcr.close();
+                }
                 inBounceTask = false;
                 diagnostic("========== 任务结束 ==========");
                 notifyTask(lastContext, activeCategory.label, userAborted ? "任务已中止" : "任务已结束，已返回 APP");
@@ -375,6 +385,7 @@ public final class TaskExecutor {
 
         String suPath =
                 findSuPathWithRetry();
+        cachedSuPath = suPath;
 
         if (suPath == null) {
 
@@ -2008,6 +2019,7 @@ public final class TaskExecutor {
 
             lastTaskAbandonedV460 = false;
             lastTaskAbandonedReasonV460 = "";
+            currentExecutingTaskV464 = target.name;
 
             boolean executionReturned;
             if (target.isClaimReward) {
@@ -5073,7 +5085,75 @@ public final class TaskExecutor {
             userAborted = true;
             diagnostic("🛑 人工接管，立即停止：" + reason);
             TaskProfileStoreV48.recordFailure("__GLOBAL__", "manual_takeover:" + reason);
+            startHumanTeachingCaptureV464();
         }
+    }
+
+    /**
+     * V4.64: once a human takes over a fruit game, automation stops immediately.
+     * We then passively sample the board for a bounded window. Every structural
+     * transition is treated as a demonstration only after real board progress is
+     * observed; no synthetic taps are generated and no human action is interrupted.
+     */
+    private static void startHumanTeachingCaptureV464() {
+        if (humanTeachingStartedV464) return;
+        String task = currentExecutingTaskV464 == null ? "" : currentExecutingTaskV464;
+        String normalized = task.replaceAll("\\s+", "");
+        if (!(normalized.contains("消了还想") || normalized.contains("还想消玩1关"))) {
+            return;
+        }
+
+        final Context context = lastContext;
+        final String suPath = cachedSuPath;
+        if (context == null || suPath == null || suPath.isEmpty()) return;
+
+        humanTeachingStartedV464 = true;
+        diagnostic("[真人经验V4.64] 自动操作已停止，开启90秒被动学习窗口；不发送任何点击");
+        Thread thread = new Thread(() -> {
+            FruitGameSolver.TeachingStateV464 previous = null;
+            int learned = 0;
+            long deadline = SystemClock.elapsedRealtime() + HUMAN_TEACHING_WINDOW_MS_V464;
+            try {
+                while (SystemClock.elapsedRealtime() < deadline) {
+                    FruitGameSolver.TeachingStateV464 current =
+                            FruitGameSolver.captureTeachingStateV464(context, suPath);
+                    if (current != null) {
+                        if (previous != null) {
+                            FruitHumanExperienceStore.Transition transition =
+                                    FruitHumanExperienceStore.classify(
+                                            previous.remaining, current.remaining,
+                                            previous.trayCount, current.trayCount,
+                                            previous.objects, current.objects,
+                                            previous.blocked, current.blocked);
+                            if (transition != null) {
+                                FruitHumanExperienceStore.record(
+                                        context, task, previous, current, transition);
+                                learned++;
+                                diagnostic("[真人经验V4.64] 学到第" + learned + "个真实操作："
+                                        + transition.strategy
+                                        + " / 剩余 " + previous.remaining + "→" + current.remaining
+                                        + " / 槽位 " + previous.trayCount + "→" + current.trayCount
+                                        + " / 对象 " + previous.objects + "→" + current.objects);
+                            }
+                        }
+                        previous = current;
+                    }
+                    try {
+                        Thread.sleep(HUMAN_TEACHING_SAMPLE_MS_V464);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            } catch (Throwable t) {
+                diagnostic("[真人经验V4.64] 被动学习异常", t);
+            } finally {
+                diagnostic("[真人经验V4.64] 学习窗口结束：共记录 " + learned + " 个已验证真实操作");
+                ScreenOcr.close();
+            }
+        }, "XianyuHumanTeaching-V464");
+        thread.setDaemon(true);
+        thread.start();
     }
 
     private static void startPhysicalTouchMonitorV48(String suPath) {
