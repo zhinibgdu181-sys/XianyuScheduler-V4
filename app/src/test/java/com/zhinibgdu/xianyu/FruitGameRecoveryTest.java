@@ -212,10 +212,11 @@ public class FruitGameRecoveryTest {
 
     @Test public void secondTrayVerificationUsesFreshFrameWithoutRetapping() throws Exception {
         for (int i = 0; i < 4; i++) frames.add(bitmap(0xffff0000)); // still occupied
-        frames.add(bitmap(SKY)); // empty after delayed animation
+        frames.add(bitmap(SKY)); // first empty frame after delayed animation
+        frames.add(bitmap(SKY)); // second settled empty frame required by V4.50
         Object observation = observe(0);
         assertNotNull(observation);
-        assertEquals(5, captures);
+        assertEquals(6, captures);
         assertEquals(1, host.countLogs("[验证V4.42]"));
         assertEquals(0, host.taps);
         for (int i = 0; i < 4; i++) verify(frames.get(i), atLeastOnce()).recycle();
@@ -248,7 +249,7 @@ public class FruitGameRecoveryTest {
     }
 
     @Test public void cascadeGuardProtectsNearlyFullTray() {
-        assertTrue(FruitGameSolver.allowsThirdSlotCascade(0, 3, false));
+        assertFalse(FruitGameSolver.allowsThirdSlotCascade(0, 3, false));
         assertTrue(FruitGameSolver.allowsThirdSlotCascade(1, 1, false));
         assertFalse(FruitGameSolver.allowsThirdSlotCascade(1, 2, false));
         assertTrue(FruitGameSolver.allowsThirdSlotCascade(2, 0, false));
