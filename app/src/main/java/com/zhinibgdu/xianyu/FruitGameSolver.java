@@ -386,6 +386,7 @@ final class FruitGameSolver {
                         ? " / 安全压栈 mate=" + format(safePush.mateScore)
                                 + " directUnlock=" + safePush.directUnlockMate
                                 + " mateReady=" + safePush.mateDroppable
+                                + " continuationPairs=" + safePush.continuationPairs
                                 + " unlock=" + safePush.unlockGain
                         : " / 无安全动作"));
 
@@ -568,6 +569,7 @@ final class FruitGameSolver {
                             + " / mate=" + format(safePush.mateScore)
                             + " / directUnlock=" + safePush.directUnlockMate
                             + " / mateReady=" + safePush.mateDroppable
+                            + " / continuationPairs=" + safePush.continuationPairs
                             + " / unlock=" + safePush.unlockGain);
 
                     fruitTapAttempted = true;
@@ -1485,20 +1487,88 @@ final class FruitGameSolver {
                 unlockGain++;
             }
 
+            /*
+             * V4.45：安全压栈不再用“释放几个水果”作为主要评分依据。
+             * 真正重要的是：点击当前水果以后，能不能形成一个可执行的下一步。
+             *
+             * 两层前瞻：
+             * 1) 当前候选的同类 mate 是否已经可下落，或是否会被当前点击直接释放；
+             * 2) 假设“候选 + mate”随后完成二消，剩余棋盘是否至少还存在一个
+             *    可靠对子。这样可以把“看起来能压栈、实际会把局面带死”的候选降权。
+             */
+            int continuationPairs = countReliablePairsAfterRemoving(
+                    objects, fruit, bestMate, frameWidth, frameHeight, blockedPositions);
+            double continuationScore = Math.min(1.0, continuationPairs / 2.0);
             double lower = clamp01(fruit.centerY / denomY);
-            double rank = 0.64 * mateScore
-                    + 0.18 * lower
-                    + 0.10 * Math.min(1.0, unlockGain / 3.0)
-                    + (bestMateDroppable ? 0.10 : 0.0)
-                    + (bestDirectUnlockMate ? 0.08 : 0.0)
-                    - (trayCount == 2 ? 0.04 : 0.0);
+
+            // 后手链的权重高于 unlockGain。unlockGain 仅作为极弱的平手因素。
+            double rank = 0.44 * mateScore
+                    + (bestDirectUnlockMate ? 0.24 : 0.0)
+                    + (bestMateDroppable ? 0.18 : 0.0)
+                    + 0.08 * continuationScore
+                    + 0.04 * lower
+                    + 0.02 * Math.min(1.0, unlockGain / 3.0)
+                    - (trayCount == 2 ? 0.05 : 0.0);
 
             SafePushChoice candidate = new SafePushChoice(
                     fruit, mateScore, bestDirectUnlockMate,
-                    bestMateDroppable, unlockGain, rank);
+                    bestMateDroppable, unlockGain, continuationPairs, rank);
             if (best == null || candidate.rank > best.rank) best = candidate;
         }
         return best;
+    }
+
+    /**
+     * V4.45 两步前瞻：假设 candidate 进入槽位、随后点击 mate 完成二消，
+     * 检查剩余棋盘中是否还有可靠的完整对子。
+     *
+     * 这里只做只读几何/视觉评估，不修改真实棋盘；真实执行仍然是“一次只点一步，
+     * 点击后重新截图、重新建模”。
+     */
+    private static int countReliablePairsAfterRemoving(
+            List<FruitObject> objects,
+            FruitObject candidate,
+            FruitObject mate,
+            int frameWidth,
+            int frameHeight,
+            Set<String> blockedPositions
+    ) {
+        if (objects == null || objects.size() < 4) return 0;
+
+        List<FruitObject> remaining = new ArrayList<>();
+        Set<FruitObject> clear = new HashSet<>();
+        for (FruitObject fruit : objects) {
+            if (fruit == null || fruit == candidate || fruit == mate) continue;
+            if (isBlockedPosition(blockedPositions, fruit)) continue;
+            remaining.add(fruit);
+        }
+
+        for (FruitObject fruit : remaining) {
+            if (findNearestBlockingFruit(fruit, remaining, frameWidth, frameHeight) == null) {
+                clear.add(fruit);
+            }
+        }
+
+        int pairs = 0;
+        for (int i = 0; i < remaining.size(); i++) {
+            FruitObject a = remaining.get(i);
+            if (!clear.contains(a)) continue;
+            for (int j = i + 1; j < remaining.size(); j++) {
+                FruitObject b = remaining.get(j);
+                if (!clear.contains(b)) continue;
+
+                Similarity sim = similarity(a, b);
+                if (sim.rgbMad > MAX_RGB_MAD
+                        || sim.histCos < MIN_HIST_COS
+                        || sim.shapeIou < MIN_SHAPE_IOU
+                        || sim.score < MIN_PAIR_SCORE) {
+                    continue;
+                }
+                pairs++;
+                if (pairs >= 2) return pairs;
+            }
+        }
+        return pairs;
     }
 
     static boolean isBridgeMateSimilarity(
@@ -2936,15 +3006,18 @@ final class FruitGameSolver {
         final boolean directUnlockMate;
         final boolean mateDroppable;
         final int unlockGain;
+        final int continuationPairs;
         final double rank;
 
         SafePushChoice(FruitObject fruit, double mateScore, boolean directUnlockMate,
-                       boolean mateDroppable, int unlockGain, double rank) {
+                       boolean mateDroppable, int unlockGain, int continuationPairs,
+                       double rank) {
             this.fruit = fruit;
             this.mateScore = mateScore;
             this.directUnlockMate = directUnlockMate;
             this.mateDroppable = mateDroppable;
             this.unlockGain = unlockGain;
+            this.continuationPairs = continuationPairs;
             this.rank = rank;
         }
     }
