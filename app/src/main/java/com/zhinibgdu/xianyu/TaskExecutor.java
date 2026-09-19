@@ -257,32 +257,75 @@ public final class TaskExecutor {
 
     private static void returnToApp(Context ctx, String suPath) {
         if (ctx == null) return;
-        try {
-            Intent launch = ctx.getPackageManager().getLaunchIntentForPackage(MODULE_PACKAGE);
-            if (launch == null) {
-                diagnostic("[完成] 未找到 APP 启动入口");
-                return;
-            }
-            launch.addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK
-                            | Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            | Intent.FLAG_ACTIVITY_SINGLE_TOP
-            );
-            ctx.startActivity(launch);
-            diagnostic("[完成] 所有任务分类均已确认完成，正在返回定时任务 APP");
 
-            // startActivity() 只是发起启动请求，不能证明目标已经成为前台。
-            // 必须实际轮询前台包名，确认 com.zhinibgdu.xianyu 后才能记录“已返回”。
-            long deadline = SystemClock.elapsedRealtime() + 5000L;
-            while (!userAborted && SystemClock.elapsedRealtime() < deadline) {
-                String fg = getFg(suPath, false);
-                if (MODULE_PACKAGE.equals(fg)) {
-                    diagnostic("[完成] 已确认返回定时任务 APP：" + MODULE_PACKAGE);
-                    return;
+        final String moduleActivity = MODULE_PACKAGE + "/.MainActivity";
+        final long deadline = SystemClock.elapsedRealtime() + 9000L;
+
+        try {
+            diagnostic("[完成] 所有任务分类均已确认完成，开始返回定时任务 APP");
+
+            // 普通 startActivity() 在 Android 新版本上可能受到后台启动限制。
+            // 这里优先使用已经验证可用的 Root shell 直接启动 MainActivity，
+            // 不使用 force-stop，避免把当前任务服务一起杀掉。
+            for (int attempt = 1;
+                    !userAborted && SystemClock.elapsedRealtime() < deadline && attempt <= 3;
+                    attempt++) {
+
+                RootResult rootLaunch = rootWithPath(
+                        suPath,
+                        "am start -n " + moduleActivity
+                                + " -a android.intent.action.MAIN"
+                                + " -c android.intent.category.LAUNCHER"
+                );
+
+                diagnostic("[完成] Root 返回定时任务 APP 尝试 #" + attempt
+                        + "：exit=" + rootLaunch.exitCode
+                        + "，输出=" + trimForLog(rootLaunch.stdout, 180));
+
+                // Root 启动后给 Activity 一小段时间完成切换，然后用真实前台包名确认。
+                long verifyUntil = Math.min(
+                        deadline,
+                        SystemClock.elapsedRealtime() + 2200L
+                );
+                while (!userAborted && SystemClock.elapsedRealtime() < verifyUntil) {
+                    String fg = getFg(suPath, false);
+                    if (MODULE_PACKAGE.equals(fg)) {
+                        diagnostic("[完成] 已确认返回定时任务 APP：" + MODULE_PACKAGE);
+                        return;
+                    }
+                    sleepAbortableV48(180L);
                 }
-                sleepAbortableV48(180L);
+
+                // 第一次 Root 启动失败时，再使用 Android Context 启动作为补偿路径。
+                // 仍然不 force-stop，不会把任务服务当成“人工接管”。
+                if (attempt == 1 && !userAborted) {
+                    try {
+                        Intent launch = ctx.getPackageManager()
+                                .getLaunchIntentForPackage(MODULE_PACKAGE);
+                        if (launch != null) {
+                            launch.addFlags(
+                                    Intent.FLAG_ACTIVITY_NEW_TASK
+                                            | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                            | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                            );
+                            ctx.startActivity(launch);
+                            diagnostic("[完成] 已执行 Context.startActivity() 补偿返回");
+                        }
+                    } catch (Throwable fallbackError) {
+                        diagnostic("[完成] Context 返回补偿失败", fallbackError);
+                    }
+                }
             }
-            diagnostic("[完成] ⚠️ 已发起返回定时任务 APP，但 5 秒内未确认其处于前台");
+
+            String finalFg = getFg(suPath, false);
+            if (MODULE_PACKAGE.equals(finalFg)) {
+                diagnostic("[完成] 已确认返回定时任务 APP：" + MODULE_PACKAGE);
+            } else {
+                // 这是返回动作未确认的恢复性故障，不等同于人工接管。
+                // 人工接管只由真实物理触摸/明确停止请求触发。
+                diagnostic("[完成] ⚠️ 已多次发起返回定时任务 APP，但仍未确认前台："
+                        + printableFg(finalFg));
+            }
         } catch (Throwable t) {
             diagnostic("返回本 APP 失败", t);
         }
