@@ -247,10 +247,9 @@ final class FruitGameSolver {
         boolean recovering = false;
         boolean fruitTapAttempted = false;
 
-        // V4.44.5：实机初始并非“3槽可用”，而是1槽+“解锁”视频按钮。
-        // detectTrayState() 只能看到已占用槽，不能从空槽判断“是否已解锁”，
-        // 因此单独维护实际已解锁容量：1 → 看广告解锁到2 → 再解锁到3。
-        int unlockedTrayCapacity = 1;
+        // 槽位计数表示“已占用槽”，不是“已解锁槽”。
+        // 不允许把底部“解锁”按钮误判成当前棋盘的容量上限；
+        // 只要当前局面存在安全压栈/二消解法，就优先按棋盘解法执行。
 
         // V4.36 本轮验证失败过的对子进入黑名单，不再重复尝试
         Set<String> failedPairs = new HashSet<>();
@@ -350,8 +349,7 @@ final class FruitGameSolver {
                 //    depth=1可升2槽，要求同类已可下落或本次点击能直接释放同类；
                 //    depth=2可升3槽，但同类必须当前已经可直接下落，下一轮立即消栈顶。
                 // 4) depth=3绝不引入新类型，只允许TOP直配。
-                if (trayChoice == null && tray.count < TRAY_CAPACITY
-                        && tray.count < unlockedTrayCapacity) {
+                if (trayChoice == null && tray.count < TRAY_CAPACITY) {
                     for (double t : FALLBACK_THRESHOLDS_V436) {
                         pair = chooseBestPairWithThreshold(
                                 objects, frame.bitmap.getWidth(), frame.bitmap.getHeight(),
@@ -429,25 +427,11 @@ final class FruitGameSolver {
                         if (!host.sleep(300L, 500L)) return Result.ABORTED;
                         continue;
                     }
-                    // V4.44.5：没有TOP直配时，不能把“槽位未解锁”误判成
-                    // “没有安全动作”。实机截图明确存在中央“解锁”视频按钮；
-                    // 当前槽位容量达到上限时，先看广告解锁下一槽，再重新建模。
-                    if (tray.count < TRAY_CAPACITY && tray.count >= unlockedTrayCapacity) {
-                        safeRecycle(frame.bitmap);
-                        boolean unlocked = unlockNextTraySlot(
-                                context, suPath, host, unlockedTrayCapacity);
-                        if (unlocked) {
-                            unlockedTrayCapacity++;
-                            host.log("[槽位解锁V4.44.5] ✅ 已解锁第" + unlockedTrayCapacity
-                                    + "槽，重新建立棋盘模型");
-                            noActionRetry = 0;
-                            continue;
-                        }
-                        host.log("[槽位解锁V4.44.5] ❌ 第" + (unlockedTrayCapacity + 1)
-                                + "槽解锁未确认，不盲点水果");
-                        return Result.SAFE_STOP_DIRTY;
-                    }
-
+                    // 这里不能因为画面上存在“解锁”按钮就直接去看视频。
+                    // 先前的错误逻辑把 tray.count==1 当成“第二槽锁定”，
+                    // 从而跳过了本应执行的“葡萄压入第2槽 → 椰子二消”解法。
+                    // 当前决策层已经把所有安全棋盘动作筛完；只有没有安全动作时才停止，
+                    // 不主动观看视频广告破坏正常解法。
                     if (tray.count >= TRAY_CAPACITY) {
                         host.log("[槽位保护V4.38.0] 三槽已满且没有可直接二消的同类水果；"
                                 + "禁止点击任何新类型，CLEAN安全停止");
