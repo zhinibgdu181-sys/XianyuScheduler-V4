@@ -447,6 +447,24 @@ public class FruitGameRecoveryTest {
         assertEquals(2, host.ocrCalls);
     }
 
+    @Test public void explicitFailedRoundRequiresFailureAndReturnHome() {
+        assertTrue(FruitGameSolver.looksLikeFailedRound(
+                "VERSION1.0.2 第1关 失败 本关已被挑战6次 重新挑战 返回主页"));
+        assertFalse(FruitGameSolver.looksLikeFailedRound(
+                "第1关 剩余 186 消除 打乱"));
+        assertFalse(FruitGameSolver.looksLikeFailedRound(
+                "失败 本关已被挑战6次 重新挑战"));
+    }
+
+    @Test public void failedRoundReturnHomeTapIsWhitelisted() {
+        assertTrue(GameTapPolicy.allows(
+                720, 2500, 1440, 3120, "水果游戏-失败页返回主页"));
+        assertFalse(GameTapPolicy.allows(
+                100, 2500, 1440, 3120, "水果游戏-失败页返回主页"));
+        assertFalse(GameTapPolicy.allows(
+                720, 400, 1440, 3120, "水果游戏-失败页返回主页"));
+    }
+
     @Test public void recoveryRecognizesTaskPanelWithoutClicking() {
         frames.add(null);
         host.ocr = reason -> snapshot(reason.contains("恢复页面") ? "得骰子赚闲鱼币" : GAME);
