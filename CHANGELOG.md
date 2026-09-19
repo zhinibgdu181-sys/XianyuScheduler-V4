@@ -1,3 +1,9 @@
+# V4.60
+
+- Fruit game: explicitly recognize the rendered failure state (失败 + 返回主页 + retry/challenge evidence) as a terminal game result instead of treating it as an unresolved SAFE_STOP.
+- Fruit game: on an explicit failure page, OCR-locate and whitelist only the game-provided 返回主页 button, wait for page departure, then restore the Xianyu task panel.
+- Task execution: a confirmed failed game is retired for the current scan only, preventing repeated selection while allowing the executor to continue with other tasks; it is not treated as manual takeover.
+
 ## 4.44.4
 - 修复槽位数量未变化时仍用估算值伪造“剩余数减2”的问题；此类歧义状态现在强制OCR闭环，失败坐标立即进入本局黑名单。
 - 0/1槽无完整对子时允许使用一个空槽做受限探索解阻，避免长时间停在1/3槽；2/3槽只允许同类已可直接点击且无级联风险的严格闭环动作。
