@@ -1837,6 +1837,9 @@ final class FruitGameSolver {
         if (root == null || objects == null || drop == null) return 0;
 
         List<FruitObject> incoming = collectPotentialCascadeFollowers(root, objects, drop);
+        // root 本身也是“进入槽位的新增实体”；把它加入匹配集合，
+        // 才能正确建模“点击根水果后，根水果与某个级联同类立即二消”的情况。
+        if (root != null) incoming.add(0, root);
         if (incoming.isEmpty()) return 0;
 
         boolean[] usedIncoming = new boolean[incoming.size()];
