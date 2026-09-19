@@ -246,7 +246,7 @@ final class FruitGameSolver {
         int noActionRetry = 0;
         boolean recovering = false;
         boolean fruitTapAttempted = false;
-
+        // V4.45.1：道具推广弹窗可能在长时间无操作后异步随机出现。\n        // 不能只在“准备安全停止”时检查；游戏运行期间也要周期性用OCR探测。\n        long lastIdlePopupProbeAt = 0L;\n        final long IDLE_POPUP_PROBE_INTERVAL_MS = 850L;\n
         // 槽位计数表示“已占用槽”，不是“已解锁槽”。
         // 不允许把底部“解锁”按钮误判成当前棋盘的容量上限；
         // 只要当前局面存在安全压栈/二消解法，就优先按棋盘解法执行。
@@ -285,6 +285,30 @@ final class FruitGameSolver {
                         throw new RecoverableObservationException("剩余数基线暂未识别");
                     }
                     remaining = currentRemaining;
+                }
+
+                // V4.45.1：持续监听异步道具弹窗。该弹窗可能在长时间无操作后突然出现，
+                // 不能依赖“准备退出”阶段才检查；运行期间每约850ms主动做一次OCR探测。
+                long nowForPopupProbe = SystemClock.elapsedRealtime();
+                if (nowForPopupProbe - lastIdlePopupProbeAt >= IDLE_POPUP_PROBE_INTERVAL_MS) {
+                    lastIdlePopupProbeAt = nowForPopupProbe;
+                    ScreenOcr.Snapshot popupProbe = requireOcr(host,
+                            "水果V4.45.1/运行中弹窗监听");
+                    if (host.aborted()) return Result.ABORTED;
+                    String popupText = normalize(popupProbe == null ? "" : popupProbe.fullText);
+                    if (looksLikeBlockingFunctionPopupText(popupText)) {
+                        host.log("[弹窗V4.45.1] 运行中OCR发现异步道具弹窗，立即进入连续关闭流程");
+                        PopupDismissResult popup = dismissBlockingFunctionPopupFromOcr(
+                                host, popupProbe, "运行中监听");
+                        if (popup == PopupDismissResult.ABORTED) return Result.ABORTED;
+                        if (popup != PopupDismissResult.DISMISSED) {
+                            throw new RecoverableObservationException("运行中道具弹窗关闭失败");
+                        }
+                        noActionRetry = 0;
+                        recovering = true;
+                        host.log("[弹窗V4.45.1] ✅ 异步道具弹窗已关闭，当前视觉状态全部作废，重新截图建模");
+                        continue;
+                    }
                 }
 
                 // V4.36：小游戏会在长时间无操作时自动弹出“解锁/消除/打乱”推广窗。
