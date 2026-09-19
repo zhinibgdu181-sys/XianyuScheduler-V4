@@ -286,6 +286,49 @@ public class FruitGameRecoveryTest {
         assertFalse(FruitGameSolver.isBridgeMateSimilarity(0.94, 0.04, 0.995, 0.70));
     }
 
+    @Test public void trayUnblockPlannerFindsBottomRootThroughMultipleBlockers() throws Exception {
+        Class<?> fruitClass = Class.forName("com.zhinibgdu.xianyu.FruitGameSolver$FruitObject");
+        java.lang.reflect.Constructor<?> fruitCtor = fruitClass.getDeclaredConstructor(
+                float.class, float.class, float.class, float.class, float.class, float.class,
+                float[].class, boolean[].class, float[].class);
+        fruitCtor.setAccessible(true);
+
+        Object target = fruitObject(fruitCtor, 100f, 100f);
+        Object middle = fruitObject(fruitCtor, 100f, 200f);
+        Object root = fruitObject(fruitCtor, 100f, 300f);
+
+        Class<?> relationClass = Class.forName(
+                "com.zhinibgdu.xianyu.FruitGameSolver$BlockingRelation");
+        java.lang.reflect.Constructor<?> relationCtor =
+                relationClass.getDeclaredConstructor(fruitClass, fruitClass);
+        relationCtor.setAccessible(true);
+
+        Object targetBlockedByMiddle = relationCtor.newInstance(target, middle);
+        Object middleBlockedByRoot = relationCtor.newInstance(middle, root);
+
+        Class<?> dropClass = Class.forName("com.zhinibgdu.xianyu.FruitGameSolver$DropAnalysis");
+        java.lang.reflect.Constructor<?> dropCtor =
+                dropClass.getDeclaredConstructor(List.class, List.class);
+        dropCtor.setAccessible(true);
+
+        List<Object> objects = Arrays.asList(target, middle, root);
+        List<Object> droppable = Collections.singletonList(root);
+        List<Object> blocked = Arrays.asList(targetBlockedByMiddle, middleBlockedByRoot);
+        Object drop = dropCtor.newInstance(droppable, blocked);
+
+        Method method = FruitGameSolver.class.getDeclaredMethod(
+                "findUnblockChainRoot",
+                fruitClass, List.class, dropClass, Set.class, int[].class);
+        method.setAccessible(true);
+
+        int[] depth = new int[]{0};
+        Object found = method.invoke(
+                null, target, objects, drop, Collections.emptySet(), depth);
+
+        assertTrue("planner should reach the bottom droppable root", found == root);
+        assertEquals(2, depth[0]);
+    }
+
     @Test public void twoStepLookaheadFindsContinuationPairAfterCandidateAndMate() throws Exception {
         Class<?> fruitClass = Class.forName("com.zhinibgdu.xianyu.FruitGameSolver$FruitObject");
         java.lang.reflect.Constructor<?> ctor = fruitClass.getDeclaredConstructor(
