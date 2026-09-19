@@ -138,8 +138,10 @@ public class TaskForegroundService extends Service {
     public void onDestroy() {
         destroyed = true;
         mainHandler.removeCallbacksAndMessages(null);
-        TaskExecutor.stopHumanTeachingForServiceDestroyV466();
         if (active) TaskExecutor.requestStop("前台服务已销毁");
+        // requestStop() may enter the normal abort path; invalidate teaching after
+        // that path so service destruction can never restart the observer.
+        TaskExecutor.stopHumanTeachingForServiceDestroyV466();
         active = false;
         try {
             if (wakeLock != null && wakeLock.isHeld()) {
