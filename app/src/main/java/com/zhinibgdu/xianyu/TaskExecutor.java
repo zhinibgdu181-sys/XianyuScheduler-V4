@@ -144,6 +144,10 @@ public final class TaskExecutor {
     private static volatile boolean humanTeachingStartedV464 = false;
     private static volatile Thread humanTeachingThreadV464;
     private static volatile long humanTeachingGenerationV464 = 0L;
+    // V4.67: generic passive gesture observer for every task category. It keeps
+    // the foreground service alive during the teaching window and never issues input.
+    private static volatile Thread humanOperationTeachingThreadV467;
+    private static volatile long humanOperationTeachingGenerationV467 = 0L;
     private static final long HUMAN_TEACHING_WINDOW_MS_V464 = 90_000L;
     private static final long HUMAN_TEACHING_SAMPLE_MS_V464 = 950L;
     private static volatile Process touchMonitorProcess;
@@ -222,12 +226,17 @@ public final class TaskExecutor {
      * 教学线程不再拥有独立于服务生命周期的后台存活能力。
      */
     public static boolean isHumanTeachingActiveV466() {
-        Thread thread = humanTeachingThreadV464;
-        return humanTeachingStartedV464 && thread != null && thread.isAlive();
+        Thread fruitThread = humanTeachingThreadV464;
+        Thread operationThread = humanOperationTeachingThreadV467;
+        boolean fruitActive = humanTeachingStartedV464
+                && fruitThread != null && fruitThread.isAlive();
+        boolean operationActive = operationThread != null && operationThread.isAlive();
+        return fruitActive || operationActive;
     }
 
     public static void stopHumanTeachingForServiceDestroyV466() {
         stopHumanTeachingCaptureV464();
+        stopHumanOperationTeachingV467();
         diagnostic("[真人经验V4.66] 前台服务已销毁，立即停止真人教学观察");
     }
 
@@ -5104,6 +5113,10 @@ public final class TaskExecutor {
             userAborted = true;
             diagnostic("🛑 人工接管，立即停止：" + reason);
             TaskProfileStoreV48.recordFailure("__GLOBAL__", "manual_takeover:" + reason);
+            // V4.67: all task categories enter the same passive human-operation
+            // teaching window. Fruit keeps its structural OCR learner; the generic
+            // observer additionally records real tap/swipe geometry and timing.
+            startHumanOperationTeachingV467();
             startHumanTeachingCaptureV464();
         }
     }
@@ -5118,6 +5131,58 @@ public final class TaskExecutor {
      * - impossible/no-progress observations are audit-only and never reinforce memory;
      * - the observer is generation-scoped so it cannot close ScreenOcr for a later run.
      */
+    /**
+     * V4.67: generic 90s passive human-operation window for every task category.
+     * The observer itself does not touch the screen. Physical touch events are
+     * captured by the existing touchscreen monitor and stored as compact statistics.
+     */
+    private static synchronized void startHumanOperationTeachingV467() {
+        Thread old = humanOperationTeachingThreadV467;
+        if (old != null && old.isAlive()) return;
+
+        final Context context = lastContext;
+        if (context == null) return;
+
+        final long generation = ++humanOperationTeachingGenerationV467;
+        Thread thread = new Thread(() -> {
+            long deadline = SystemClock.elapsedRealtime() + HUMAN_TEACHING_WINDOW_MS_V464;
+            try {
+                HumanOperationExperienceStore.compact(context);
+                diagnostic("[真人经验V4.67] 开启90秒通用真人操作学习：点击偏差/滑动距离/角度/速度/节奏；不回放真人操作");
+                while (SystemClock.elapsedRealtime() < deadline
+                        && generation == humanOperationTeachingGenerationV467
+                        && !Thread.currentThread().isInterrupted()) {
+                    SystemClock.sleep(Math.min(1000L,
+                            Math.max(50L, deadline - SystemClock.elapsedRealtime())));
+                }
+            } catch (Throwable t) {
+                diagnostic("[真人经验V4.67] 通用学习线程退出", t);
+            } finally {
+                if (generation == humanOperationTeachingGenerationV467) {
+                    humanOperationTeachingThreadV467 = null;
+                    diagnostic("[真人经验V4.67] 通用真人操作学习窗口结束");
+                }
+            }
+        }, "XianyuHumanOperationTeaching-V467");
+        thread.setDaemon(true);
+        humanOperationTeachingThreadV467 = thread;
+        thread.start();
+    }
+
+    private static synchronized void stopHumanOperationTeachingV467() {
+        ++humanOperationTeachingGenerationV467;
+        Thread thread = humanOperationTeachingThreadV467;
+        humanOperationTeachingThreadV467 = null;
+        if (thread != null) {
+            thread.interrupt();
+            if (thread != Thread.currentThread()) {
+                try { thread.join(350L); } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+    }
+
     private static synchronized void startHumanTeachingCaptureV464() {
         Thread old = humanTeachingThreadV464;
         if (old != null && old.isAlive()) return;
@@ -5287,11 +5352,19 @@ public final class TaskExecutor {
             return;
         }
 
+        final int[] screenSize = getScreenSizeV43(suPath);
+        final int screenW = screenSize != null && screenSize.length >= 2 ? screenSize[0] : 0;
+        final int screenH = screenSize != null && screenSize.length >= 2 ? screenSize[1] : 0;
         physicalTouchDevice = device;
         diagnostic("[人工检测] 监听物理触摸设备：" + device);
 
         Thread thread = new Thread(() -> {
             Process process = null;
+            int startX = -1, startY = -1, lastX = -1, lastY = -1;
+            float pathDistance = 0f;
+            long downAt = 0L;
+            long lastGestureEndAt = 0L;
+            boolean gestureActive = false;
             try {
                 process = Runtime.getRuntime().exec(new String[]{
                         suPath,
@@ -5305,7 +5378,10 @@ public final class TaskExecutor {
                 );
 
                 String line;
-                while (running && !userAborted && (line = reader.readLine()) != null) {
+                while (line != null) {
+                    line = reader.readLine();
+                    if (line == null) break;
+
                     String u = line.toUpperCase(Locale.US);
                     boolean touchDown =
                             (u.contains("BTN_TOUCH")
@@ -5313,9 +5389,29 @@ public final class TaskExecutor {
                                     || (u.contains("ABS_MT_TRACKING_ID")
                                     && !u.endsWith("FFFFFFFF")
                                     && !u.endsWith("-1"));
+                    boolean touchUp =
+                            (u.contains("BTN_TOUCH")
+                                    && (u.contains("UP") || u.endsWith("00000000")))
+                                    || (u.contains("ABS_MT_TRACKING_ID")
+                                    && (u.endsWith("FFFFFFFF") || u.endsWith("-1")));
+
+                    Integer x = parseTouchCoordinateV467(u, "ABS_MT_POSITION_X");
+                    Integer y = parseTouchCoordinateV467(u, "ABS_MT_POSITION_Y");
+                    if (x != null) {
+                        if (gestureActive && lastX >= 0) pathDistance += Math.abs(x - lastX);
+                        lastX = x;
+                    }
+                    if (y != null) {
+                        if (gestureActive && lastY >= 0) {
+                            // The X and Y axes arrive as separate events; the path
+                            // approximation is refined on the next coordinate pair.
+                        }
+                        lastY = y;
+                    }
+
+                    long now = SystemClock.elapsedRealtime();
 
                     if (touchDown) {
-                        long now = SystemClock.elapsedRealtime();
                         if (now <= syntheticInputIgnoreUntilV411
                                 && now - lastSyntheticInputAtV411 <= 220L) {
                             diagnostic("[人工检测V4.11] 忽略与程序输入高度同步的触摸事件，delta="
@@ -5323,15 +5419,74 @@ public final class TaskExecutor {
                             continue;
                         }
 
+                        if (lastGestureEndAt > 0L && now > lastGestureEndAt) {
+                            HumanOperationExperienceStore.recordWait(
+                                    lastContext,
+                                    currentExecutingTaskV464,
+                                    activeCategory.label,
+                                    now - lastGestureEndAt);
+                        }
+
                         physicalTouchDetected = true;
                         physicalTouchAt = now;
-                        markUserAbortV48("检测到真实手指触摸屏幕");
+                        if (!userAborted) {
+                            markUserAbortV48("检测到真实手指触摸屏幕");
+                        }
+
+                        gestureActive = true;
+                        downAt = now;
+                        startX = x == null ? lastX : x;
+                        startY = y == null ? lastY : y;
+                        lastX = startX;
+                        lastY = startY;
+                        pathDistance = 0f;
+                        continue;
+                    }
+
+                    if (gestureActive && touchUp) {
+                        int endX = x == null ? lastX : x;
+                        int endY = y == null ? lastY : y;
+                        if (startX >= 0 && startY >= 0 && endX >= 0 && endY >= 0) {
+                            int duration = (int) Math.max(0L, now - downAt);
+                            double directDistance = Math.hypot(endX - startX, endY - startY);
+                            double angle = Math.toDegrees(Math.atan2(endY - startY, endX - startX));
+                            if (directDistance < 30.0 && duration < 450) {
+                                HumanOperationExperienceStore.recordRawTap(
+                                        lastContext,
+                                        currentExecutingTaskV464,
+                                        activeCategory.label,
+                                        endX, endY, screenW, screenH);
+                            } else {
+                                float effectivePath = Math.max(pathDistance, (float) directDistance);
+                                float speed = duration <= 0 ? 0f : effectivePath * 1000f / duration;
+                                HumanOperationExperienceStore.recordSwipe(
+                                        lastContext,
+                                        currentExecutingTaskV464,
+                                        activeCategory.label,
+                                        startX, startY, endX, endY,
+                                        duration, effectivePath, (float) angle, speed,
+                                        screenW, screenH);
+                            }
+                            lastGestureEndAt = now;
+                        }
+                        gestureActive = false;
+                        startX = startY = lastX = lastY = -1;
+                        pathDistance = 0f;
+                    }
+
+                    // Before takeover the old behavior remains immediate. After takeover
+                    // we intentionally keep this reader alive for the teaching window so
+                    // subsequent human gestures can be recorded.
+                    if (!userAborted && !running) break;
+                    if (userAborted
+                            && humanOperationTeachingThreadV467 == null
+                            && !isHumanTeachingThreadAliveV464()) {
                         break;
                     }
                 }
             } catch (Throwable t) {
-                if (running && !userAborted) {
-                    diagnostic("[人工检测] 物理触摸监听退出：" + t);
+                if (running || userAborted) {
+                    diagnostic("[人工检测V4.67] 触摸经验监听退出：" + t);
                 }
             } finally {
                 if (process != null) {
@@ -5343,6 +5498,22 @@ public final class TaskExecutor {
         thread.setDaemon(true);
         touchMonitorThread = thread;
         thread.start();
+    }
+
+    private static Integer parseTouchCoordinateV467(String line, String axis) {
+        if (line == null || axis == null || !line.contains(axis)) return null;
+        String[] parts = line.trim().split("\\s+");
+        if (parts.length == 0) return null;
+        String token = parts[parts.length - 1];
+        try {
+            if (token.startsWith("0X")) return Integer.parseInt(token.substring(2), 16);
+            if (token.matches("[0-9A-F]+") && token.matches(".*[A-F].*")) {
+                return Integer.parseInt(token, 16);
+            }
+            return Integer.parseInt(token);
+        } catch (Throwable ignored) {
+            try { return Integer.parseInt(token, 16); } catch (Throwable ignoredAgain) { return null; }
+        }
     }
 
     private static void stopPhysicalTouchMonitorV48() {
