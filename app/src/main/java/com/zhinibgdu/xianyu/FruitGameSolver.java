@@ -67,6 +67,9 @@ final class FruitGameSolver {
     private static final int MAX_RECOVERY_RETRY = 3;
     private static final int MAX_NO_ACTION_RETRY = 1;
     private static final int MAX_DEADLOCK_RESTARTS = 2;
+    private static final long IDEA_TIMEOUT_MS = 15_000L;
+    private static final long HARD_STALL_TIMEOUT_MS = 30_000L;
+    private static final int IDEA_LONG_TERM_REJECT_COUNT = 3;
     private static final int REMAINING_OCR_INTERVAL = 3;
     // A failed fruit tap must stay blocked until a confirmed elimination changes the board.
     // The old 12s TTL expired while the eight-frame verification was still running, which
@@ -295,6 +298,9 @@ final class FruitGameSolver {
         int pairActions = 0;
         int noActionRetry = 0;
         int deadlockRestarts = 0;
+        String unchangedBoardIdea = "";
+        long unchangedBoardSince = SystemClock.elapsedRealtime();
+        Set<String> rejectedIdeasThisRound = new HashSet<>();
         boolean recovering = false;
         boolean fruitTapAttempted = false;
         // V4.45.1：道具推广弹窗可能在长时间无操作后异步随机出现。
@@ -420,6 +426,13 @@ final class FruitGameSolver {
                 // 仍必须通过槽位和剩余数闭环，特征库绝不绕过物理安全判断。
                 FruitDropFeatureStore featureStore = new FruitDropFeatureStore(context,
                         frame.bitmap.getWidth(), frame.bitmap.getHeight());
+                String boardIdea = boardIdeaSignature(objects, drop, tray, remaining);
+                if (!boardIdea.equals(unchangedBoardIdea)) {
+                    unchangedBoardIdea = boardIdea;
+                    unchangedBoardSince = SystemClock.elapsedRealtime();
+                    noActionRetry = 0;
+                }
+                String waitIdea = boardIdea + "|WAIT_SAME_PLAN";
 
                 if (objects.size() < 10) {
                     saveVisionDiagnostic(context, frame.bitmap, "low_objects_" + objects.size());
@@ -574,13 +587,25 @@ final class FruitGameSolver {
                         continue;
                     }
 
-                    if (noActionRetry < MAX_NO_ACTION_RETRY) {
-                        host.log("[水果V4.44-step5] 当前轮未生成有效动作，进入重新建模流程 retry=" + (noActionRetry + 1));
-                noActionRetry++;
-                        host.log("[无动作V4.42] 等待动画/棋盘刷新后重新截图 " + noActionRetry + "/"
-                                + MAX_NO_ACTION_RETRY + " / objects=" + objects.size());
+                    long ideaAgeMs = Math.max(0L,
+                            SystemClock.elapsedRealtime() - unchangedBoardSince);
+                    boolean learnedReject = StallIdeaStore.shouldSkip(context, waitIdea);
+                    boolean timedOut = ideaAgeMs >= IDEA_TIMEOUT_MS;
+                    boolean hardStalled = ideaAgeMs >= HARD_STALL_TIMEOUT_MS;
+                    if (!learnedReject && !timedOut) {
+                        noActionRetry++;
+                        host.log("[思路V4.58] 当前等待/重建思路仍在15秒观察窗："
+                                + ideaAgeMs + "/" + IDEA_TIMEOUT_MS
+                                + "ms / retry=" + noActionRetry);
                         if (!host.sleep(300L, 500L)) return Result.ABORTED;
                         continue;
+                    }
+                    if (rejectedIdeasThisRound.add(waitIdea)) {
+                        if (timedOut) StallIdeaStore.recordTimeout(context, waitIdea);
+                        host.log("[思路V4.58] ❌ 当前思路失效并加入本局黑名单：age="
+                                + ideaAgeMs + "ms"
+                                + (learnedReject ? " / 特征库已有3次同类超时" : "")
+                                + (hardStalled ? " / 已达30秒硬停止" : ""));
                     }
                     // 2/3 或 3/3 时已经没有可点的直配、完整对子或安全解阻链。
                     // 旧版会在这里被异步弹窗的“关闭→重新建模”循环拖住数分钟。
@@ -678,6 +703,7 @@ final class FruitGameSolver {
                 }
 
                 noActionRetry = 0;
+                StallIdeaStore.recordRecovery(context, waitIdea);
                 host.log("[水果V4.44] move生成成功: trayChoice=" + (trayChoice != null)
                         + ", pair=" + (pair != null)
                         + ", safePush=" + (safePush != null));
@@ -4133,6 +4159,68 @@ final class FruitGameSolver {
                 if (hist[i] > hist[best]) best = i;
             }
             return best;
+        }
+    }
+
+    private static String boardIdeaSignature(
+            List<FruitObject> objects, DropAnalysis drop, TrayState tray, int remaining
+    ) {
+        int objectBucket = objects == null ? 0 : Math.min(25, objects.size() / 4);
+        int clearBucket = drop == null ? 0 : Math.min(9, drop.droppable.size());
+        int blockedBucket = drop == null ? 0 : Math.min(12, drop.blocked.size() / 3);
+        int trayCount = tray == null ? -1 : tray.count;
+        int remainingBucket = remaining < 0 ? -1 : remaining / 4;
+        return "T" + trayCount + "_O" + objectBucket + "_D" + clearBucket
+                + "_B" + blockedBucket + "_R" + remainingBucket;
+    }
+
+    /**
+     * Learns only that waiting on an unchanged board is ineffective. It never
+     * blacklists a fruit, coordinate or valid move. Three verified timeouts are
+     * required before a future similar board skips the 15-second observation window.
+     */
+    private static final class StallIdeaStore {
+        private static final String PREFIX = "fruit_stall_idea_v1_";
+
+        static boolean shouldSkip(Context context, String idea) {
+            SharedPreferences prefs = prefs(context);
+            return prefs != null && prefs.getInt(key(idea) + "_fail", 0)
+                    >= IDEA_LONG_TERM_REJECT_COUNT;
+        }
+
+        static void recordTimeout(Context context, String idea) {
+            SharedPreferences prefs = prefs(context);
+            if (prefs == null) return;
+            String key = key(idea);
+            int failures = Math.min(9, prefs.getInt(key + "_fail", 0) + 1);
+            prefs.edit()
+                    .putInt(key + "_fail", failures)
+                    .putLong(key + "_last_fail", System.currentTimeMillis())
+                    .apply();
+        }
+
+        static void recordRecovery(Context context, String idea) {
+            SharedPreferences prefs = prefs(context);
+            if (prefs == null) return;
+            String key = key(idea);
+            int failures = prefs.getInt(key + "_fail", 0);
+            if (failures <= 0) return;
+            prefs.edit()
+                    .putInt(key + "_fail", failures - 1)
+                    .putLong(key + "_last_recovery", System.currentTimeMillis())
+                    .apply();
+        }
+
+        private static SharedPreferences prefs(Context context) {
+            return context == null ? null : context.getSharedPreferences(
+                    FRUIT_FEATURE_PREFS, Context.MODE_PRIVATE);
+        }
+
+        private static String key(String idea) {
+            String safe = idea == null ? "" : idea;
+            String reversed = new StringBuilder(safe).reverse().toString();
+            return PREFIX + Integer.toHexString(safe.hashCode()) + '_'
+                    + Integer.toHexString(reversed.hashCode());
         }
     }
 
