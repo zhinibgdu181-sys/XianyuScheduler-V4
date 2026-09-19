@@ -157,7 +157,7 @@ final class FruitGameSolver {
         if (context == null || suPath == null || suPath.isEmpty() || host == null) {
             return Result.SAFE_STOP_CLEAN;
         }
-        host.log("[水果V4.55] Solver启动；启用自适应短等待、死局重开和可下落特征学习：单水果 "
+        host.log("[水果V4.57] Solver启动；特征库仅记录、不参与动作门槛：单水果 "
                 + DIRECT_TAP_SETTLE_MIN_MS + "~" + DIRECT_TAP_SETTLE_MAX_MS
                 + "ms / B "
                 + PAIR_B_TAP_SETTLE_MIN_MS + "~" + PAIR_B_TAP_SETTLE_MAX_MS
@@ -2278,11 +2278,8 @@ final class FruitGameSolver {
                 if (relation != null && relation.blocker == fruit) unlockGain++;
             }
             double lower = clamp01(fruit.centerY / Math.max(1.0, frameHeight));
-            // 历史经验只用于同样位置/外观桶的排序。没有经验时为0，不影响
-            // 当前视觉算法；负经验也不会把“当前明确无遮挡”的水果直接判死。
-            double learned = featureStore == null ? 0.0 : featureStore.prior(fruit);
             double rank = 0.66 * Math.min(1.0, unlockGain / 3.0)
-                    + 0.24 * lower + 0.10 * learned;
+                    + 0.34 * lower;
             SafePushChoice candidate = new SafePushChoice(
                     fruit, 0.0, false, false, unlockGain, 0, rank,
                     false, 0);
@@ -2304,8 +2301,9 @@ final class FruitGameSolver {
         SafePushChoice best = null;
         for (FruitObject fruit : drop.droppable) {
             if (fruit == null || isBlockedPosition(blockedPositions, fruit)) continue;
-            if (!hasConservativeDropClearance(fruit, objects, frameWidth, frameHeight)) continue;
-            if (countPotentialCascadeFollowers(fruit, objects, drop) != 0) continue;
+            // analyzeDroppability 已经确认当前水果无遮挡。这里不再叠加一套
+            // “保守间隙/必须有后手”门槛，否则会出现日志中的6颗可下落却0动作。
+            int cascadeFollowers = countPotentialCascadeFollowers(fruit, objects, drop);
 
             int unlockGain = 0;
             for (BlockingRelation relation : drop.blocked) {
@@ -2320,17 +2318,15 @@ final class FruitGameSolver {
                     break;
                 }
             }
-            // 禁止把纯随机水果塞进第三槽：必须能解锁至少一个目标，或已经看到
-            // 后续同类（即使该同类暂时被挡住）。
-            if (unlockGain <= 0 && !hasMate) continue;
             double lower = clamp01(fruit.centerY / Math.max(1.0, frameHeight));
-            double learned = featureStore == null ? 0.0 : featureStore.prior(fruit);
-            double rank = 0.54 * Math.min(1.0, unlockGain / 2.0)
-                    + 0.32 * (hasMate ? 1.0 : 0.0)
-                    + 0.09 * lower + 0.05 * learned;
+            // 第三槽必须推进：优先能解锁、已有同类后手、级联最少且更靠下者。
+            // 特征库不参与此分数，避免历史数据影响当前局面是否操作。
+            double rank = 0.48 * Math.min(1.0, unlockGain / 2.0)
+                    + 0.28 * (hasMate ? 1.0 : 0.0)
+                    + 0.18 * lower - 0.06 * Math.min(2, cascadeFollowers);
             SafePushChoice candidate = new SafePushChoice(
                     fruit, hasMate ? BRIDGE_MIN_PAIR_SCORE : 0.0,
-                    hasMate, false, unlockGain, 0, rank, false, 0);
+                    hasMate, false, unlockGain, 0, rank, false, cascadeFollowers);
             if (best == null || candidate.rank > best.rank) best = candidate;
         }
         return best;
