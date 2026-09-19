@@ -3591,7 +3591,8 @@ public final class TaskExecutor {
                     // V4.10：先用真实的侧边返回手势退出外部/广告层；
                     // 只有手势恢复失败时才调用旧的导航恢复兜底。
                     attemptedReturn = true;
-                    if (conditionalBackRecoveryV410(suPath, taskName, "视频外部页条件返回")) {
+                    if (elapsed >= 15000L
+                            && fastDoubleRightBackV420(suPath, taskName, "视频完成后的外部页快速退出")) {
                         doubleSwipeDone = true;
                         return true;
                     }
@@ -3615,10 +3616,9 @@ public final class TaskExecutor {
                     // V4.42.2: 广告/试玩页不是任务失败，而是外部恢复流程。
                     // 第一次只退出广告层，不增加失败计数。
                     attemptedReturn = true;
-                    TaskProfileStoreV48.recordRecovery(taskName, "video_ad_first_back");
-                    diagnostic("[视频广告恢复V4.42.2] 第一次退出广告层");
-                    preferredRightBackOnceV410(suPath, "视频广告页首次返回");
-                    paceSleepV415(900L, 1300L);
+                    TaskProfileStoreV48.recordRecovery(taskName, "video_ad_detected_wait_for_completion");
+                    diagnostic("[视频广告恢复V4.42.2] 检测到广告/试玩页，但未满15秒，继续等待视频完成");
+                    // 视频最低要求未达到时不返回，避免过早退出导致任务失败。
                 }
                 continue;
             }
@@ -3644,25 +3644,20 @@ public final class TaskExecutor {
                 if (recoverToXianyuTaskPanelV47(suPath, "视频超时恢复")) {
                     attemptedReturn = true;
                     if (!doubleSwipeDone) {
-                        doubleSwipeDone = conditionalBackRecoveryV410(suPath, taskName, "视频超时恢复");
-                        if (doubleSwipeDone) {
-                            TaskProfileStoreV48.setReturnSwipes(taskName, 2);
-                        }
+                        doubleSwipeDone = fastDoubleRightBackV420(
+                                suPath, taskName, "视频超时恢复快速双滑");
                     }
-                    return true;
+                    return doubleSwipeDone; 
                 }
             }
         }
 
-        if (recoverToXianyuTaskPanelV47(suPath, "视频55秒最终恢复")) {
-            if (!doubleSwipeDone) {
-                doubleSwipeDone = conditionalBackRecoveryV410(suPath, taskName, "视频最终恢复");
-                if (doubleSwipeDone) {
-                    TaskProfileStoreV48.setReturnSwipes(taskName, 2);
-                }
-            }
-            ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "视频最终确认");
-            if (isTaskPageV45(null, ocr)) return true;
+        if (!doubleSwipeDone) {
+            doubleSwipeDone = fastDoubleRightBackV420(
+                    suPath, taskName, "视频最终恢复快速双滑");
+        }
+        if (doubleSwipeDone) {
+            return true;
         }
 
         // V4.42.2: 如果整个过程包含广告页，不能把广告跳转误判为任务失败。
@@ -4628,6 +4623,66 @@ public final class TaskExecutor {
         RootResult r = rootWithPath(suPath, "input swipe " + startX + " " + y
                 + " " + endX + " " + y + " 260");
         return r.exitCode == 0;
+    }
+
+    /**
+     * 视频任务完成后的专用快速退出：连续执行两次右侧边缘返回手势，
+     * 两次之间只留极短的事件间隔，不在第一次返回后等待 OCR/页面动画。
+     * 目的：视频/试玩页通常叠了两层页面，一次返回后等待会让第二层返回时机丢失。
+     */
+    private static boolean fastDoubleRightBackV420(String suPath, String taskName, String reason) {
+        if (userAborted || gameSolverOwnsPageV420 || gameIncompleteHoldV421) return false;
+
+        int[] screen = getScreenSizeV43(suPath);
+        if (screen == null || screen.length < 2) return false;
+
+        int width = screen[0];
+        int height = screen[1];
+        int y = Math.round(height * 0.75f);
+        int startX = Math.max(1, width - 2);
+        int endX = Math.round(width * 0.76f);
+
+        String gesture = "input swipe " + startX + " " + y + " " + endX + " " + y + " 220";
+        diagnostic("[视频快速双返回V4.20] " + reason
+                + "：#1 " + startX + "," + y + " → " + endX + "," + y);
+
+        RootResult first = rootWithPath(suPath, gesture);
+        if (first.exitCode != 0 || userAborted) {
+            diagnostic("[视频快速双返回V4.20] #1失败");
+            return false;
+        }
+
+        // 不做 screenshot / OCR / 650ms 等待；只给 Android 输入队列一个极短间隔。
+        SystemClock.sleep(90L);
+
+        if (userAborted) return false;
+
+        diagnostic("[视频快速双返回V4.20] #2 " + startX + "," + y + " → " + endX + "," + y);
+        RootResult second = rootWithPath(suPath, gesture);
+        if (second.exitCode != 0 || userAborted) {
+            diagnostic("[视频快速双返回V4.20] #2失败");
+            return false;
+        }
+
+        TaskProfileStoreV48.setReturnSwipes(taskName, 2);
+
+        // 双滑完成后只做一次短确认；失败时交给原有恢复逻辑，不在这里连续 BACK。
+        SystemClock.sleep(280L);
+        ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "视频双返回后任务面板确认");
+        if (isTaskPageV45(null, ocr)) {
+            diagnostic("[视频快速双返回V4.20] ✅ 连续双滑后已确认任务面板");
+            return true;
+        }
+
+        String fg = getFg(suPath, false);
+        if (MODULE_PACKAGE.equals(fg)) {
+            markUserAbortV48("视频双返回后检测到用户切回助手");
+            return false;
+        }
+
+        diagnostic("[视频快速双返回V4.20] 双滑已执行，但暂未确认任务面板："
+                + printableFg(fg));
+        return false;
     }
 
     private static boolean conditionalBackRecoveryV410(
