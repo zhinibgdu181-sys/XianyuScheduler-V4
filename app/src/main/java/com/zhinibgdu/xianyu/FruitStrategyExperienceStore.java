@@ -14,6 +14,8 @@ import java.util.Locale;
  */
 final class FruitStrategyExperienceStore {
 
+    static final String STRATEGY_TRAY_MATCH = "TRAY_MATCH";
+    static final String STRATEGY_PAIR = "PAIR";
     static final String STRATEGY_SAFE_PUSH = "SAFE_PUSH";
     static final String STRATEGY_LAST_SLOT_PUSH = "LAST_SLOT_PUSH";
     static final String STRATEGY_DEPENDENCY_PUSH = "DEPENDENCY_PUSH";
