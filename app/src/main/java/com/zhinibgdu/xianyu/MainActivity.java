@@ -574,8 +574,35 @@ public class MainActivity extends Activity {
             selected.append("跳转任务");
         }
 
-        setStatusMessage("已选择：" + selected + "。\n点击“执行任务”后将按本地 → 视频 → 小游戏 → 跳转顺序执行。");
-        triggerXianyuTask(TaskCategory.ALL);
+        // 手动点击“执行任务”时，必须严格按照当前开关启动对应分类。
+        // 特别是只开启“视频任务”时不能再传 ALL，否则调度器可能依据旧配置
+        // 继续进入“闲鱼本地任务”。
+        TaskCategory selectedCategory = null;
+        int selectedCount = 0;
+        if (local) {
+            selectedCategory = TaskCategory.LOCAL;
+            selectedCount++;
+        }
+        if (video) {
+            selectedCategory = TaskCategory.VIDEO;
+            selectedCount++;
+        }
+        if (game) {
+            selectedCategory = TaskCategory.GAME;
+            selectedCount++;
+        }
+        if (jump) {
+            selectedCategory = TaskCategory.JUMP;
+            selectedCount++;
+        }
+
+        if (selectedCount == 1 && selectedCategory != null) {
+            setStatusMessage("已选择：" + selected + "。\n执行任务时严格只运行当前分类，不进入其他任务分类。");
+            triggerXianyuTask(selectedCategory);
+        } else {
+            setStatusMessage("已选择：" + selected + "。\n点击“执行任务”后按已开启分类顺序执行。");
+            triggerXianyuTask(TaskCategory.ALL);
+        }
     }
 
     private void triggerXianyuTask(TaskCategory category) {
