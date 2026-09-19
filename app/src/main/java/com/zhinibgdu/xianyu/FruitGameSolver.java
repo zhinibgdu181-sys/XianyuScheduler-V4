@@ -1370,38 +1370,39 @@ final class FruitGameSolver {
                 || objects == null || objects.isEmpty()) return null;
 
         /*
-         * V4.39 栈模型：
-         * tray.items 不再视为三个独立槽位。
-         * 新水果落入最上层，因此只有 TOP 才能发生二消。
+         * V4.48：三槽满并不意味着只能消TOP。
+         * 只要棋盘上存在“与任意一个已占槽水果同类、且能够真正落入槽口”的水果，
+         * 就可以通过这次点击完成对应的二消并释放一个槽位。
          *
-         * 以前：
-         * [西瓜, 香蕉, 桃子]
-         * 会遍历三个水果，可能错误点击香蕉/桃子。
-         *
-         * 现在：
-         * TOP=西瓜
-         * 只允许寻找西瓜。
+         * 因此这里必须遍历 TOP / MID / BOTTOM 三个已占槽位，而不能把 tray.items.get(0)
+         * 当成唯一合法匹配对象。尤其在 3/3 状态下，禁止安全压栈，但允许任意槽内同类
+         * 的直接二消；如果三个槽位都没有可落槽的同类水果，才判定为无合法普通动作。
          */
         if (tray.items.isEmpty()) return null;
-
-        TrayItem topItem = tray.items.get(0);
-        if (topItem == null || topItem.hist == null) return null;
 
         TrayMatchChoice best = null;
         double denomY = Math.max(1.0, frameHeight);
 
-        for (FruitObject fruit : objects) {
-            if (fruit == null) continue;
-            if (isBlockedPosition(blockedPositions, fruit)) continue;
-            if (findNearestBlockingFruit(fruit, objects, frameWidth, frameHeight) != null) continue;
+        for (int slotIndex = 0; slotIndex < tray.items.size(); slotIndex++) {
+            TrayItem trayItem = tray.items.get(slotIndex);
+            if (trayItem == null || trayItem.hist == null) continue;
 
-            double hist = histogramCos(topItem.hist, fruit.hist);
-            if (hist < TRAY_HIST_MATCH_MIN) continue;
+            for (FruitObject fruit : objects) {
+                if (fruit == null) continue;
+                if (isBlockedPosition(blockedPositions, fruit)) continue;
+                // “无遮挡”仍不足以证明可以进槽；这里必须使用完整的下落通道判定。
+                if (findNearestBlockingFruit(fruit, objects, frameWidth, frameHeight) != null) continue;
 
-            double lower = clamp01(fruit.centerY / denomY);
-            double rank = 0.84 * hist + 0.16 * lower;
-            TrayMatchChoice candidate = new TrayMatchChoice(topItem, fruit, hist, rank);
-            if (best == null || candidate.rank > best.rank) best = candidate;
+                double hist = histogramCos(trayItem.hist, fruit.hist);
+                if (hist < TRAY_HIST_MATCH_MIN) continue;
+
+                double lower = clamp01(fruit.centerY / denomY);
+                // 保留槽位顺序作为极弱的稳定性 tie-break，绝不否决 MID/BOTTOM 的合法二消。
+                double slotTieBreak = (tray.items.size() - slotIndex) * 0.0001;
+                double rank = 0.84 * hist + 0.16 * lower + slotTieBreak;
+                TrayMatchChoice candidate = new TrayMatchChoice(trayItem, fruit, hist, rank);
+                if (best == null || candidate.rank > best.rank) best = candidate;
+            }
         }
 
         return best;
