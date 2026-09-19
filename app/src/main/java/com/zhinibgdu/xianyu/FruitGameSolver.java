@@ -95,7 +95,7 @@ final class FruitGameSolver {
     // 但颜色直方图仍保持高门槛，避免把柠檬、橙子等近色水果混为一类。
     private static final double BRIDGE_MIN_PAIR_SCORE = 0.930;
     private static final double BRIDGE_MAX_RGB_MAD = 0.045;
-    private static final double BRIDGE_MIN_HIST_COS = 0.992;
+    private static final double BRIDGE_MIN_HIST_COS = 0.975;
     private static final double BRIDGE_MIN_SHAPE_IOU = 0.800;
 
     // V4.36.3：按实机截图标定 V 形漏斗，而不是把“底部”当成一条水平线。
@@ -1428,7 +1428,19 @@ final class FruitGameSolver {
     static boolean looksLikeBlockingFunctionPopupText(String text) {
         String t = normalize(text);
         if (t.isEmpty()) return false;
-        if (t.contains("解锁所有槽位") || t.contains("解锁所有糟位")) return true;
+
+        // 实机 OCR 会把“槽位”识别成“糟位/檀位/位”，也会把“使用”识别成
+        // “[DJ使用/□使用”等带噪声文本。只要同时出现“解锁槽位”语义和
+        // 工具动作词，就认为是阻塞型道具弹窗；绝不点击弹窗里的功能按钮，
+        // 只交给 dismissBlockingFunctionPopup* 点击固定右上角 X。
+        boolean unlockSlotPopup = (t.contains("解锁所有槽位")
+                || t.contains("解锁所有糟位")
+                || t.contains("解锁所有檀位")
+                || t.contains("解锁") && (t.contains("槽位")
+                || t.contains("糟位")
+                || t.contains("檀位")));
+        if (unlockSlotPopup) return true;
+
         boolean useAction = t.contains("使用") || t.contains("立即使用") || t.contains("确认使用");
         boolean toolName = t.contains("解锁") || t.contains("消除") || t.contains("打乱");
         return useAction && toolName;
