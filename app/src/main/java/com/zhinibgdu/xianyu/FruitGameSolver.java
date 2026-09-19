@@ -772,6 +772,7 @@ final class FruitGameSolver {
                                 host, beforeRemaining, pairActions + 1, "槽位直配",
                                 !exactTrayEvidence);
                         if (verify.aborted) return Result.ABORTED;
+                        if (verify.failed) return Result.GAME_FAILED;
                         if (verify.completed) return Result.COMPLETED;
                         if (verify.confirmed) {
                             pairActions++;
@@ -881,6 +882,7 @@ final class FruitGameSolver {
                             RemainingVerification verify = verifyPairRemaining(
                                     host, beforeRemaining, pairActions + 1, "压栈后级联二消", true);
                             if (verify.aborted) return Result.ABORTED;
+                            if (verify.failed) return Result.GAME_FAILED;
                             if (verify.completed) return Result.COMPLETED;
                             if (verify.confirmed) {
                                 pairActions++;
@@ -975,6 +977,7 @@ final class FruitGameSolver {
                         RemainingVerification verify = verifyPairRemaining(
                                 host, beforeRemaining, pairActions + 1, "A点击后级联状态", true);
                         if (verify.aborted) return Result.ABORTED;
+                        if (verify.failed) return Result.GAME_FAILED;
                         if (verify.completed) return Result.COMPLETED;
                         if (verify.confirmed) {
                             safeRecycle(afterAObs.frame.bitmap);
@@ -1084,6 +1087,7 @@ final class FruitGameSolver {
                             host, beforeRemaining, pairActions + 1, "棋盘对子",
                             afterBTrayCount != beforeTrayCount);
                     if (verify.aborted) return Result.ABORTED;
+                    if (verify.failed) return Result.GAME_FAILED;
                     if (verify.completed) return Result.COMPLETED;
                     if (verify.confirmed) {
                         pairActions++;
@@ -2810,6 +2814,10 @@ final class FruitGameSolver {
                         "水果V4.42/" + stage + "验证#" + actionIndex + "/" + verification);
                 if (host.aborted()) return RemainingVerification.aborted();
                 String text = normalize(snapshot.fullText);
+                if (looksLikeFailedRound(text)) {
+                    host.log("[游戏V4.60] ✅ 剩余数验证发现明确失败页，立即结束当前游戏求解");
+                    return RemainingVerification.failed();
+                }
                 afterRemaining = parseRemaining(text);
                 if (isRoundCompleted(text)) return RemainingVerification.completed(afterRemaining);
                 if (PairVerification.confirmed(beforeRemaining, afterRemaining)) {
@@ -4336,6 +4344,7 @@ final class FruitGameSolver {
         final boolean confirmed;
         final boolean completed;
         final boolean aborted;
+        final boolean failed;
         final int afterRemaining;
 
         RemainingVerification(
@@ -4344,18 +4353,33 @@ final class FruitGameSolver {
                 boolean aborted,
                 int afterRemaining
         ) {
+            this(confirmed, completed, aborted, false, afterRemaining);
+        }
+
+        RemainingVerification(
+                boolean confirmed,
+                boolean completed,
+                boolean aborted,
+                boolean failed,
+                int afterRemaining
+        ) {
             this.confirmed = confirmed;
             this.completed = completed;
             this.aborted = aborted;
+            this.failed = failed;
             this.afterRemaining = afterRemaining;
         }
 
         static RemainingVerification completed(int afterRemaining) {
-            return new RemainingVerification(true, true, false, afterRemaining);
+            return new RemainingVerification(true, true, false, false, afterRemaining);
         }
 
         static RemainingVerification aborted() {
-            return new RemainingVerification(false, false, true, -1);
+            return new RemainingVerification(false, false, true, false, -1);
+        }
+
+        static RemainingVerification failed() {
+            return new RemainingVerification(false, false, false, true, -1);
         }
     }
 
