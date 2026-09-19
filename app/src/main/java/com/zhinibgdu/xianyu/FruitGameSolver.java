@@ -1633,7 +1633,7 @@ final class FruitGameSolver {
                 double trayMatch = 0.0;
                 for (TrayItem item : tray.items) {
                     if (item == null || item.hist == null) continue;
-                    trayMatch = Math.max(trayMatch, cosine(released.hist, item.hist));
+                    trayMatch = Math.max(trayMatch, histCosine(released.hist, item.hist));
                 }
 
                 double boardMatch = 0.0;
@@ -1659,8 +1659,7 @@ final class FruitGameSolver {
                 // 所以释放出来的水果必须能直接匹配 blocker 自身，或者与当前TOP直配。
                 double blockerMatch = similarity(blocker, released).score;
                 boolean topSafe = trayCount < 2
-                        || blockerMatch >= MIN_PAIR_SCORE
-                        || trayMatch >= TRAY_HIST_MATCH_MIN;
+                        || blockerMatch >= MIN_PAIR_SCORE;
 
                 boolean useful = trayMatch >= TRAY_HIST_MATCH_MIN
                         || boardMatch >= MIN_PAIR_SCORE
@@ -1740,6 +1739,22 @@ final class FruitGameSolver {
             }
         }
         return pairs;
+    }
+
+    private static double histCosine(float[] a, float[] b) {
+        if (a == null || b == null || a.length == 0 || a.length != b.length) return 0.0;
+        double dot = 0.0;
+        double aa = 0.0;
+        double bb = 0.0;
+        for (int i = 0; i < a.length; i++) {
+            double av = a[i];
+            double bv = b[i];
+            dot += av * bv;
+            aa += av * av;
+            bb += bv * bv;
+        }
+        if (aa <= 0.0 || bb <= 0.0) return 0.0;
+        return dot / Math.sqrt(aa * bb);
     }
 
     static boolean isBridgeMateSimilarity(
