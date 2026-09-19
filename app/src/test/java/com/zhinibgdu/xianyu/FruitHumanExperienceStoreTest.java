@@ -21,10 +21,26 @@ public class FruitHumanExperienceStoreTest {
     }
 
     @Test
-    public void trayIncreaseLearnsSafePush() {
+    public void trayIncreaseNeedsFollowupEvidenceBeforeSafePush() {
         FruitHumanExperienceStore.Transition t =
-                FruitHumanExperienceStore.classify(200, 200, 1, 2, 40, 39, 30, 29);
+                FruitHumanExperienceStore.classify(
+                        200, 200, 1, 2, 40, 39, 30, 29,
+                        18, 19, 0, 1);
         assertEquals(FruitStrategyExperienceStore.STRATEGY_SAFE_PUSH, t.strategy);
+    }
+
+    @Test
+    public void trayIncreaseAloneIsNotSuccessfulExperience() {
+        assertNull(FruitHumanExperienceStore.classify(
+                200, 200, 1, 2, 40, 39, 30, 29,
+                18, 17, 0, 0));
+    }
+
+    @Test
+    public void fillingThirdSlotIsNotLearnedAsSafePush() {
+        assertNull(FruitHumanExperienceStore.classify(
+                200, 200, 2, 3, 40, 39, 30, 29,
+                18, 20, 0, 1));
     }
 
     @Test
