@@ -176,6 +176,11 @@ public final class TaskExecutor {
     private static volatile String gameIncompleteKindV421 = "";
     private static volatile String gameIncompleteTaskV421 = "";
 
+    // V4.60: explicit game-failure handoff. A confirmed failure page is not a
+    // user abort and must be able to return to the task panel so other tasks continue.
+    private static volatile boolean lastTaskAbandonedV460 = false;
+    private static volatile String lastTaskAbandonedReasonV460 = "";
+
     private static final String PROFILE_PREFS_V48 = "xianyu_task_profiles_v48";
     private static final int PROFILE_SCHEMA_V411 = 411;
     private static final long FEATURE_TTL_MS_V411 = 90L * 24L * 60L * 60L * 1000L;
@@ -230,6 +235,8 @@ public final class TaskExecutor {
         gameIncompleteHoldV421 = false;
         gameIncompleteKindV421 = "";
         gameIncompleteTaskV421 = "";
+        lastTaskAbandonedV460 = false;
+        lastTaskAbandonedReasonV460 = "";
         invalidateOcrCacheV411();
         lastTaskPanelOcrAtV415 = 0L;
         diagnostic("[数据路径] " + buildDataPathsLogV435(lastContext));
@@ -1674,6 +1681,9 @@ public final class TaskExecutor {
         int completed = 0;
         Set<String> executed = new HashSet<>();
         Map<String, Integer> attemptsByTask = new HashMap<>();
+        // V4.60: failed/abandoned game tasks are retired only for this scan run.
+        // They must not block classification completion or be reselected on a changed viewport.
+        Set<String> abandonedTaskNames = new HashSet<>();
         int consecutiveFail = 0;
         String exhaustedViewport = "";
         int repeatedViewport = 0;
@@ -1837,6 +1847,12 @@ public final class TaskExecutor {
                     continue;
                 }
 
+                String candidateAttemptKey = normalizeTaskAttemptKeyV46(c.name);
+                if (abandonedTaskNames.contains(candidateAttemptKey)) {
+                    diagnostic("[本轮淘汰V4.60] 已淘汰小游戏任务，不再重复选择：" + c.name);
+                    continue;
+                }
+
                 long cooldownRemain = TaskProfileStoreV48.cooldownRemainingMsV411(c.name);
                 // 小游戏任务必须优先进入真实游戏执行器。
                 // 普通任务的失败冷却只用于防止反复点击外部/浏览任务；
@@ -1952,6 +1968,9 @@ public final class TaskExecutor {
             flow.move(TaskRunStateV411.EXECUTING,
                     target.isClaimReward ? "claim_reward" : "task_action");
 
+            lastTaskAbandonedV460 = false;
+            lastTaskAbandonedReasonV460 = "";
+
             boolean executionReturned;
             if (target.isClaimReward) {
                 executionReturned = paceSleepV415(120L, 240L) && !userAborted;
@@ -1960,6 +1979,24 @@ public final class TaskExecutor {
             }
 
             if (userAborted) break;
+
+            // V4.60: intentional terminal outcome for the current game.
+            if (lastTaskAbandonedV460) {
+                abandonedTaskNames.add(targetAttemptKey);
+                executed.add(target.key());
+                flow.move(TaskRunStateV411.UNVERIFIED, lastTaskAbandonedReasonV460);
+                TaskProfileStoreV48.recordFailure(target.name, lastTaskAbandonedReasonV460);
+                sendStatus(
+                        target.name,
+                        "FAILED",
+                        "本轮已淘汰：" + lastTaskAbandonedReasonV460
+                );
+                diagnostic("[本轮淘汰V4.60] " + target.name
+                        + " / " + lastTaskAbandonedReasonV460
+                        + " / 已返回任务面板，继续扫描其它任务");
+                paceSleepV415(30L, 90L);
+                continue;
+            }
             if (ChannelGoodsTask.matches(target.name) && !executionReturned) {
                 attemptsByTask.put(targetAttemptKey, maxAttemptsForTaskV46(target.name, target.isClaimReward));
             }
@@ -3480,6 +3517,20 @@ public final class TaskExecutor {
             return conditionalBackRecoveryV410(suPath, taskName, "水果游戏完成返回");
         }
 
+        if (result == FruitGameSolver.Result.GAME_FAILED) {
+            boolean returned = exitFailedFruitGameV460(suPath, taskName);
+            if (returned) {
+                lastTaskAbandonedV460 = true;
+                lastTaskAbandonedReasonV460 = "fruit_game_failed_page";
+                gameIncompleteHoldV421 = false;
+                gameIncompleteKindV421 = "";
+                gameIncompleteTaskV421 = "";
+                diagnostic("[水果V4.60] ✅ 失败页已受控返回主页，当前小游戏本轮淘汰");
+                return true;
+            }
+            diagnostic("[水果V4.60] ❌ 失败页存在但无法确认返回主页，保留现场而不是盲退");
+        }
+
         if (userAborted || physicalTouchDetected) return false;
         String stopReason = result == FruitGameSolver.Result.SAFE_STOP_DIRTY
                 ? "fruit_game_safe_stop_dirty"
@@ -3504,6 +3555,71 @@ public final class TaskExecutor {
         if (finalPage == PageKindV411.TASK_PANEL) return true;
         diagnostic("[水果V4.42] 已确认离开水果页，允许受控返回任务面板");
         return conditionalBackRecoveryV410(suPath, taskName, "水果安全停止后非游戏页返回");
+    }
+
+    /**
+     * V4.60: Exit only from an explicitly recognized fruit-game failure page.
+     * Never uses generic BACK. It waits briefly for the game-rendered "返回主页"
+     * control, clicks only that OCR-located control, verifies departure, then
+     * restores the Xianyu task panel.
+     */
+    private static boolean exitFailedFruitGameV460(String suPath, String taskName) {
+        for (int attempt = 1; attempt <= 8 && !userAborted && !physicalTouchDetected; attempt++) {
+            ScreenOcr.Snapshot snapshot;
+            try {
+                invalidateOcrCacheV411();
+                snapshot = captureOcrV45(suPath, "水果V4.60/失败页退出#" + attempt);
+            } catch (Throwable t) {
+                diagnostic("[水果V4.60] 失败页退出OCR异常：" + t.getClass().getSimpleName());
+                snapshot = null;
+            }
+
+            String text = combinedTextV45(null, snapshot);
+            if (snapshot != null && !snapshot.isEmpty()) {
+                diagnostic("[水果V4.60] 失败页退出确认#" + attempt + "：" + trimForLog(text, 220));
+            }
+
+            if (isTaskPageV45(null, snapshot)) {
+                diagnostic("[水果V4.60] ✅ 已直接回到任务面板");
+                return true;
+            }
+            if (FruitGameSolver.looksLikeFailedRound(text)) {
+                ScreenOcr.Item home = snapshot == null ? null : snapshot.findBest("返回主页");
+                if (home != null
+                        && GameTapPolicy.allows(
+                        home.centerX(), home.centerY(), snapshot.width, snapshot.height,
+                        "水果游戏-失败页返回主页")) {
+                    RootResult r = rootWithPath(
+                            suPath,
+                            "input tap " + home.centerX() + " " + home.centerY());
+                    diagnostic("[水果V4.60] 点击失败页‘返回主页’ → "
+                            + home.centerX() + "," + home.centerY()
+                            + " / exit=" + r.exitCode);
+                    if (r.exitCode == 0 && !userAborted) {
+                        if (!paceSleepV415(650L, 950L)) return false;
+                    } else if (userAborted || physicalTouchDetected) {
+                        return false;
+                    }
+                } else {
+                    diagnostic("[水果V4.60] 失败页已确认，但‘返回主页’按钮尚未取得合规OCR坐标，等待渲染");
+                }
+            }
+
+            if (attempt < 8 && !paceSleepV415(320L, 520L)) return false;
+        }
+
+        PageKindV411 finalPage = inspectFruitPageV442(suPath, "失败页退出最终确认");
+        if (finalPage == PageKindV411.TASK_PANEL) return true;
+        if (finalPage == PageKindV411.MODULE_APP) return false;
+
+        // Only after explicit game-exit confirmation do we use the normal task-panel
+        // recovery. This is not a blind BACK from an unresolved game page.
+        boolean recovered = recoverToXianyuTaskPanelV47(suPath, "水果失败页返回后任务面板恢复");
+        if (recovered) {
+            diagnostic("[水果V4.60] ✅ 失败页已离开，任务面板恢复成功：" + taskName);
+            return true;
+        }
+        return false;
     }
 
     private static PageKindV411 inspectFruitPageV442(String suPath, String reason) {
