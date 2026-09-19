@@ -1753,11 +1753,15 @@ public final class TaskExecutor {
             TaskCandidate target = null;
             int targetPriority = Integer.MAX_VALUE;
 
-            boolean hasCurrentCategoryUnfinished = false;
+            // “看到任务卡”与“仍有未完成任务”必须严格区分：
+            // 已验证成功、冷却中、被安全跳过的任务卡都不应该阻止分类完成。
+            // 只有真正未完成且本轮已经达到尝试上限的任务，才属于阻塞态。
+            boolean hasCurrentCategoryTaskCard = false;
+            boolean hasActionableCurrentCategoryTask = false;
             for (TaskCandidate c : candidates) {
                 if (c == null || c.bounds().isEmpty()) continue;
                 if (TaskCategory.classify(c.name) != activeCategory) continue;
-                hasCurrentCategoryUnfinished = true;
+                hasCurrentCategoryTaskCard = true;
 
                 if (shouldSkip(c.name)) {
                     diagnostic("[跳过] " + c.name);
@@ -1778,7 +1782,7 @@ public final class TaskExecutor {
 
                 if (attempts >= maxAttempts) {
                     categoryBlockedByUnfinishedTask = true;
-                    diagnostic("[阻塞] 未完成任务已达到本轮尝试上限，不能把分类当成完成：" 
+                    diagnostic("[阻塞] 未完成任务已达到本轮尝试上限，不能把分类当成完成："
                             + attempts + "/" + maxAttempts + "：" + c.name);
                     continue;
                 }
@@ -1790,6 +1794,7 @@ public final class TaskExecutor {
                     continue;
                 }
 
+                hasActionableCurrentCategoryTask = true;
                 int priority = taskPriorityV46(c);
                 if (priority < targetPriority) {
                     target = c;
@@ -1798,10 +1803,15 @@ public final class TaskExecutor {
             }
 
             if (target == null) {
-                if (hasCurrentCategoryUnfinished && categoryBlockedByUnfinishedTask) {
+                if (categoryBlockedByUnfinishedTask) {
                     diagnostic("[任务分类] 检测到仍未完成的 " + activeCategory.label
                             + " 任务，但本轮尝试已耗尽；禁止宣称分类完成，也禁止返回定时任务 APP");
                     break;
+                }
+
+                if (hasCurrentCategoryTaskCard && !hasActionableCurrentCategoryTask) {
+                    diagnostic("[任务分类] 当前页面存在 " + activeCategory.label
+                            + " 任务卡，但没有任何可执行任务；将继续确认页面，已完成/冷却/跳过任务不再阻塞分类完成");
                 }
                 StringBuilder viewport = new StringBuilder();
                 for (TaskCandidate c : candidates) viewport.append(c.key()).append('|');
