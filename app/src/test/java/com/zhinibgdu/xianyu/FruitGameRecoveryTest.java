@@ -151,6 +151,17 @@ public class FruitGameRecoveryTest {
         assertFalse(FruitGameSolver.looksLikeFruitStartScreen("得骰子赚闲鱼币 去完成"));
     }
 
+    @Test public void repeatedPopupCloseTapRemainsWhitelisted() {
+        assertTrue(GameTapPolicy.allows(
+                1247, 877, 1440, 3120, "水果游戏-关闭道具弹窗"));
+        assertTrue(GameTapPolicy.allows(
+                1247, 877, 1440, 3120, "水果游戏-继续关闭道具弹窗"));
+        assertTrue(GameTapPolicy.allows(
+                1247, 877, 1440, 3120, "水果游戏-继续关闭道具弹窗#2"));
+        assertFalse(GameTapPolicy.allows(
+                1000, 1500, 1440, 3120, "水果游戏-继续关闭道具弹窗"));
+    }
+
     @Test public void toolPopupTextIsRecognizedWithoutRelyingOnPanelColor() {
         assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
                 "解锁 解锁所有槽位 使用 打乱 5%"));
