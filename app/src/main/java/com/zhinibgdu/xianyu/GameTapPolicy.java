@@ -13,6 +13,8 @@ final class GameTapPolicy {
         if ("水果游戏-死局重新开始".equals(reason)
                 || "水果游戏-死局确认重开".equals(reason))
             return nx >= .18 && nx <= .82 && ny >= .22 && ny <= .82;
+        if ("水果游戏-失败页返回主页".equals(reason))
+            return nx >= .20 && nx <= .80 && ny >= .60 && ny <= .90;
         if ("水果游戏-关闭道具弹窗".equals(reason)
                 || (reason != null && reason.startsWith("水果游戏-继续关闭道具弹窗")))
             return nx >= 1160.0/1440 && nx <= 1325.0/1440 && ny >= 740.0/3120 && ny <= 960.0/3120;
