@@ -249,7 +249,6 @@ public final class TaskExecutor {
         lastTaskAbandonedV460 = false;
         lastTaskAbandonedReasonV460 = "";
         currentExecutingTaskV464 = "";
-        humanTeachingStartedV464 = false;
         invalidateOcrCacheV411();
         lastTaskPanelOcrAtV415 = 0L;
         diagnostic("[数据路径] " + buildDataPathsLogV435(lastContext));
@@ -5139,7 +5138,9 @@ public final class TaskExecutor {
                     if (current != null
                             && generation == humanTeachingGenerationV464) {
 
-                        String rejected = FruitHumanExperienceStore.rejectReason(previous, current);
+                        String rejected = previous == null
+                                ? null
+                                : FruitHumanExperienceStore.rejectReason(previous, current);
                         if (rejected != null) {
                             FruitHumanExperienceStore.recordRejectedObservation(
                                     context, task, current, rejected);
