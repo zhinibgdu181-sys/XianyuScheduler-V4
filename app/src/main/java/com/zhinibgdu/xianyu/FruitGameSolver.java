@@ -1945,13 +1945,9 @@ final class FruitGameSolver {
         // OCR 经常只识别到“解锁 + 打乱”，漏掉“所有槽位/使用”等面板文字。
         // 正常水果页的“打乱”本身不会和“解锁”同时出现；因此这组组合也必须视为弹窗。
         boolean unlockSlotPopup = (t.contains("解锁所有槽位")
-                || t.contains("解锁所有糟位")
-                || t.contains("解锁所有檀位")
-                || (t.contains("解锁") && t.contains("槽位"))
-                || (t.contains("解锁") && t.contains("糟位"))
-                || (t.contains("解锁") && t.contains("檀位"))
-                || (t.contains("解锁") && t.contains("打乱")));
-        if (unlockSlotPopup) return true;
+            || t.contains("解锁所有糟位")
+            || t.contains("解锁所有檀位"));
+    if (unlockSlotPopup) return true;
 
         boolean useAction = t.contains("使用") || t.contains("立即使用") || t.contains("确认使用");
         boolean toolName = t.contains("解锁") || t.contains("消除") || t.contains("打乱");
