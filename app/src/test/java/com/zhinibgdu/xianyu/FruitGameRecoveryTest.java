@@ -76,10 +76,11 @@ public class FruitGameRecoveryTest {
         return FruitGameSolver.solveOneRound(context, "su", host);
     }
 
-    @Test public void lowDetectionUsesOneFreshRetryBeforeStopping() {
+    @Test public void lowDetectionWaitsFifteenSecondsBeforeRejectingIdea() {
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
-        assertEquals(2, captures); // original + one fresh no-action retry
-        assertEquals(1, host.countLogs("[无动作V4.42]"));
+        assertEquals(51, captures); // first observation + 50 x 300ms unchanged-board retries
+        assertEquals(50, host.countLogs("[思路V4.58] 当前等待/重建思路仍在15秒观察窗"));
+        assertEquals(1, host.countLogs("[思路V4.58] ❌ 当前思路失效并加入本局黑名单"));
         assertEquals(0, host.taps);
     }
 
@@ -88,17 +89,18 @@ public class FruitGameRecoveryTest {
                 ? snapshot("第2关") : snapshot(GAME);
         assertEquals(FruitGameSolver.Result.COMPLETED, solve());
         assertEquals(2, captures);
-        assertEquals(1, host.countLogs("[无动作V4.42]"));
+        assertEquals(1, host.countLogs("[思路V4.58] 当前等待/重建思路仍在15秒观察窗"));
+        assertEquals(0, host.countLogs("[思路V4.58] ❌ 当前思路失效并加入本局黑名单"));
         assertEquals(0, host.taps);
     }
 
     @Test public void threeScreenshotFailuresCanRecoverOnFourthCapture() {
         frames.addAll(Arrays.asList(null, null, null));
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
-        assertEquals(5, captures);
+        assertEquals(54, captures);
         assertEquals(3, host.countLogs("[恢复V4.42] 重新截图"));
         assertEquals(1, host.countLogs("[恢复V4.42] 已重新确认"));
-        assertEquals(1, host.countLogs("[无动作V4.42]"));
+        assertEquals(50, host.countLogs("[思路V4.58] 当前等待/重建思路仍在15秒观察窗"));
     }
 
     @Test public void fourthConsecutiveScreenshotFailureStops() {
@@ -112,7 +114,7 @@ public class FruitGameRecoveryTest {
     @Test public void successfulObservationResetsRecoveryBudget() {
         frames.addAll(Arrays.asList(null, null, null, bitmap(SKY), null, null, null));
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
-        assertEquals(8, captures);
+        assertEquals(54, captures);
         assertEquals(6, host.countLogs("[恢复V4.42] 重新截图"));
         assertEquals(2, host.countLogs("[恢复V4.42] 已重新确认"));
     }
@@ -124,7 +126,7 @@ public class FruitGameRecoveryTest {
         };
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
         assertEquals(1, host.countLogs("[恢复V4.42] 进入确认重试"));
-        assertEquals(2, captures);
+        assertEquals(51, captures);
     }
 
     @Test public void persistentEntryOcrExceptionIsBounded() {
@@ -140,8 +142,8 @@ public class FruitGameRecoveryTest {
                 : GAME);
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
         assertEquals(1, host.taps);
-        // 两次均来自进入正式棋盘后的观察；启动页本身不再额外截 PNG。
-        assertEquals(2, captures);
+        // 51次均来自进入正式棋盘后的15秒观察；启动页本身不再额外截 PNG。
+        assertEquals(51, captures);
         assertEquals(1, host.countLogs("[开始页V4.43.9]"));
     }
 
@@ -205,7 +207,7 @@ public class FruitGameRecoveryTest {
     @Test public void missingRemainingBaselineRecoversBeforeDecisions() {
         host.ocr = reason -> snapshot(host.ocrCalls == 1 ? "第1关 消除 打乱" : GAME);
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
-        assertEquals(2, captures);
+        assertEquals(51, captures);
         assertEquals(0, host.taps);
     }
 
