@@ -30,9 +30,10 @@ import java.util.regex.Pattern;
  * 3) a clicked fruit must physically reach the tray before the next dependent click.
  *
  * The solver therefore treats the tray as first-class state. A tray fruit is matched
- * before starting a new board-board pair. With two unmatched fruits, a new type is
- * introduced only when a complete high-confidence A/B pair is already available;
- * with all three slots occupied, only a direct match to a tray fruit is permitted.
+ * before starting a new board-board pair. A new type is normally introduced only when
+ * a complete high-confidence A/B pair is already available; V4.63 adds a bounded,
+ * explicitly low-priority 2/3-slot exploration path that first proves an unlock opportunity.
+ * With all three slots occupied, only a direct match to a tray fruit is permitted.
  */
 final class FruitGameSolver {
 
