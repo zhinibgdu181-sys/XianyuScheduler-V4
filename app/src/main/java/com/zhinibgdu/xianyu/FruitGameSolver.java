@@ -247,6 +247,11 @@ final class FruitGameSolver {
         boolean recovering = false;
         boolean fruitTapAttempted = false;
 
+        // V4.44.5：实机初始并非“3槽可用”，而是1槽+“解锁”视频按钮。
+        // detectTrayState() 只能看到已占用槽，不能从空槽判断“是否已解锁”，
+        // 因此单独维护实际已解锁容量：1 → 看广告解锁到2 → 再解锁到3。
+        int unlockedTrayCapacity = 1;
+
         // V4.36 本轮验证失败过的对子进入黑名单，不再重复尝试
         Set<String> failedPairs = new HashSet<>();
         // 本局被证实“点击后仍停在原位”的水果位置。棋盘未变化时不再点它；
@@ -345,7 +350,8 @@ final class FruitGameSolver {
                 //    depth=1可升2槽，要求同类已可下落或本次点击能直接释放同类；
                 //    depth=2可升3槽，但同类必须当前已经可直接下落，下一轮立即消栈顶。
                 // 4) depth=3绝不引入新类型，只允许TOP直配。
-                if (trayChoice == null && tray.count < TRAY_CAPACITY) {
+                if (trayChoice == null && tray.count < TRAY_CAPACITY
+                        && tray.count < unlockedTrayCapacity) {
                     for (double t : FALLBACK_THRESHOLDS_V436) {
                         pair = chooseBestPairWithThreshold(
                                 objects, frame.bitmap.getWidth(), frame.bitmap.getHeight(),
@@ -423,6 +429,25 @@ final class FruitGameSolver {
                         if (!host.sleep(300L, 500L)) return Result.ABORTED;
                         continue;
                     }
+                    // V4.44.5：没有TOP直配时，不能把“槽位未解锁”误判成
+                    // “没有安全动作”。实机截图明确存在中央“解锁”视频按钮；
+                    // 当前槽位容量达到上限时，先看广告解锁下一槽，再重新建模。
+                    if (tray.count < TRAY_CAPACITY && tray.count >= unlockedTrayCapacity) {
+                        safeRecycle(frame.bitmap);
+                        boolean unlocked = unlockNextTraySlot(
+                                context, suPath, host, unlockedTrayCapacity);
+                        if (unlocked) {
+                            unlockedTrayCapacity++;
+                            host.log("[槽位解锁V4.44.5] ✅ 已解锁第" + unlockedTrayCapacity
+                                    + "槽，重新建立棋盘模型");
+                            noActionRetry = 0;
+                            continue;
+                        }
+                        host.log("[槽位解锁V4.44.5] ❌ 第" + (unlockedTrayCapacity + 1)
+                                + "槽解锁未确认，不盲点水果");
+                        return Result.SAFE_STOP_DIRTY;
+                    }
+
                     if (tray.count >= TRAY_CAPACITY) {
                         host.log("[槽位保护V4.38.0] 三槽已满且没有可直接二消的同类水果；"
                                 + "禁止点击任何新类型，CLEAN安全停止");
@@ -859,6 +884,126 @@ final class FruitGameSolver {
      * 只点击弹窗自己的米黄色关闭 X：约 (0.866W, 0.281H)。
      * 点击后重新截图复检；命令执行成功并不等于弹窗真的消失。
      */
+    /**
+     * V4.44.5：点击中央“解锁”视频按钮，等待广告/回到水果页，再把容量交给主循环。
+     *
+     * 重要：这里不把“点击发送成功”当作解锁成功。必须重新看到水果游戏页面，
+     * 否则第二个广告、加载页或广告结束页会被误判成已解锁。
+     */
+    private static boolean unlockNextTraySlot(
+            Context context, String suPath, Host host, int currentCapacity
+    ) {
+        if (context == null || host == null || currentCapacity >= TRAY_CAPACITY) return false;
+
+        ScreenOcr.Snapshot ocr;
+        try {
+            ocr = requireOcr(host, "水果V4.44.5/寻找解锁槽位");
+        } catch (RuntimeException e) {
+            host.log("[槽位解锁V4.44.5] OCR失败：" + e.getClass().getSimpleName());
+            return false;
+        }
+        if (host.aborted()) return false;
+
+        int width = ocr == null ? 0 : ocr.width;
+        int height = ocr == null ? 0 : ocr.height;
+        if (width <= 0 || height <= 0) return false;
+
+        ScreenOcr.Item unlock = ocr.findBest("解锁");
+        int x = unlock == null ? Math.round(width * 0.50f) : unlock.centerX();
+        int y = unlock == null ? Math.round(height * 0.865f) : unlock.centerY();
+
+        // “解锁”可能同时出现在顶部功能区/说明文字中，只接受中央下方按钮区域。
+        if (!isTrayUnlockButtonCoordinate(x, y, width, height)) {
+            x = Math.round(width * 0.50f);
+            y = Math.round(height * 0.865f);
+        }
+
+        host.log("[槽位解锁V4.44.5] 第" + (currentCapacity + 1)
+                + "槽：点击“解锁”视频按钮 → " + x + "," + y
+                + (unlock == null ? " / 比例坐标" : " / OCR坐标"));
+        if (!host.tap(x, y, "水果游戏-解锁下一槽")) {
+            return host.aborted() ? false : false;
+        }
+
+        // 解锁按钮触发的是广告奖励流程；奖励广告通常不能立即跳过，
+        // 所以只在OCR明确出现“跳过/关闭”时处理，不用固定坐标强点广告内容。
+        long deadline = SystemClock.elapsedRealtime() + 45000L;
+        int closeAttempts = 0;
+        int fruitChecks = 0;
+        while (!host.aborted() && SystemClock.elapsedRealtime() < deadline) {
+            if (!host.sleep(700L, 1000L)) return false;
+
+            ScreenOcr.Snapshot current;
+            try {
+                current = requireOcr(host, "水果V4.44.5/解锁广告等待");
+            } catch (RuntimeException e) {
+                continue;
+            }
+            String text = normalize(current == null ? "" : current.fullText);
+
+            // 道具推荐弹窗如果叠在广告/回到游戏瞬间，优先彻底清空它。
+            if (looksLikeBlockingFunctionPopupText(text)) {
+                PopupDismissResult popup = dismissBlockingFunctionPopupFromOcr(
+                        host, current, "解锁广告后道具弹窗");
+                if (popup == PopupDismissResult.ABORTED) return false;
+                if (popup == PopupDismissResult.DISMISSED) continue;
+                continue;
+            }
+
+            if (looksLikeFruitGame(text)) {
+                fruitChecks++;
+                if (fruitChecks >= 2) {
+                    host.log("[槽位解锁V4.44.5] ✅ 广告流程结束，重新进入水果页");
+                    return true;
+                }
+            } else {
+                fruitChecks = 0;
+            }
+
+            ScreenOcr.Item dismiss = findAdDismissItem(current);
+            if (dismiss != null && closeAttempts < 6) {
+                int dx = dismiss.centerX();
+                int dy = dismiss.centerY();
+                host.log("[广告V4.44.5] 检测到可关闭控件 → " + dx + "," + dy);
+                if (host.tap(dx, dy, "水果游戏-关闭广告")) {
+                    closeAttempts++;
+                }
+            }
+        }
+
+        host.log("[槽位解锁V4.44.5] ❌ 45秒内未确认返回水果页");
+        return false;
+    }
+
+    private static boolean isTrayUnlockButtonCoordinate(
+            int x, int y, int width, int height
+    ) {
+        if (width <= 0 || height <= 0) return false;
+        double nx = x / (double) width;
+        double ny = y / (double) height;
+        return nx >= 0.38 && nx <= 0.62 && ny >= 0.80 && ny <= 0.93;
+    }
+
+    private static ScreenOcr.Item findAdDismissItem(ScreenOcr.Snapshot ocr) {
+        if (ocr == null || ocr.width <= 0 || ocr.height <= 0) return null;
+
+        String[] terms = {"跳过广告", "跳过", "关闭广告", "关闭", "Skip", "Close"};
+        for (String term : terms) {
+            ScreenOcr.Item item = ocr.findBest(term);
+            if (item == null) continue;
+            double nx = item.centerX() / (double) ocr.width;
+            double ny = item.centerY() / (double) ocr.height;
+
+            // 只接受广告常见的边缘区域，避免在广告正文里误点“关闭/跳过”文字。
+            if (term.contains("跳过")) {
+                if (nx >= 0.55 || ny >= 0.75 || ny <= 0.25) return item;
+            } else if (nx >= 0.68 || nx <= 0.32 || ny <= 0.25 || ny >= 0.80) {
+                return item;
+            }
+        }
+        return null;
+    }
+
     private static PopupDismissResult dismissBlockingFunctionPopup(
             Context context, String suPath, Host host, GameFrame popupFrame, String stage
     ) {
