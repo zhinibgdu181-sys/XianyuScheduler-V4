@@ -545,7 +545,12 @@ final class FruitGameSolver {
                     if (!host.sleep(260L, 420L)) return Result.ABORTED;
 
                     boolean popupHandled = false;
-                    for (int popupWatch = 0; popupWatch < 3; popupWatch++) {
+                    // V4.52：弹窗可能在“无动作检查”结束后约2~3秒才异步出现。
+                    // 原来只观察3轮，第三轮刚结束就返回，随后页面探针才看见弹窗，
+                    // 此时水果求解器已经退出，导致弹窗无人关闭。
+                    // 延长安全停止前监听窗口，仍然只关闭道具弹窗，不触碰解锁/广告。
+                    final int SAFE_STOP_POPUP_WATCHES = 6;
+                    for (int popupWatch = 0; popupWatch < SAFE_STOP_POPUP_WATCHES; popupWatch++) {
                         ScreenOcr.Snapshot lateCheckpoint;
                         try {
                             lateCheckpoint = requireOcr(
@@ -571,8 +576,10 @@ final class FruitGameSolver {
                             return Result.SAFE_STOP_DIRTY;
                         }
 
-                        // 第一次干净不代表后面不会淡入；继续观察下一帧。
-                        if (popupWatch < 2 && !host.sleep(420L, 620L)) {
+                        // 干净不代表后面不会淡入；继续观察下一帧。
+                        // 最后一轮也不再提前退出，让异步弹窗有机会在窗口内出现。
+                        if (popupWatch < SAFE_STOP_POPUP_WATCHES - 1
+                                && !host.sleep(420L, 620L)) {
                             return Result.ABORTED;
                         }
                     }
