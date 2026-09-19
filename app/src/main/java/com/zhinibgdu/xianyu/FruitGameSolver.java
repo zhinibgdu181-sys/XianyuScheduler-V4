@@ -188,6 +188,19 @@ final class FruitGameSolver {
 
                 firstText = normalize(firstOcr == null ? "" : firstOcr.fullText);
 
+                // V4.62：失败后的“复活”覆盖层不是失败页本身。
+                // 不观看视频复活；只关闭明确识别到的复活弹窗，让下一帧决定
+                // 是重新进入一局还是进入“失败/返回主页”终态。
+                if (looksLikeRevivePopup(firstText)) {
+                    PopupDismissResult revive = dismissRevivePopup(host, firstOcr, "进入确认");
+                    if (revive == PopupDismissResult.ABORTED) return Result.ABORTED;
+                    if (revive != PopupDismissResult.DISMISSED) {
+                        throw new RecoverableObservationException("复活弹窗关闭失败");
+                    }
+                    firstText = "";
+                    continue;
+                }
+
                 if (looksLikeFailedRound(firstText)) {
                     host.log("[游戏V4.60] ✅ 进入即检测到水果游戏失败页，交给上层执行受控返回主页");
                     return Result.GAME_FAILED;
@@ -581,6 +594,23 @@ final class FruitGameSolver {
                     ScreenOcr.Snapshot checkpoint = requireOcr(host,"水果游戏V4.38.0/无安全动作检查");
                     if (host.aborted()) return Result.ABORTED;
                     String text = normalize(checkpoint == null ? "" : checkpoint.fullText);
+
+                    // V4.62：无动作时最容易出现“复活”覆盖层。先关闭它，
+                    // 不把覆盖层误判成普通 SAFE_STOP；关闭后重新建模。
+                    if (looksLikeRevivePopup(text)) {
+                        PopupDismissResult revive = dismissRevivePopup(
+                                host, checkpoint, "无动作复核");
+                        if (revive == PopupDismissResult.ABORTED) return Result.ABORTED;
+                        if (revive == PopupDismissResult.DISMISSED) {
+                            noActionRetry = 0;
+                            recovering = true;
+                            host.log("[游戏V4.62] ✅ 复活弹窗已关闭，重新确认棋盘");
+                            continue;
+                        }
+                        host.log("[游戏V4.62] ❌ 复活弹窗已识别但关闭失败，保留现场");
+                        return Result.SAFE_STOP_DIRTY;
+                    }
+
                     if (looksLikeFailedRound(text)) {
                         host.log("[游戏V4.60] ✅ 无动作复核确认失败页：不再重开/乱点，转入受控返回");
                         return Result.GAME_FAILED;
@@ -2841,6 +2871,75 @@ final class FruitGameSolver {
         return t.contains("开始游戏")
                 || (t.contains("第1关") && t.contains("开始")
                     && !t.contains("消除") && !t.contains("打乱"));
+    }
+
+    /**
+     * V4.62：游戏失败后会先显示“复活”视频弹窗。
+     * 这是一个覆盖层，不是可执行任务，也不是最终失败页。
+     * 只在 OCR 同时给出“复活”及其上下文时识别，避免把其它“复活”字样当成动作。
+     */
+    static boolean looksLikeRevivePopup(String text) {
+        String t = normalize(text);
+        if (t.isEmpty() || !t.contains("复活")) return false;
+        return t.contains("还剩")
+                || t.contains("复活吗")
+                || t.contains("视频复活")
+                || (t.contains("水果") && t.contains("复活"));
+    }
+
+    /**
+     * V4.62：不主动观看视频复活。只关闭游戏提供的右上角 X，
+     * 然后连续复核，直到复活覆盖层消失。
+     */
+    private static PopupDismissResult dismissRevivePopup(
+            Host host, ScreenOcr.Snapshot popup, String stage
+    ) {
+        if (host == null || popup == null || !looksLikeRevivePopup(popup.fullText)) {
+            return PopupDismissResult.NOT_PRESENT;
+        }
+        if (host.aborted()) return PopupDismissResult.ABORTED;
+        if (popup.width <= 0 || popup.height <= 0) return PopupDismissResult.FAILED;
+
+        int closeX = Math.round(popup.width * 0.866f);
+        int closeY = Math.round(popup.height * 0.281f);
+        host.log("[弹窗V4.62] " + stage
+                + " OCR确认复活弹窗，关闭X=" + closeX + "," + closeY);
+
+        if (!host.tap(closeX, closeY, "水果游戏-关闭复活弹窗")) {
+            return host.aborted() ? PopupDismissResult.ABORTED : PopupDismissResult.FAILED;
+        }
+        if (!host.sleep(260L, 420L)) return PopupDismissResult.ABORTED;
+
+        int cleanChecks = 0;
+        for (int i = 0; i < 5; i++) {
+            ScreenOcr.Snapshot verify;
+            try {
+                verify = requireOcr(host, "水果V4.62/复活弹窗关闭复检#" + (i + 1));
+            } catch (RuntimeException e) {
+                host.log("[弹窗V4.62] 复活弹窗复检OCR异常：" + e.getClass().getSimpleName());
+                return PopupDismissResult.FAILED;
+            }
+
+            String verifyText = verify == null ? "" : verify.fullText;
+            if (!looksLikeRevivePopup(verifyText)) {
+                cleanChecks++;
+                if (cleanChecks >= 2) {
+                    host.log("[弹窗V4.62] ✅ 复活弹窗已关闭");
+                    return PopupDismissResult.DISMISSED;
+                }
+            } else {
+                cleanChecks = 0;
+                if (verify.width <= 0 || verify.height <= 0) return PopupDismissResult.FAILED;
+                int nextX = Math.round(verify.width * 0.866f);
+                int nextY = Math.round(verify.height * 0.281f);
+                if (!host.tap(nextX, nextY, "水果游戏-关闭复活弹窗")) {
+                    return host.aborted() ? PopupDismissResult.ABORTED : PopupDismissResult.FAILED;
+                }
+            }
+            if (i < 4 && !host.sleep(180L, 300L)) return PopupDismissResult.ABORTED;
+        }
+        host.log("[弹窗V4.62] ❌ 复活弹窗连续关闭未完成");
+        return PopupDismissResult.FAILED;
     }
 
     static boolean looksLikeBlockingFunctionPopupText(String text) {
