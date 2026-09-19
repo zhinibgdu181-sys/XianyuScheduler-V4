@@ -1,6 +1,7 @@
 package com.zhinibgdu.xianyu;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.os.SystemClock;
@@ -43,6 +44,12 @@ final class FruitGameSolver {
         ABORTED
     }
 
+    private enum RestartResult {
+        RESTARTED,
+        NOT_AVAILABLE,
+        ABORTED
+    }
+
     interface Host {
         boolean tap(int x, int y, String reason);
         default void onFrameSize(int width, int height) {}
@@ -59,6 +66,7 @@ final class FruitGameSolver {
     private static final int MAX_PAIR_ACTIONS = 130;
     private static final int MAX_RECOVERY_RETRY = 3;
     private static final int MAX_NO_ACTION_RETRY = 1;
+    private static final int MAX_DEADLOCK_RESTARTS = 2;
     private static final int REMAINING_OCR_INTERVAL = 3;
     // A failed fruit tap must stay blocked until a confirmed elimination changes the board.
     // The old 12s TTL expired while the eight-frame verification was still running, which
@@ -98,6 +106,8 @@ final class FruitGameSolver {
     // A clean screenshot/OCR obtained immediately before planning is also a popup gate.
     // Re-running full-screen OCR for the same frame cost 2~3 seconds on the real device.
     private static final long PRE_TAP_POPUP_CLEAN_TTL_MS = 3500L;
+    private static final String FRUIT_FEATURE_PREFS = "xianyu_task_profiles_v48";
+    private static final String FRUIT_FEATURE_PREFIX = "fruit_drop_feature_v1_";
 
     // V4.37.0：截图回放中底部同类受采样/压缩影响约0.978~0.982。
     // 总分与更严格的RGB、直方图、形状三个门槛共同判断；不逐轮降低阈值。
@@ -147,7 +157,7 @@ final class FruitGameSolver {
         if (context == null || suPath == null || suPath.isEmpty() || host == null) {
             return Result.SAFE_STOP_CLEAN;
         }
-        host.log("[水果V4.53] Solver启动；启用自适应短等待：单水果 "
+        host.log("[水果V4.55] Solver启动；启用自适应短等待、死局重开和可下落特征学习：单水果 "
                 + DIRECT_TAP_SETTLE_MIN_MS + "~" + DIRECT_TAP_SETTLE_MAX_MS
                 + "ms / B "
                 + PAIR_B_TAP_SETTLE_MIN_MS + "~" + PAIR_B_TAP_SETTLE_MAX_MS
@@ -284,6 +294,7 @@ final class FruitGameSolver {
         long started = SystemClock.elapsedRealtime();
         int pairActions = 0;
         int noActionRetry = 0;
+        int deadlockRestarts = 0;
         boolean recovering = false;
         boolean fruitTapAttempted = false;
         // V4.45.1：道具推广弹窗可能在长时间无操作后异步随机出现。
@@ -400,6 +411,11 @@ final class FruitGameSolver {
                 }
                 observationHealthy = true;
 
+                // 只将已经由几何分析确认的“无遮挡/被遮挡”作为先验；后续点击
+                // 仍必须通过槽位和剩余数闭环，特征库绝不绕过物理安全判断。
+                FruitDropFeatureStore featureStore = new FruitDropFeatureStore(context,
+                        frame.bitmap.getWidth(), frame.bitmap.getHeight());
+
                 if (objects.size() < 10) {
                     saveVisionDiagnostic(context, frame.bitmap, "low_objects_" + objects.size());
                     host.log("[游戏V4.38.0] 检测数量异常偏少，已保存视觉诊断图；不点击功能按钮");
@@ -471,7 +487,7 @@ final class FruitGameSolver {
                         if (safePush == null && tray.count <= 1) {
                             safePush = chooseBestExplorationPush(
                                     objects, drop, tray.count,
-                                    frame.bitmap.getWidth(), frame.bitmap.getHeight(),
+                                    frame.bitmap.getWidth(), frame.bitmap.getHeight(), featureStore,
                                     blockedPositions);
                             if (safePush != null) {
                                 host.log("[规划V4.54] 当前仅" + tray.count
@@ -547,6 +563,25 @@ final class FruitGameSolver {
                                 + MAX_NO_ACTION_RETRY + " / objects=" + objects.size());
                         if (!host.sleep(300L, 500L)) return Result.ABORTED;
                         continue;
+                    }
+                    // 2/3 或 3/3 时已经没有可点的直配、完整对子或安全解阻链。
+                    // 旧版会在这里被异步弹窗的“关闭→重新建模”循环拖住数分钟。
+                    // 先用本帧OCR确认仍是水果页，随后只给一次短弹窗机会；仍无解才重开。
+                    if (tray.count >= 2) {
+                        RestartResult restart = restartDeadlockedRound(host, checkpoint, deadlockRestarts);
+                        if (restart == RestartResult.ABORTED) return Result.ABORTED;
+                        if (restart == RestartResult.RESTARTED) {
+                            deadlockRestarts++;
+                            remaining = -1;
+                            noActionRetry = 0;
+                            recovering = true;
+                            fruitTapAttempted = false;
+                            failedPairs.clear();
+                            blockedPositions.clear();
+                            blockedPositionTtl.clear();
+                            host.log("[死局重开V4.55] ✅ 已开始新局，清空旧棋盘坐标并立即重建模型");
+                            continue;
+                        }
                     }
                     // 这里不能因为画面上存在“解锁”按钮就直接去看视频。
                     // 先前的错误逻辑把 tray.count==1 当成“第二槽锁定”，
@@ -775,6 +810,7 @@ final class FruitGameSolver {
 
                     if (afterTrayCount >= 0 && afterTrayCount <= TRAY_CAPACITY) {
                         if (afterTrayCount > beforeTrayCount) {
+                            featureStore.record(target, true);
                             host.log("[栈模型V4.50] ✅ 压栈后真实槽位增加："
                                     + beforeTrayCount + "→" + afterTrayCount
                                     + "；允许级联落果完成后重新规划，不再假定一次点击只增加1槽");
@@ -801,6 +837,7 @@ final class FruitGameSolver {
                         }
 
                         if (afterTrayCount == beforeTrayCount) {
+                            featureStore.record(target, false);
                             markBlockedPosition(blockedPositions, blockedPositionTtl, target);
                             host.log("[栈模型V4.50] 压栈点击未形成有效状态变化；"
                                     + "坐标加入黑名单，重新规划");
@@ -2202,6 +2239,7 @@ final class FruitGameSolver {
             int trayCount,
             int frameWidth,
             int frameHeight,
+            FruitDropFeatureStore featureStore,
             Set<String> blockedPositions
     ) {
         if (objects == null || objects.isEmpty() || drop == null
@@ -2222,7 +2260,11 @@ final class FruitGameSolver {
                 if (relation != null && relation.blocker == fruit) unlockGain++;
             }
             double lower = clamp01(fruit.centerY / Math.max(1.0, frameHeight));
-            double rank = 0.72 * Math.min(1.0, unlockGain / 3.0) + 0.28 * lower;
+            // 历史经验只用于同样位置/外观桶的排序。没有经验时为0，不影响
+            // 当前视觉算法；负经验也不会把“当前明确无遮挡”的水果直接判死。
+            double learned = featureStore == null ? 0.0 : featureStore.prior(fruit);
+            double rank = 0.66 * Math.min(1.0, unlockGain / 3.0)
+                    + 0.24 * lower + 0.10 * learned;
             SafePushChoice candidate = new SafePushChoice(
                     fruit, 0.0, false, false, unlockGain, 0, rank,
                     false, 0);
@@ -2761,6 +2803,84 @@ final class FruitGameSolver {
         double ny = y / (double) height;
         return nx >= 560.0 / 1440.0 && nx <= 880.0 / 1440.0
                 && ny >= 2180.0 / 3120.0 && ny <= 2500.0 / 3120.0;
+    }
+
+    /**
+     * Only invoked after two independent no-move models at 2/3 or 3/3 occupancy.
+     * The gear itself is fixed by the game chrome; every destructive menu choice is
+     * text-located by OCR and constrained again by GameTapPolicy.
+     */
+    private static RestartResult restartDeadlockedRound(
+            Host host, ScreenOcr.Snapshot checkpoint, int restartCount
+    ) {
+        if (restartCount >= MAX_DEADLOCK_RESTARTS) {
+            host.log("[死局重开V4.55] 已达本任务重开上限，不再循环重开");
+            return RestartResult.NOT_AVAILABLE;
+        }
+        if (checkpoint == null || checkpoint.width <= 0 || checkpoint.height <= 0) {
+            return RestartResult.NOT_AVAILABLE;
+        }
+        String text = normalize(checkpoint.fullText);
+        if (!looksLikeFruitGame(text) || looksLikeBlockingFunctionPopupText(text)) {
+            return RestartResult.NOT_AVAILABLE;
+        }
+
+        int gearX = Math.round(checkpoint.width * 0.052f);
+        int gearY = Math.round(checkpoint.height * 0.047f);
+        host.log("[死局重开V4.55] 连续无解，打开设置菜单尝试重新开始 "
+                + (restartCount + 1) + "/" + MAX_DEADLOCK_RESTARTS);
+        if (!host.tap(gearX, gearY, "水果游戏-死局设置")) {
+            return host.aborted() ? RestartResult.ABORTED : RestartResult.NOT_AVAILABLE;
+        }
+        if (!host.sleep(280L, 440L)) return RestartResult.ABORTED;
+
+        ScreenOcr.Snapshot menu = requireOcr(host, "水果V4.55/死局设置菜单");
+        if (host.aborted()) return RestartResult.ABORTED;
+        ScreenOcr.Item restart = findRestartItem(menu);
+        if (restart == null || !isFruitRestartMenuCoordinate(
+                restart.centerX(), restart.centerY(), menu.width, menu.height)) {
+            host.log("[死局重开V4.55] 设置菜单未确认‘重新开始’，保留现场");
+            return RestartResult.NOT_AVAILABLE;
+        }
+        if (!host.tap(restart.centerX(), restart.centerY(), "水果游戏-死局重新开始")) {
+            return host.aborted() ? RestartResult.ABORTED : RestartResult.NOT_AVAILABLE;
+        }
+        if (!host.sleep(280L, 440L)) return RestartResult.ABORTED;
+
+        // 部分版本会有二次确认；只在确认框中点击明确的“确定/重新开始”。
+        ScreenOcr.Snapshot confirm = requireOcr(host, "水果V4.55/死局重开确认");
+        if (host.aborted()) return RestartResult.ABORTED;
+        ScreenOcr.Item confirmButton = findRestartConfirmItem(confirm);
+        if (confirmButton != null && isFruitRestartMenuCoordinate(
+                confirmButton.centerX(), confirmButton.centerY(), confirm.width, confirm.height)) {
+            if (!host.tap(confirmButton.centerX(), confirmButton.centerY(), "水果游戏-死局确认重开")) {
+                return host.aborted() ? RestartResult.ABORTED : RestartResult.NOT_AVAILABLE;
+            }
+        }
+        if (!host.sleep(460L, 700L)) return RestartResult.ABORTED;
+        return RestartResult.RESTARTED;
+    }
+
+    private static ScreenOcr.Item findRestartItem(ScreenOcr.Snapshot snapshot) {
+        if (snapshot == null) return null;
+        ScreenOcr.Item item = snapshot.findBest("重新开始");
+        if (item == null) item = snapshot.findBest("重新玩");
+        if (item == null) item = snapshot.findBest("重开");
+        return item;
+    }
+
+    private static ScreenOcr.Item findRestartConfirmItem(ScreenOcr.Snapshot snapshot) {
+        if (snapshot == null) return null;
+        ScreenOcr.Item item = snapshot.findBest("确定");
+        if (item == null) item = findRestartItem(snapshot);
+        return item;
+    }
+
+    private static boolean isFruitRestartMenuCoordinate(int x, int y, int width, int height) {
+        if (width <= 0 || height <= 0) return false;
+        double nx = x / (double) width;
+        double ny = y / (double) height;
+        return nx >= 0.18 && nx <= 0.82 && ny >= 0.22 && ny <= 0.82;
     }
 
     /**
@@ -3870,6 +3990,65 @@ final class FruitGameSolver {
 
         float height() {
             return Math.max(1f, bottom - top + 1f);
+        }
+    }
+
+    /**
+     * A compact, bounded extension of the existing runtime feature preference store.
+     * It records only post-tap facts: a visual bucket that did enter the tray is a
+     * positive example; one that remained in place is a negative example.  It does
+     * not persist coordinates precisely and it never overrides current occlusion
+     * analysis, so experience cannot turn a covered fruit into a clickable one.
+     */
+    private static final class FruitDropFeatureStore {
+        private final SharedPreferences prefs;
+        private final int width;
+        private final int height;
+
+        FruitDropFeatureStore(Context context, int width, int height) {
+            this.prefs = context == null ? null : context.getSharedPreferences(
+                    FRUIT_FEATURE_PREFS, Context.MODE_PRIVATE);
+            this.width = Math.max(1, width);
+            this.height = Math.max(1, height);
+        }
+
+        double prior(FruitObject fruit) {
+            if (prefs == null || fruit == null) return 0.0;
+            String key = key(fruit);
+            int clear = prefs.getInt(key + "_clear", 0);
+            int blocked = prefs.getInt(key + "_blocked", 0);
+            int total = clear + blocked;
+            if (total <= 0) return 0.0;
+            // Laplace smoothing prevents one noisy observation from dominating.
+            return ((clear + 1.0) / (total + 2.0)) - 0.5;
+        }
+
+        void record(FruitObject fruit, boolean enteredTray) {
+            if (prefs == null || fruit == null) return;
+            String key = key(fruit);
+            String suffix = enteredTray ? "_clear" : "_blocked";
+            int old = prefs.getInt(key + suffix, 0);
+            // Bounded counters keep this feature bank small and resistant to stale runs.
+            prefs.edit()
+                    .putInt(key + suffix, Math.min(24, old + 1))
+                    .putLong(key + "_last", System.currentTimeMillis())
+                    .apply();
+        }
+
+        private String key(FruitObject fruit) {
+            int col = clamp((int) (fruit.centerX * 6 / width), 0, 5);
+            int row = clamp((int) (fruit.centerY * 7 / height), 0, 6);
+            int color = dominantHistogramBin(fruit.hist) / 4;
+            return FRUIT_FEATURE_PREFIX + col + '_' + row + '_' + color;
+        }
+
+        private static int dominantHistogramBin(float[] hist) {
+            if (hist == null || hist.length == 0) return 0;
+            int best = 0;
+            for (int i = 1; i < hist.length; i++) {
+                if (hist[i] > hist[best]) best = i;
+            }
+            return best;
         }
     }
 

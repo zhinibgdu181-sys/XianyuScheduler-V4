@@ -162,6 +162,13 @@ public class FruitGameRecoveryTest {
                 1000, 1500, 1440, 3120, "水果游戏-继续关闭道具弹窗"));
     }
 
+    @Test public void deadlockRestartTapsAreRestrictedToGearAndDialog() {
+        assertTrue(GameTapPolicy.allows(52, 47, 1000, 1000, "水果游戏-死局设置"));
+        assertFalse(GameTapPolicy.allows(500, 47, 1000, 1000, "水果游戏-死局设置"));
+        assertTrue(GameTapPolicy.allows(500, 500, 1000, 1000, "水果游戏-死局重新开始"));
+        assertFalse(GameTapPolicy.allows(500, 120, 1000, 1000, "水果游戏-死局确认重开"));
+    }
+
     @Test public void toolPopupTextRequiresPopupOnlyEvidence() {
         // 三种真实弹窗：都有明确的“使用”动作或“解锁所有槽位”正文。
         assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
