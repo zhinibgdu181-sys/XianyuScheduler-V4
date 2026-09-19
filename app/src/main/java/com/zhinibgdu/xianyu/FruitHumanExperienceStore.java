@@ -115,6 +115,12 @@ final class FruitHumanExperienceStore {
     ) {
         if (context == null || before == null || after == null || transition == null) return;
 
+        String rejected = rejectReason(before, after);
+        if (rejected != null) {
+            recordRejectedObservation(context, taskName, after, rejected);
+            return;
+        }
+
         String line = String.format(
                 Locale.US,
                 "%d|%s|VERIFIED|%s|R%d>%d|T%d>%d|O%d>%d|D%d>%d|B%d>%d|P%d|U%d|C%d",
