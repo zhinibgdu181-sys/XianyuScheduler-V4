@@ -1,3 +1,10 @@
+# V4.64
+
+- Fruit game: tighten the pre-tap asynchronous-popup clean-frame reuse window from 3.5s to 300ms. Older observations must pass the popup gate again.
+- Human takeover remains an immediate automation stop, but the game now starts a bounded passive 90s teaching window for the fruit task. It never sends synthetic taps during teaching.
+- Passive teaching records only verified structural progress: direct pair elimination, tray match, safe push, or tray-unblock. Human outcomes reinforce the existing structural strategy-experience store; raw demonstration transitions are retained in a bounded audit log.
+- Add regression tests for human-demonstration strategy classification.
+
 # V4.63
 
 - Fruit game: add a bounded structural strategy-experience store. Similar states are bucketed by remaining count, tray occupancy, object/droppable/blocked scale, unlock opportunities, and continuation evidence instead of fixed coordinates.
