@@ -1777,6 +1777,70 @@ final class FruitGameSolver {
      * depth=1：允许升到2槽；同类必须已经可下落，或候选移除后会直接释放同类。
      * depth=2：允许升到3槽，但同类必须当前已经可下落，下一轮立即消除新TOP。
      */
+    /**
+     * V4.50：点击一个水果后，上方被它支撑的水果可能自动连续下落。
+     * 在2/3槽时，这类“连锁落果”可能直接把最后一个槽塞满甚至溢出。
+     * 只有完全没有潜在级联，或者唯一级联水果本身就是当前水果的可靠同类，
+     * 才允许把候选送入第三槽。
+     */
+    static boolean allowsThirdSlotCascade(
+            int trayCount, int cascadeFollowers, boolean cascadeMate
+    ) {
+        if (trayCount < 0 || trayCount >= TRAY_CAPACITY) return false;
+        if (trayCount < TRAY_CAPACITY - 1) return true;
+        if (cascadeFollowers <= 0) return true;
+        return cascadeFollowers == 1 && cascadeMate;
+    }
+
+    private static int countPotentialCascadeFollowers(
+            FruitObject root,
+            List<FruitObject> objects,
+            DropAnalysis drop
+    ) {
+        if (root == null || objects == null || drop == null || drop.blocked.isEmpty()) return 0;
+
+        Set<FruitObject> seen = new HashSet<>();
+        List<FruitObject> frontier = new ArrayList<>();
+        seen.add(root);
+        frontier.add(root);
+
+        while (!frontier.isEmpty()) {
+            FruitObject current = frontier.remove(frontier.size() - 1);
+            for (BlockingRelation relation : drop.blocked) {
+                if (relation == null || relation.blocker != current || relation.fruit == null) continue;
+                if (!objects.contains(relation.fruit) || seen.contains(relation.fruit)) continue;
+                seen.add(relation.fruit);
+                frontier.add(relation.fruit);
+            }
+        }
+        return Math.max(0, seen.size() - 1);
+    }
+
+    private static boolean isPotentialCascadeFollower(
+            FruitObject root,
+            FruitObject target,
+            List<FruitObject> objects,
+            DropAnalysis drop
+    ) {
+        if (root == null || target == null || root == target) return false;
+        if (objects == null || drop == null) return false;
+        Set<FruitObject> seen = new HashSet<>();
+        List<FruitObject> frontier = new ArrayList<>();
+        seen.add(root);
+        frontier.add(root);
+        while (!frontier.isEmpty()) {
+            FruitObject current = frontier.remove(frontier.size() - 1);
+            for (BlockingRelation relation : drop.blocked) {
+                if (relation == null || relation.blocker != current || relation.fruit == null) continue;
+                if (!objects.contains(relation.fruit) || seen.contains(relation.fruit)) continue;
+                if (relation.fruit == target) return true;
+                seen.add(relation.fruit);
+                frontier.add(relation.fruit);
+            }
+        }
+        return false;
+    }
+
     private static SafePushChoice chooseBestSafePushV441(
             List<FruitObject> objects,
             DropAnalysis drop,
@@ -1823,6 +1887,13 @@ final class FruitGameSolver {
             }
             if (bestMate == null) continue;
 
+            int cascadeFollowers = countPotentialCascadeFollowers(fruit, objects, drop);
+            boolean cascadeMate = isPotentialCascadeFollower(
+                    fruit, bestMate, objects, drop);
+            if (!allowsThirdSlotCascade(trayCount, cascadeFollowers, cascadeMate)) {
+                continue;
+            }
+
             int unlockGain = 0;
             for (BlockingRelation relation : drop.blocked) {
                 if (relation == null || relation.blocker != fruit) continue;
@@ -1854,7 +1925,8 @@ final class FruitGameSolver {
 
             SafePushChoice candidate = new SafePushChoice(
                     fruit, mateScore, bestDirectUnlockMate,
-                    bestMateDroppable, unlockGain, continuationPairs, rank);
+                    bestMateDroppable, unlockGain, continuationPairs, rank,
+                    false, cascadeFollowers);
             if (best == null || candidate.rank > best.rank) best = candidate;
         }
         return best;
@@ -1942,6 +2014,12 @@ final class FruitGameSolver {
 
                 double chain = Math.max(trayMatch, boardMatch);
                 if (trayCount == 0) chain = Math.max(chain, blockerMatch);
+
+                int cascadeFollowers = countPotentialCascadeFollowers(blocker, objects, drop);
+                boolean cascadeMate = isPotentialCascadeFollower(
+                        blocker, released, objects, drop);
+                if (!allowsThirdSlotCascade(trayCount, cascadeFollowers, cascadeMate)) continue;
+
                 double lower = clamp01(blocker.centerY / Math.max(1.0, frameHeight));
 
                 // “能立刻释放一个可执行后手”权重最高；距离底部只做次要排序。
@@ -1953,7 +2031,7 @@ final class FruitGameSolver {
                         - (trayCount == 2 ? 0.06 : 0.0);
 
                 SafePushChoice candidate = new SafePushChoice(
-                        blocker, chain, true, true, 1, 1, rank, true);
+                        blocker, chain, true, true, 1, 1, rank, true, cascadeFollowers);
                 if (best == null || candidate.rank > best.rank) {
                     best = candidate;
                 }
@@ -3476,6 +3554,7 @@ final class FruitGameSolver {
         final int unlockGain;
         final int continuationPairs;
         final double rank;
+        final int cascadeFollowers;
 
         final boolean dependencyChain;
 
@@ -3483,12 +3562,19 @@ final class FruitGameSolver {
                        boolean mateDroppable, int unlockGain, int continuationPairs,
                        double rank) {
             this(fruit, mateScore, directUnlockMate, mateDroppable,
-                    unlockGain, continuationPairs, rank, false);
+                    unlockGain, continuationPairs, rank, false, 0);
         }
 
         SafePushChoice(FruitObject fruit, double mateScore, boolean directUnlockMate,
                        boolean mateDroppable, int unlockGain, int continuationPairs,
                        double rank, boolean dependencyChain) {
+            this(fruit, mateScore, directUnlockMate, mateDroppable,
+                    unlockGain, continuationPairs, rank, dependencyChain, 0);
+        }
+
+        SafePushChoice(FruitObject fruit, double mateScore, boolean directUnlockMate,
+                       boolean mateDroppable, int unlockGain, int continuationPairs,
+                       double rank, boolean dependencyChain, int cascadeFollowers) {
             this.fruit = fruit;
             this.mateScore = mateScore;
             this.directUnlockMate = directUnlockMate;
@@ -3497,6 +3583,7 @@ final class FruitGameSolver {
             this.continuationPairs = continuationPairs;
             this.rank = rank;
             this.dependencyChain = dependencyChain;
+            this.cascadeFollowers = cascadeFollowers;
         }
     }
 
