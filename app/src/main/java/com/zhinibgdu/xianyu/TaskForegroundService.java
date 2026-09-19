@@ -8,6 +8,8 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.media.AudioManager;
+import android.media.ToneGenerator;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.Handler;
@@ -26,6 +28,7 @@ public class TaskForegroundService extends Service {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private boolean active;
     private boolean destroyed;
+    private boolean finishing;
     private final Runnable renewWakeLock = new Runnable() {
         @Override public void run() {
             if (!active || destroyed) return;
@@ -107,7 +110,7 @@ public class TaskForegroundService extends Service {
     }
 
     private void finishAfterTaskExecutionV466() {
-        if (destroyed) return;
+        if (destroyed || finishing) return;
 
         // 人工接管后，TaskExecutor 会先结束自动执行线程，但真人教学仍可能
         // 正在被动采样。此时不能立即 stopSelf()，否则真人经验窗口会被服务一起杀掉。
@@ -122,16 +125,16 @@ public class TaskForegroundService extends Service {
             return;
         }
 
+        finishing = true;
         active = false;
         mainHandler.removeCallbacks(renewWakeLock);
         TaskStatusReceiver.writeLog(
                 getApplicationContext(),
                 "INFO",
                 "调度",
-                "任务执行器及真人教学均已结束，停止前台服务"
+                "任务执行器及真人教学均已结束，播放完成提示音后停止前台服务"
         );
-        stopForegroundCompat();
-        stopSelf();
+        playTaskCompletionSoundAndStopV472();
     }
 
     @Override
@@ -204,6 +207,57 @@ public class TaskForegroundService extends Service {
                 .setOngoing(true)
                 .setContentIntent(contentIntent)
                 .build();
+    }
+
+    private void playTaskCompletionSoundAndStopV472() {
+        final Context appContext = getApplicationContext();
+        new Thread(() -> {
+            ToneGenerator tone = null;
+            try {
+                tone = new ToneGenerator(AudioManager.STREAM_NOTIFICATION, 100);
+                boolean firstStarted = tone.startTone(ToneGenerator.TONE_PROP_BEEP, 180);
+                Thread.sleep(260L);
+                boolean secondStarted = tone.startTone(ToneGenerator.TONE_PROP_BEEP, 180);
+                Thread.sleep(260L);
+                TaskStatusReceiver.writeLog(
+                        appContext,
+                        firstStarted && secondStarted ? "INFO" : "WARN",
+                        "调度",
+                        firstStarted && secondStarted
+                                ? "任务完成提示音播放请求已提交（两声）"
+                                : "任务完成提示音未被系统音频服务完整接受"
+                );
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                TaskStatusReceiver.writeLog(
+                        appContext,
+                        "WARN",
+                        "调度",
+                        "任务完成提示音播放被中断"
+                );
+            } catch (Throwable t) {
+                TaskStatusReceiver.writeLog(
+                        appContext,
+                        "ERROR",
+                        "调度",
+                        "任务完成提示音播放失败：" + t
+                );
+            } finally {
+                if (tone != null) {
+                    try {
+                        tone.release();
+                    } catch (Throwable ignored) {
+                    }
+                }
+                mainHandler.post(this::stopServiceAfterCompletionSoundV472);
+            }
+        }, "XianyuCompletionTone").start();
+    }
+
+    private void stopServiceAfterCompletionSoundV472() {
+        if (destroyed) return;
+        stopForegroundCompat();
+        stopSelf();
     }
 
     private void stopForegroundCompat() {
