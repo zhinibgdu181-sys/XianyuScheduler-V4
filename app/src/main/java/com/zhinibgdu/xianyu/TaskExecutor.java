@@ -237,6 +237,7 @@ public final class TaskExecutor {
     public static void stopHumanTeachingForServiceDestroyV466() {
         stopHumanTeachingCaptureV464();
         stopHumanOperationTeachingV467();
+        stopPhysicalTouchMonitorV48();
         diagnostic("[真人经验V4.66] 前台服务已销毁，立即停止真人教学观察");
     }
 
@@ -284,7 +285,12 @@ public final class TaskExecutor {
                 diagnostic("任务线程异常", t);
                 sendStatus("", "FAILED", "任务线程异常：" + t.getClass().getSimpleName());
             } finally {
-                stopPhysicalTouchMonitorV48();
+                // V4.67: after human takeover, keep the physical input reader alive
+                // for the passive teaching window. The foreground service owns its final
+                // shutdown; before V4.67 this finally block killed the observer too early.
+                if (!isHumanTeachingActiveV466()) {
+                    stopPhysicalTouchMonitorV48();
+                }
                 running = false;
                 currentExecutingTaskV464 = "";
                 if (!isHumanTeachingThreadAliveV464()) {
