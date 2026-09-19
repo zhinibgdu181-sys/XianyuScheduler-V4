@@ -1220,6 +1220,37 @@ public final class TaskExecutor {
         return waitCoinPageV45(suPath, 4200L);
     }
 
+    private static boolean dismissVersionUpdatePopupV461(
+            String suPath,
+            ScreenOcr.Snapshot snapshot
+    ) {
+        if (snapshot == null || snapshot.isEmpty()) return false;
+
+        String text = combinedTextV45(null, snapshot);
+        if (text == null || text.isEmpty()) return false;
+
+        boolean versionTitle = text.contains("有新版本可以升级了")
+                || text.contains("有新版本可以升级");
+        if (!versionTitle) return false;
+
+        // 必须同时存在明确的“暂不升级”操作；只看到“更新/版本”字样时不动作。
+        ScreenOcr.Item dismissItem = snapshot.findBest("暂不升级", "暂不更新");
+        if (dismissItem == null) {
+            diagnostic("[版本弹窗V4.61] 检测到升级标题，但未找到“暂不升级”按钮，保持安全停止");
+            return false;
+        }
+
+        boolean clicked = clickOcrTextAnyV45(
+                suPath, snapshot, false, "暂不升级", "暂不更新");
+        if (!clicked) {
+            diagnostic("[版本弹窗V4.61] ⚠️ “暂不升级”点击失败，不执行其它坐标兜底");
+            return false;
+        }
+
+        diagnostic("[版本弹窗V4.61] ✅ 已关闭“有新版本可以升级了”弹窗，继续当前任务流程");
+        return true;
+    }
+
     private static boolean clickOcrTextAnyV45(
             String suPath,
             ScreenOcr.Snapshot snapshot,
@@ -1734,6 +1765,13 @@ public final class TaskExecutor {
                 diagnostic("[连贯执行V4.16] 复用刚确认的任务面板，立即挑选下一任务");
             } else {
                 taskOcr = captureOcrV45(suPath, "快速扫描任务页");
+            }
+
+            // V4.61：版本升级弹窗可能在任务扫描期间异步出现。
+            // 先关闭覆盖层，再重新扫描任务页，避免把“无任务/未知页面”误判成导航失败。
+            if (dismissVersionUpdatePopupV461(suPath, taskOcr)) {
+                sleepAbortableV48(250L);
+                continue;
             }
 
             // V4.21 hard guard: scanning is only legal on TASK_PANEL. If a game
@@ -2577,6 +2615,15 @@ public final class TaskExecutor {
         }
 
         ScreenOcr.Snapshot ocr = captureOcrV45(suPath, "页面探针V4.11/" + reason);
+
+        // V4.61：闲鱼会在首页/任务入口异步弹出“有新版本可以升级了”。
+        // 该弹窗覆盖在原页面上，若不先关闭，后续导航点击会全部落在弹窗上，
+        // 表现为“任务助手没有继续执行/一直停在首页”。只接受明确的版本升级
+        // 标题 + “暂不升级”按钮组合，禁止把其它升级/广告文案误当成此弹窗。
+        if (dismissVersionUpdatePopupV461(suPath, ocr)) {
+            ocr = captureOcrV45(suPath, "页面探针V4.61/关闭升级弹窗后");
+        }
+
         String text = combinedTextV45(null, ocr);
         PageKindV411 kind;
 
