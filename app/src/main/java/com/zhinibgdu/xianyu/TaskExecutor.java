@@ -5369,7 +5369,10 @@ public final class TaskExecutor {
                                                 currentBefore.blocked, current.blocked,
                                                 currentBefore.droppable, current.droppable,
                                                 currentBefore.directPairs, current.directPairs);
-                                if (FruitHumanExperienceStore.shouldReinforce(transition)) {
+                                if (transition != null) {
+                                    // Keep the candidate pending even while TASK_RESULT is UNKNOWN.
+                                    // Final promotion is performed only after the 90s window verifies
+                                    // the task result as SUCCESS.
                                     pendingBefore = currentBefore;
                                     pendingAfter = current;
                                 } else if (FruitHumanExperienceStore.sameStructuralState(previous, current)) {
@@ -5408,8 +5411,9 @@ public final class TaskExecutor {
                         if (!running) {
                             ScreenOcr.close();
                         }
-                        diagnostic("[真人经验V4.65] 学习窗口结束：共记录 "
-                                + learned + " 个已验证经验；未验证观察全部丢弃");
+                        FruitHumanExperienceStore.promoteCurrentSession(context);
+                        diagnostic("[真人经验V4.80] 学习窗口结束："
+                                + learned + " 个已验证任务经验；其余结构观察保持审计态，未直接回放");
                     }
                 }
             }
