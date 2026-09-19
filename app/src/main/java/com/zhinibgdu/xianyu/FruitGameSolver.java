@@ -79,7 +79,7 @@ final class FruitGameSolver {
     private static final double TRAY_OCCUPIED_RATIO_MIN = 0.20;
     // 槽中水果与棋盘水果只比较HSV直方图；槽内相邻水果会发生局部遮挡，
     // 因此不能沿用完整sprite的shape IoU门槛。实机回放同类通常 >0.99。
-    private static final double TRAY_HIST_MATCH_MIN = 0.985;
+    private static final double TRAY_HIST_MATCH_MIN = 0.975;
     private static final int TRAY_OBSERVE_RETRIES = 4;
     private static final int UNCHANGED_TRAY_CONFIRMATIONS = 2;
     private static final int FAST_REACQUIRE_RADIUS_PX = 24;
@@ -876,22 +876,48 @@ final class FruitGameSolver {
             return host.aborted() ? PopupDismissResult.ABORTED : PopupDismissResult.FAILED;
         }
 
-        host.log("[弹窗V4.36] 已发送关闭X点击，准备复检");
-        if (!host.sleep(260L, 420L)) return PopupDismissResult.ABORTED;
+        host.log("[弹窗V4.36] 已发送关闭X点击，准备连续复检");
 
-        GameFrame verify = captureFrame(context, suPath, host);
-        if (verify == null) {
-            host.log("[弹窗V4.36] ❌ 关闭后复检截图失败");
-            return PopupDismissResult.FAILED;
-        }
-        boolean stillPopup = looksLikeBlockingFunctionPopup(verify);
-        safeRecycle(verify.bitmap);
-        if (stillPopup) {
-            host.log("[弹窗V4.36] ❌ 点击X后弹窗仍存在");
-            return PopupDismissResult.FAILED;
+        // 同一个X可能关闭一个弹窗，而下一层弹窗立即接替；
+        // 这里与OCR路径保持一致：必须连续两次确认干净，不能只看一帧。
+        int dismissedCount = 1;
+        int cleanChecks = 0;
+        GameFrame verify = null;
+        while (dismissedCount <= 12) {
+            if (!host.sleep(220L, 360L)) return PopupDismissResult.ABORTED;
+            verify = captureFrame(context, suPath, host);
+            if (verify == null) {
+                host.log("[弹窗V4.44.4] ❌ 连续复检截图失败");
+                return PopupDismissResult.FAILED;
+            }
+
+            boolean stillPopup = looksLikeBlockingFunctionPopup(verify);
+            if (!stillPopup) {
+                cleanChecks++;
+                safeRecycle(verify.bitmap);
+                verify = null;
+                if (cleanChecks >= 2) {
+                    host.log("[弹窗V4.44.4] ✅ 连续" + cleanChecks
+                            + "次确认无弹窗，共关闭" + dismissedCount + "个");
+                    return PopupDismissResult.DISMISSED;
+                }
+                continue;
+            }
+
+            cleanChecks = 0;
+            int nextCloseX = Math.round(verify.originalWidth * 0.866f);
+            int nextCloseY = Math.round(verify.originalHeight * 0.281f);
+            safeRecycle(verify.bitmap);
+            verify = null;
+            host.log("[弹窗V4.44.4] 检测到后续第" + (dismissedCount + 1)
+                    + "个道具弹窗，继续关闭X=" + nextCloseX + "," + nextCloseY);
+            if (!host.tap(nextCloseX, nextCloseY, "水果游戏-继续关闭道具弹窗")) {
+                return host.aborted() ? PopupDismissResult.ABORTED : PopupDismissResult.FAILED;
+            }
+            dismissedCount++;
         }
 
-        host.log("[弹窗V4.36] ✅ 弹窗确认已关闭");
+        host.log("[弹窗V4.44.4] 连续道具弹窗超过12个，交给下一轮主循环继续复核");
         return PopupDismissResult.DISMISSED;
     }
 
@@ -914,18 +940,48 @@ final class FruitGameSolver {
         }
         if (!host.sleep(260L, 420L)) return PopupDismissResult.ABORTED;
 
-        ScreenOcr.Snapshot verify;
-        try {
-            verify = requireOcr(host, "水果V4.44.1/道具弹窗关闭复检");
-        } catch (RuntimeException e) {
-            host.log("[弹窗V4.44.1] 关闭后OCR复检异常：" + e.getClass().getSimpleName());
-            return PopupDismissResult.FAILED;
+        // 不再“一次点击 + 一次复检”就认为结束。
+        // 第一个弹窗关闭后，第二个/第三个弹窗可能在下一帧才出现；
+        // 连续轮询，直到连续两次确认没有弹窗。最多处理12个连续弹窗，
+        // 下一轮主循环还会再次进入这里，因此不会因为固定次数而永久漏掉后续弹窗。
+        int dismissedCount = 1;
+        int cleanChecks = 0;
+        ScreenOcr.Snapshot verify = null;
+        while (dismissedCount <= 12) {
+            if (!host.sleep(220L, 360L)) return PopupDismissResult.ABORTED;
+            try {
+                verify = requireOcr(host, "水果V4.44.4/道具弹窗连续复检#" + dismissedCount);
+            } catch (RuntimeException e) {
+                host.log("[弹窗V4.44.4] 连续复检OCR异常：" + e.getClass().getSimpleName());
+                return PopupDismissResult.FAILED;
+            }
+
+            String verifyText = verify == null ? "" : verify.fullText;
+            if (!looksLikeBlockingFunctionPopupText(verifyText)) {
+                cleanChecks++;
+                if (cleanChecks >= 2) {
+                    host.log("[弹窗V4.44.4] ✅ 连续" + cleanChecks
+                            + "次确认无道具弹窗，共关闭" + dismissedCount + "个");
+                    return PopupDismissResult.DISMISSED;
+                }
+                continue;
+            }
+
+            cleanChecks = 0;
+            if (verify.width <= 0 || verify.height <= 0) {
+                return PopupDismissResult.FAILED;
+            }
+            int nextCloseX = Math.round(verify.width * 0.866f);
+            int nextCloseY = Math.round(verify.height * 0.281f);
+            host.log("[弹窗V4.44.4] 检测到后续第" + (dismissedCount + 1)
+                    + "个道具弹窗，继续关闭X=" + nextCloseX + "," + nextCloseY);
+            if (!host.tap(nextCloseX, nextCloseY, "水果游戏-继续关闭道具弹窗")) {
+                return host.aborted() ? PopupDismissResult.ABORTED : PopupDismissResult.FAILED;
+            }
+            dismissedCount++;
         }
-        if (looksLikeBlockingFunctionPopupText(verify == null ? "" : verify.fullText)) {
-            host.log("[弹窗V4.44.1] ❌ 点击X后OCR仍识别到道具弹窗");
-            return PopupDismissResult.FAILED;
-        }
-        host.log("[弹窗V4.44.1] ✅ OCR确认道具弹窗已关闭");
+
+        host.log("[弹窗V4.44.4] ❌ 连续道具弹窗超过12个，交给下一轮主循环继续复核");
         return PopupDismissResult.DISMISSED;
     }
 
