@@ -171,8 +171,9 @@ final class FruitHumanExperienceStore {
 
         String line = String.format(
                 Locale.US,
-                "%d|%s|VERIFIED|%s|R%d>%d|T%d>%d|O%d>%d|D%d>%d|B%d>%d|P%d|U%d|C%d",
+                "%d|SESSION=%s|OUTCOME=PENDING|%s|VERIFIED|%s|R%d>%d|T%d>%d|O%d>%d|D%d>%d|B%d>%d|P%d|U%d|C%d",
                 System.currentTimeMillis(),
+                safe(TeachingOutcomeStore.currentSessionId()),
                 safe(taskName),
                 transition.strategy,
                 before.remaining, after.remaining,
@@ -202,6 +203,93 @@ final class FruitHumanExperienceStore {
                 before.unlockGain,
                 before.continuationPairs
         );
+    }
+
+    /**
+     * V4.80: promote deferred fruit transitions only after the task result
+     * is independently verified as SUCCESS. FAILURE/UNKNOWN are audit-only.
+     */
+    static synchronized void promoteCurrentSession(Context context) {
+        if (context == null || !TeachingOutcomeStore.taskReplayEligible()) return;
+        String session = TeachingOutcomeStore.currentSessionId();
+        if (session == null || session.isEmpty()) return;
+
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String old = prefs.getString(LOG_KEY, "");
+        if (old == null || old.isEmpty()) return;
+
+        String token = "|SESSION=" + safe(session) + "|OUTCOME=PENDING|";
+        String[] rows = old.split("\\n");
+        StringBuilder next = new StringBuilder();
+        int promoted = 0;
+
+        for (String row : rows) {
+            String out = row;
+            if (row != null && row.contains(token) && row.contains("|VERIFIED|")) {
+                try {
+                    String[] p = row.split("\\|");
+                    if (p.length >= 14) {
+                        String strategy = p[5];
+                        int beforeRemaining = parseRight(p[6], 'R');
+                        int afterRemaining = parseAfter(p[6]);
+                        int beforeTray = parseRight(p[7], 'T');
+                        int afterTray = parseAfter(p[7]);
+                        int beforeObjects = parseRight(p[8], 'O');
+                        int afterObjects = parseAfter(p[8]);
+                        int beforeDroppable = parseRight(p[9], 'D');
+                        int afterDroppable = parseAfter(p[9]);
+                        int beforeBlocked = parseRight(p[10], 'B');
+                        int afterBlocked = parseAfter(p[10]);
+                        int beforeDirectPairs = parseIntSuffix(p[11]);
+                        int unlockGain = parseIntSuffix(p[12]);
+                        int continuationPairs = parseIntSuffix(p[13]);
+
+                        if (FruitStrategyExperienceStore.isKnownStrategy(strategy)) {
+                            FruitStrategyExperienceStore.recordVerifiedHumanSuccess(
+                                    context, strategy,
+                                    beforeRemaining, beforeTray, beforeObjects,
+                                    beforeDroppable, beforeBlocked, beforeDirectPairs,
+                                    unlockGain, continuationPairs);
+                            out = row.replace(
+                                    token,
+                                    "|SESSION=" + safe(session) + "|OUTCOME=SUCCESS|");
+                            promoted++;
+                        }
+                    }
+                } catch (Throwable ignored) {
+                    // Keep malformed audit rows untouched; never guess a strategy.
+                }
+            }
+            if (next.length() > 0) next.append('\n');
+            next.append(out);
+        }
+
+        prefs.edit().putString(LOG_KEY, next.toString()).apply();
+        if (promoted > 0) {
+            LogBridge.d("[真人经验V4.80] 仅因任务终局 SUCCESS 收录水果经验：" + promoted);
+        }
+    }
+
+    private static int parseRight(String value, char prefix) {
+        if (value == null || value.length() < 4 || value.charAt(0) != prefix) {
+            throw new IllegalArgumentException("bad transition");
+        }
+        int arrow = value.indexOf('>');
+        if (arrow <= 1) throw new IllegalArgumentException("bad transition");
+        return Integer.parseInt(value.substring(1, arrow));
+    }
+
+    private static int parseAfter(String value) {
+        int arrow = value.indexOf('>');
+        if (arrow < 0 || arrow + 1 >= value.length()) {
+            throw new IllegalArgumentException("bad transition");
+        }
+        return Integer.parseInt(value.substring(arrow + 1));
+    }
+
+    private static int parseIntSuffix(String value) {
+        if (value == null || value.length() < 2) throw new IllegalArgumentException("bad number");
+        return Integer.parseInt(value.substring(1));
     }
 
     /**
