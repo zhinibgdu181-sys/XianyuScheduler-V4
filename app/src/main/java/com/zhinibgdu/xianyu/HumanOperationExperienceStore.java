@@ -7,7 +7,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * V4.67: compact, task-scoped memory of verified human touch habits.
@@ -44,10 +43,8 @@ final class HumanOperationExperienceStore {
         if (context == null || width <= 0 || height <= 0) return;
         int dx = actualX - targetCx;
         int dy = actualY - targetCy;
-        String payload = String.format(Locale.US,
-                "v1|%s|%s|%d|%d|%d|%d|%d|%d|%d|%d",
-                TYPE_TAP, safe(task), safe(pageKey), targetCx, targetCy,
-                actualX, actualY, dx, dy, width, height);
+        String payload = buildTapPayload(targetCx, targetCy, actualX, actualY,
+                dx, dy, width, height, task, pageKey);
         append(context, payload);
     }
 
@@ -77,12 +74,9 @@ final class HumanOperationExperienceStore {
             int width,
             int height) {
         if (context == null || width <= 0 || height <= 0) return;
-        String payload = String.format(Locale.US,
-                "v1|%s|%s|%d|%d|%d|%d|%d|%.1f|%.2f|%.1f|%d|%d",
-                TYPE_SWIPE, safe(task), safe(pageKey),
-                startX, startY, endX, endY, Math.max(0, durationMs),
-                Math.max(0f, pathDistance), angleDeg, Math.max(0f, avgSpeed),
-                width, height);
+        String payload = buildSwipePayload(startX, startY, endX, endY,
+                Math.max(0, durationMs), Math.max(0f, pathDistance),
+                angleDeg, Math.max(0f, avgSpeed), width, height, task, pageKey);
         append(context, payload);
     }
 
@@ -92,9 +86,7 @@ final class HumanOperationExperienceStore {
             String pageKey,
             long waitMs) {
         if (context == null || waitMs < 0L) return;
-        String payload = String.format(Locale.US,
-                "v1|%s|%s|%d",
-                TYPE_WAIT, safe(task), safe(pageKey), waitMs);
+        String payload = buildWaitPayload(waitMs, task, pageKey);
         append(context, payload);
     }
 
@@ -180,6 +172,48 @@ final class HumanOperationExperienceStore {
             if (bytes > MAX_STORE_BYTES) return bytes;
         }
         return bytes;
+    }
+
+    private static String buildTapPayload(
+            int targetCx, int targetCy, int actualX, int actualY,
+            int dx, int dy, int width, int height,
+            String task, String pageKey) {
+        return new StringBuilder(96)
+                .append("v1|").append(TYPE_TAP)
+                .append('|').append(safe(task))
+                .append('|').append(safe(pageKey))
+                .append('|').append(targetCx).append('|').append(targetCy)
+                .append('|').append(actualX).append('|').append(actualY)
+                .append('|').append(dx).append('|').append(dy)
+                .append('|').append(width).append('|').append(height)
+                .toString();
+    }
+
+    private static String buildSwipePayload(
+            int startX, int startY, int endX, int endY,
+            int durationMs, float pathDistance, float angleDeg, float avgSpeed,
+            int width, int height, String task, String pageKey) {
+        return new StringBuilder(128)
+                .append("v1|").append(TYPE_SWIPE)
+                .append('|').append(safe(task))
+                .append('|').append(safe(pageKey))
+                .append('|').append(startX).append('|').append(startY)
+                .append('|').append(endX).append('|').append(endY)
+                .append('|').append(durationMs)
+                .append('|').append(Float.toString(pathDistance))
+                .append('|').append(Float.toString(angleDeg))
+                .append('|').append(Float.toString(avgSpeed))
+                .append('|').append(width).append('|').append(height)
+                .toString();
+    }
+
+    private static String buildWaitPayload(long waitMs, String task, String pageKey) {
+        return new StringBuilder(72)
+                .append("v1|").append(TYPE_WAIT)
+                .append('|').append(safe(task))
+                .append('|').append(safe(pageKey))
+                .append('|').append(waitMs)
+                .toString();
     }
 
     private static SharedPreferences prefs(Context context) {
