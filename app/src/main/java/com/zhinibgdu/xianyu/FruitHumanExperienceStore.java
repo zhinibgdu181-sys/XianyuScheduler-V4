@@ -41,6 +41,37 @@ final class FruitHumanExperienceStore {
             int beforeBlocked,
             int afterBlocked
     ) {
+        return classify(
+                beforeRemaining, afterRemaining,
+                beforeTray, afterTray,
+                beforeObjects, afterObjects,
+                beforeBlocked, afterBlocked,
+                -1, -1,
+                -1, -1
+        );
+    }
+
+    /**
+     * Rich human-demo classifier. A tray increase alone is not a success:
+     * filling another tray slot can be a bad human move. SAFE_PUSH is admitted
+     * only when the new tray occupant is accompanied by independently observed
+     * follow-up evidence (a new direct pair or newly droppable fruit), and the
+     * tray still has a spare slot.
+     */
+    static Transition classify(
+            int beforeRemaining,
+            int afterRemaining,
+            int beforeTray,
+            int afterTray,
+            int beforeObjects,
+            int afterObjects,
+            int beforeBlocked,
+            int afterBlocked,
+            int beforeDroppable,
+            int afterDroppable,
+            int beforeDirectPairs,
+            int afterDirectPairs
+    ) {
         if (beforeRemaining >= 0 && afterRemaining >= 0
                 && afterRemaining < beforeRemaining - 1) {
             return new Transition(FruitStrategyExperienceStore.STRATEGY_PAIR, true);
@@ -48,12 +79,18 @@ final class FruitHumanExperienceStore {
         if (beforeTray >= 0 && afterTray >= 0 && afterTray < beforeTray) {
             return new Transition(FruitStrategyExperienceStore.STRATEGY_TRAY_MATCH, true);
         }
-        if (beforeTray >= 0 && afterTray >= 0 && afterTray > beforeTray) {
-            return new Transition(FruitStrategyExperienceStore.STRATEGY_SAFE_PUSH, true);
-        }
         if ((beforeObjects >= 0 && afterObjects >= 0 && afterObjects < beforeObjects)
                 || (beforeBlocked >= 0 && afterBlocked >= 0 && afterBlocked < beforeBlocked)) {
             return new Transition(FruitStrategyExperienceStore.STRATEGY_TRAY_UNBLOCK, true);
+        }
+        boolean safePushEvidence =
+                (beforeDroppable >= 0 && afterDroppable > beforeDroppable)
+                        || (beforeDirectPairs >= 0 && afterDirectPairs > beforeDirectPairs);
+        if (beforeTray >= 0 && afterTray >= 0
+                && afterTray > beforeTray
+                && afterTray < 3
+                && safePushEvidence) {
+            return new Transition(FruitStrategyExperienceStore.STRATEGY_SAFE_PUSH, true);
         }
         return null;
     }
