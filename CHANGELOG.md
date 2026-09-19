@@ -1,3 +1,9 @@
+# V4.61
+
+- Xianyu: detect the explicit “有新版本可以升级了” overlay and click only its OCR-located “暂不升级” action.
+- Apply the same guard during page probing and task scanning so an asynchronous version popup cannot block navigation or be mistaken for an exhausted/unknown task page.
+- No coordinate fallback is used for the upgrade dialog; if the explicit dismiss button is not recognized, the automation leaves the page untouched.
+
 # V4.60
 
 - Fruit game: explicitly recognize the rendered failure state (失败 + 返回主页 + retry/challenge evidence) as a terminal game result instead of treating it as an unresolved SAFE_STOP.
