@@ -284,7 +284,7 @@ final class FruitGameSolver {
         boolean recovering = false;
         boolean fruitTapAttempted = false;
         // V4.45.1：道具推广弹窗可能在长时间无操作后异步随机出现。
-        // 不能只在“准备安全停止”时检查；游戏运行期间也要周期性用OCR探测。
+        // 不能只在“准备安全停止”时检查；游戏运行期间按1600ms节奏用OCR探测。
         long lastIdlePopupProbeAt = 0L;
         final long idlePopupProbeIntervalMs = IDLE_POPUP_PROBE_INTERVAL_MS;
 
