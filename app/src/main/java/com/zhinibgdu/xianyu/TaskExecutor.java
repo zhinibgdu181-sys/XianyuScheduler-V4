@@ -5382,6 +5382,7 @@ public final class TaskExecutor {
             float pathDistance = 0f;
             long downAt = 0L;
             long lastGestureEndAt = 0L;
+            long pendingWaitMs = 0L;
             boolean gestureActive = false;
             try {
                 process = Runtime.getRuntime().exec(new String[]{
@@ -5434,6 +5435,11 @@ public final class TaskExecutor {
                         // finger-down. Once a gesture is active, the second down is a
                         // duplicate event, not a new gesture.
                         if (gestureActive) continue;
+                        if (lastGestureEndAt > 0L && now - lastGestureEndAt < 150L) {
+                            diagnostic("[人工检测V4.69] 忽略结束后的重复DOWN，delta="
+                                    + Math.max(0L, now - lastGestureEndAt) + "ms");
+                            continue;
+                        }
                         if (now <= syntheticInputIgnoreUntilV411
                                 && now - lastSyntheticInputAtV411 <= 220L) {
                             diagnostic("[人工检测V4.11] 忽略与程序输入高度同步的触摸事件，delta="
@@ -5441,19 +5447,11 @@ public final class TaskExecutor {
                             continue;
                         }
 
-                        if (lastGestureEndAt > 0L && now > lastGestureEndAt) {
-                            long waitMs = now - lastGestureEndAt;
-                            try {
-                                HumanOperationExperienceStore.recordWait(
-                                        lastContext,
-                                        currentExecutingTaskV464,
-                                        activeCategory.label,
-                                        waitMs);
-                                diagnostic("[真人经验V4.68] 已记录 WAIT：" + waitMs + "ms");
-                            } catch (Throwable t) {
-                                diagnostic("[真人经验V4.68] WAIT记录失败，但继续监听：" + t);
-                            }
-                        }
+                        // WAIT is committed only when this physical gesture is
+                        // successfully completed. This prevents a duplicate/partial DOWN
+                        // from creating multiple WAIT records for one real action.
+                        pendingWaitMs = lastGestureEndAt > 0L && now > lastGestureEndAt
+                                ? now - lastGestureEndAt : 0L;
 
                         physicalTouchDetected = true;
                         physicalTouchAt = now;
@@ -5474,7 +5472,21 @@ public final class TaskExecutor {
                     if (gestureActive && touchUp) {
                         int endX = x == null ? lastX : x;
                         int endY = y == null ? lastY : y;
-                        if (startX >= 0 && startY >= 0 && endX >= 0 && endY >= 0) {
+                        if (startX >= 0 && startY >= 0 && endX >= 0 && endY >= 0
+                                && endX < screenW && endY < screenH
+                                && startX < screenW && startY < screenH) {
+                            if (pendingWaitMs > 0L) {
+                                try {
+                                    HumanOperationExperienceStore.recordWait(
+                                            lastContext,
+                                            currentExecutingTaskV464,
+                                            activeCategory.label,
+                                            pendingWaitMs);
+                                    diagnostic("[真人经验V4.69] 已记录 WAIT：" + pendingWaitMs + "ms");
+                                } catch (Throwable t) {
+                                    diagnostic("[真人经验V4.69] WAIT记录失败，但继续监听：" + t);
+                                }
+                            }
                             int duration = (int) Math.max(0L, now - downAt);
                             double directDistance = Math.hypot(endX - startX, endY - startY);
                             double angle = Math.toDegrees(Math.atan2(endY - startY, endX - startX));
@@ -5508,6 +5520,7 @@ public final class TaskExecutor {
                             lastGestureEndAt = now;
                         }
                         gestureActive = false;
+                        pendingWaitMs = 0L;
                         startX = startY = lastX = lastY = -1;
                         pathDistance = 0f;
                     }
@@ -5587,13 +5600,12 @@ public final class TaskExecutor {
         if (parts.length == 0) return null;
         String token = parts[parts.length - 1];
         try {
-            if (token.startsWith("0X")) return Integer.parseInt(token.substring(2), 16);
-            if (token.matches("[0-9A-F]+") && token.matches(".*[A-F].*")) {
-                return Integer.parseInt(token, 16);
-            }
-            return Integer.parseInt(token);
+            // getevent prints ABS values as hexadecimal even when the token contains
+            // only digits. Parsing digit-only values as decimal distorts coordinates.
+            if (token.startsWith("0X") || token.startsWith("0x")) token = token.substring(2);
+            return Integer.parseInt(token, 16);
         } catch (Throwable ignored) {
-            try { return Integer.parseInt(token, 16); } catch (Throwable ignoredAgain) { return null; }
+            return null;
         }
     }
 
