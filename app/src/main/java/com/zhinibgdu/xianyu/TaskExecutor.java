@@ -12,6 +12,7 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.SystemClock;
 import android.util.Log;
+import android.widget.Toast;
 
 import org.w3c.dom.Document;
 import org.w3c.dom.Node;
@@ -195,6 +196,7 @@ public final class TaskExecutor {
     // V4.43.8: a category may finish scanning without actually being complete.
     // Keep this result separate so execute() never returns to the scheduler app on an unresolved category.
     private static volatile boolean lastCategoryExhaustedV438 = false;
+    private static volatile boolean returnedToSchedulerV438 = false;
 
     public static String getActiveCategoryLabel() {
         return activeCategory.label;
@@ -232,6 +234,7 @@ public final class TaskExecutor {
         gameIncompleteTaskV421 = "";
         invalidateOcrCacheV411();
         lastTaskPanelOcrAtV415 = 0L;
+        returnedToSchedulerV438 = false;
         diagnostic("[数据路径] " + buildDataPathsLogV435(lastContext));
         diagnostic("========== " + activeCategory.label + "开始 · " + getAppVersionName(lastContext) + " ==========");
         notifyTask(lastContext, activeCategory.label, "任务已启动");
@@ -246,7 +249,10 @@ public final class TaskExecutor {
                 ScreenOcr.close();
                 inBounceTask = false;
                 diagnostic("========== 任务结束 ==========");
-                notifyTask(lastContext, activeCategory.label, userAborted ? "任务已中止" : "任务已结束，已返回 APP");
+                notifyTask(lastContext, activeCategory.label,
+                        userAborted
+                                ? "任务已中止"
+                                : (returnedToSchedulerV438 ? "任务已完成，已返回 APP" : "任务已完成，但未确认返回 APP"));
                 running = false;
                 if (complete != null) {
                     try { complete.run(); } catch (Throwable t) { diagnostic("完成回调异常", t); }
@@ -255,36 +261,98 @@ public final class TaskExecutor {
         }, "XianyuTask").start();
     }
 
-    private static void returnToApp(Context ctx, String suPath) {
-        if (ctx == null) return;
+    /**
+     * Return to the scheduler app and verify that it actually became the foreground app.
+     *
+     * The previous implementation only relied on Context.startActivity(). On this device
+     * the request could be issued while Xianyu was still foreground, so the executor waited
+     * five seconds and then ended without returning to the scheduler. Use the already
+     * authorized ROOT shell as the primary launch path, then verify the real foreground
+     * package before declaring completion and showing the completion Toast.
+     */
+    private static boolean returnToApp(Context ctx, String suPath, String completionMessage) {
+        if (ctx == null) return false;
         try {
-            Intent launch = ctx.getPackageManager().getLaunchIntentForPackage(MODULE_PACKAGE);
-            if (launch == null) {
-                diagnostic("[完成] 未找到 APP 启动入口");
-                return;
-            }
-            launch.addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK
-                            | Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            | Intent.FLAG_ACTIVITY_SINGLE_TOP
-            );
-            ctx.startActivity(launch);
-            diagnostic("[完成] 所有任务分类均已确认完成，正在返回定时任务 APP");
+            final String component = MODULE_PACKAGE + "/" + MODULE_PACKAGE + ".MainActivity";
+            boolean launchRequested = false;
 
-            // startActivity() 只是发起启动请求，不能证明目标已经成为前台。
-            // 必须实际轮询前台包名，确认 com.zhinibgdu.xianyu 后才能记录“已返回”。
-            long deadline = SystemClock.elapsedRealtime() + 5000L;
+            // Primary path: ROOT am start is reliable even when this code is running from
+            // the foreground service while Xianyu owns the screen.
+            if (suPath != null && !suPath.trim().isEmpty()) {
+                RootResult rootLaunch = rootWithPath(
+                        suPath,
+                        "am start -n " + component
+                );
+                launchRequested = rootLaunch.exitCode == 0;
+                diagnostic("[完成] ROOT 返回定时任务 APP：exit=" + rootLaunch.exitCode
+                        + " output=" + trimForLog(rootLaunch.stdout, 300));
+            }
+
+            // Fallback: normal Android launch if the ROOT launch was rejected.
+            if (!launchRequested) {
+                Intent launch = ctx.getPackageManager().getLaunchIntentForPackage(MODULE_PACKAGE);
+                if (launch == null) {
+                    diagnostic("[完成] 未找到 APP 启动入口");
+                    return false;
+                }
+                launch.addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK
+                                | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                );
+                ctx.startActivity(launch);
+                launchRequested = true;
+                diagnostic("[完成] 已发起 Android 返回定时任务 APP");
+            }
+
+            diagnostic("[完成] 正在确认定时任务 APP 已进入前台");
+
+            // Give Android a little more time than the old 5-second window. Do not
+            // report success until the foreground package is actually our package.
+            final long deadline = SystemClock.elapsedRealtime() + 8000L;
+            int retry = 0;
             while (!userAborted && SystemClock.elapsedRealtime() < deadline) {
                 String fg = getFg(suPath, false);
                 if (MODULE_PACKAGE.equals(fg)) {
                     diagnostic("[完成] 已确认返回定时任务 APP：" + MODULE_PACKAGE);
-                    return;
+                    returnedToSchedulerV438 = true;
+                    showTaskCompletionToast(ctx, completionMessage == null || completionMessage.trim().isEmpty()
+                            ? "闲鱼任务已完成"
+                            : completionMessage);
+                    return true;
                 }
-                sleepAbortableV48(180L);
+
+                // If Android did not honor the first launch request, retry through ROOT
+                // once after a short delay rather than silently ending on Xianyu.
+                if (retry < 2 && SystemClock.elapsedRealtime() + 2500L < deadline) {
+                    sleepAbortableV48(350L);
+                    retry++;
+                    if (suPath != null && !suPath.trim().isEmpty()) {
+                        rootWithPath(suPath, "am start -n " + component);
+                        diagnostic("[完成] 重试返回定时任务 APP #" + retry);
+                    }
+                } else {
+                    sleepAbortableV48(180L);
+                }
             }
-            diagnostic("[完成] ⚠️ 已发起返回定时任务 APP，但 5 秒内未确认其处于前台");
+
+            diagnostic("[完成] ⚠️ 已尝试返回定时任务 APP，但仍未确认其处于前台；不显示完成提示");
+            return false;
         } catch (Throwable t) {
             diagnostic("返回本 APP 失败", t);
+            return false;
+        }
+    }
+
+    /** Show the same native Android Toast style used by the ROOT authorization message. */
+    private static void showTaskCompletionToast(Context ctx, String message) {
+        if (ctx == null) return;
+        try {
+            ctx.getMainExecutor().execute(() ->
+                    Toast.makeText(ctx.getApplicationContext(), message, Toast.LENGTH_SHORT).show()
+            );
+        } catch (Throwable t) {
+            diagnostic("[完成] 显示任务完成提示失败", t);
         }
     }
 
@@ -427,6 +495,7 @@ public final class TaskExecutor {
 
         int completed = 0;
         boolean allEnabledCategoriesFinished = true;
+        StringBuilder completedCategoryLabels = new StringBuilder();
         TaskCategory requested = activeCategory;
         TaskCategory[] categories = requested == TaskCategory.ALL
                 ? new TaskCategory[]{TaskCategory.LOCAL, TaskCategory.VIDEO, TaskCategory.GAME, TaskCategory.JUMP}
@@ -435,10 +504,19 @@ public final class TaskExecutor {
             if (userAborted || gameIncompleteHoldV421) break;
             if (requested == TaskCategory.ALL && !isCategoryEnabled(ctx, categories[i])) continue;
             activeCategory = categories[i];
+            // Each category gets an independent completion result. Do not carry the
+            // previous category's exhausted=true state into the next category.
+            lastCategoryExhaustedV438 = false;
             diagnostic("[任务分类] 开始：" + activeCategory.label);
             notifyTask(ctx, activeCategory.label, "正在扫描任务");
             if (i > 0 && !resetTaskPanelTop(suPath)) break;
             completed += scanAndExecuteTasks(suPath, ctx);
+            if (lastCategoryExhaustedV438 && completedCategoryLabels.length() > 0) {
+                completedCategoryLabels.append("、");
+            }
+            if (lastCategoryExhaustedV438) {
+                completedCategoryLabels.append(activeCategory.label);
+            }
             if (!lastCategoryExhaustedV438 && !userAborted && !gameIncompleteHoldV421) {
                 allEnabledCategoriesFinished = false;
                 diagnostic("[任务分类] " + activeCategory.label + " 尚未确认完成，禁止提前返回定时任务 APP");
@@ -448,7 +526,15 @@ public final class TaskExecutor {
 
         // 只有所有已开启分类都明确确认“没有更多未完成任务”后，才返回定时任务 APP。
         if (!userAborted && !gameIncompleteHoldV421 && allEnabledCategoriesFinished) {
-            returnToApp(ctx, suPath);
+            String completionMessage;
+            if (completedCategoryLabels.length() == 0) {
+                completionMessage = "闲鱼任务已完成";
+            } else if (completedCategoryLabels.indexOf("、") < 0) {
+                completionMessage = completedCategoryLabels + "已完成";
+            } else {
+                completionMessage = "闲鱼任务已全部完成";
+            }
+            returnToApp(ctx, suPath, completionMessage);
         }
 
         diagnostic(
@@ -1617,6 +1703,7 @@ public final class TaskExecutor {
         int consecutiveEmptyCandidateScans = 0;
         boolean categoryExhausted = false;
         boolean categoryBlockedByUnfinishedTask = false;
+        int categoryTopRechecks = 0;
 
         for (int pass = 0; pass < 30; pass++) {
 
@@ -1733,7 +1820,18 @@ public final class TaskExecutor {
                 // OCR frame cannot produce a false "category completed" message.
                 consecutiveEmptyCandidateScans++;
                 if (consecutiveEmptyCandidateScans >= 3) {
-                    diagnostic("[任务分类] 连续3次未识别到任务，视为当前分类没有更多可执行任务："
+                    if (!categoryBlockedByUnfinishedTask
+                            && categoryTopRechecks < 2
+                            && resetTaskPanelTop(suPath)) {
+                        categoryTopRechecks++;
+                        consecutiveEmptyCandidateScans = 0;
+                        repeatedViewport = 0;
+                        exhaustedViewport = "";
+                        diagnostic("[任务分类] 当前页面未发现任务；回到顶部进行第"
+                                + categoryTopRechecks + "次全量复查，禁止把屏幕外任务误判为完成");
+                        continue;
+                    }
+                    diagnostic("[任务分类] 连续多次未识别到任务，且顶部复查后仍无可执行任务："
                             + activeCategory.label);
                     categoryExhausted = true;
                     break;
@@ -1764,8 +1862,10 @@ public final class TaskExecutor {
 
                 long cooldownRemain = TaskProfileStoreV48.cooldownRemainingMsV411(c.name);
                 if (cooldownRemain > 0L) {
+                    categoryBlockedByUnfinishedTask = true;
                     diagnostic("[冷却V4.11] 本轮暂不执行：" + c.name
-                            + "，剩余约" + Math.max(1L, cooldownRemain / 1000L) + "秒");
+                            + "，剩余约" + Math.max(1L, cooldownRemain / 1000L)
+                            + "秒；该任务仍未完成，禁止把分类判定为完成");
                     continue;
                 }
 
@@ -1809,7 +1909,18 @@ public final class TaskExecutor {
                 // 等同于“本分类全部完成”。给 OCR/XML 再留两轮确认机会，
                 // 防止某一帧漏掉未完成任务按钮后提前结束。
                 if (repeatedViewport >= 2) {
-                    diagnostic("[任务分类] 连续多次扫描仍无可执行任务，确认当前分类没有更多可执行任务："
+                    if (!categoryBlockedByUnfinishedTask
+                            && categoryTopRechecks < 2
+                            && resetTaskPanelTop(suPath)) {
+                        categoryTopRechecks++;
+                        repeatedViewport = 0;
+                        exhaustedViewport = "";
+                        consecutiveEmptyCandidateScans = 0;
+                        diagnostic("[任务分类] 已滑到重复视口；先回到顶部进行第"
+                                + categoryTopRechecks + "次全量复查，避免屏幕外未完成任务被漏掉");
+                        continue;
+                    }
+                    diagnostic("[任务分类] 连续多次扫描仍无可执行任务，且顶部复查后仍无可执行任务："
                             + activeCategory.label);
                     categoryExhausted = true;
                     break;
@@ -1824,6 +1935,7 @@ public final class TaskExecutor {
 
             repeatedViewport = 0;
             exhaustedViewport = "";
+            categoryTopRechecks = 0;
             String targetAttemptKey = normalizeTaskAttemptKeyV46(target.name);
             attemptsByTask.put(
                     targetAttemptKey,
@@ -2720,7 +2832,8 @@ public final class TaskExecutor {
         // task panel, do a single zero-wait verification pass and move on. Progress
         // text can update later; it must not stall the next visible task. Claims
         // keep a second chance because their row/button often changes in place.
-        int maxChecks = claim ? 2 : (hasFreshPanelFrameV416 ? 1 : 2);
+        boolean videoTask = containsAny(taskName, "视频");
+        int maxChecks = claim ? 2 : (videoTask ? 3 : (hasFreshPanelFrameV416 ? 1 : 2));
 
         // V4.15/V4.16: the recovery/conditional-back path has just OCR-confirmed the
         // task panel in most runs. Reuse that exact frame as check #1 instead of
@@ -3560,9 +3673,10 @@ public final class TaskExecutor {
 
         TaskProfileStoreV48.StrategyV49 videoStrategy =
                 TaskProfileStoreV48.chooseStrategyV49(taskName, 22000L, true, true);
-        long videoTimeout = Math.max(35000L, Math.min(55000L, videoStrategy.waitMs + 22000L));
+        long requiredWatchMs = Math.max(15000L, videoStrategy.waitMs);
+        long videoTimeout = Math.max(35000L, Math.min(55000L, requiredWatchMs + 22000L));
         diagnostic("[视频策略V4.11] " + videoStrategy.describe()
-                + " / timeout=" + videoTimeout + "ms");
+                + " / requiredWatch=" + requiredWatchMs + "ms / timeout=" + videoTimeout + "ms");
 
         long start = SystemClock.elapsedRealtime();
         boolean sawAd = false;
@@ -3624,17 +3738,31 @@ public final class TaskExecutor {
             }
 
             if (isTaskPageV45(null, ocr)) {
-                // 已经到任务面板就绝不再执行第二次返回，避免退过头。
-                diagnostic("[视频] ✅ 已回到真实任务面板，停止继续返回");
-                return true;
+                long elapsed = SystemClock.elapsedRealtime() - start;
+                if (elapsed >= requiredWatchMs) {
+                    // Only after the minimum watch window has elapsed may returning
+                    // to the task panel be treated as a completed execution.
+                    diagnostic("[视频] ✅ 已回到真实任务面板，且已满足最短观看时长："
+                            + elapsed + "ms；进入完成验证");
+                    return true;
+                }
+                diagnostic("[视频] 已回任务面板但观看时间不足："
+                        + elapsed + "/" + requiredWatchMs + "ms；继续等待，禁止提前判定完成");
+                continue;
             }
 
             // Every fourth OCR poll, allow one XML fallback for hard pages.
             if (loop % 4 == 0) {
                 String xml = dumpUi(suPath);
                 if (isTaskPageV45(xml, ocr)) {
-                    diagnostic("[视频] ✅ XML确认已在任务面板，停止继续返回");
-                    return true;
+                    long elapsed = SystemClock.elapsedRealtime() - start;
+                    if (elapsed >= requiredWatchMs) {
+                        diagnostic("[视频] ✅ XML确认已在任务面板，且已满足最短观看时长："
+                                + elapsed + "ms；进入完成验证");
+                        return true;
+                    }
+                    diagnostic("[视频] XML确认回到任务面板，但观看时间不足："
+                            + elapsed + "/" + requiredWatchMs + "ms；继续等待");
                 }
             }
 
@@ -4614,8 +4742,8 @@ public final class TaskExecutor {
         return false;
     }
 
-    /** One edge-back gesture; callers verify the resulting page before continuing. */
-    private static boolean preferredRightBackOnceV410(String suPath, String reason) {
+    /** Two edge-back gestures sent in one burst; callers verify the resulting page afterwards. */
+    private static boolean preferredRightBackTwiceV410(String suPath, String reason) {
         if (userAborted) return false;
         int[] screen = getScreenSizeV43(suPath);
         if (screen == null) return false;
@@ -4623,32 +4751,51 @@ public final class TaskExecutor {
         int y = Math.round(height * 0.75f);
         int startX = Math.max(1, width - 2);
         int endX = Math.round(width * 0.76f);
-        diagnostic("[右侧返回V4.11] " + reason + "：最右边缘 x=" + startX
-                + " → " + endX + "，y=" + y + "(~75%H)");
-        RootResult r = rootWithPath(suPath, "input swipe " + startX + " " + y
-                + " " + endX + " " + y + " 260");
-        return r.exitCode == 0;
+
+        diagnostic("[右侧返回V4.44] " + reason + "：快速连续返回2次，x="
+                + startX + " → " + endX + "，y=" + y + "(~75%H)");
+
+        RootResult first = rootWithPath(suPath, "input swipe " + startX + " " + y
+                + " " + endX + " " + y + " 220");
+        if (first.exitCode != 0 || userAborted) return false;
+
+        // Only a very short gap between the two gestures. Do not perform the old
+        // 650ms wait, and do not probe OCR between the two back gestures.
+        SystemClock.sleep(80L);
+        if (userAborted) return false;
+
+        RootResult second = rootWithPath(suPath, "input swipe " + startX + " " + y
+                + " " + endX + " " + y + " 220");
+        return second.exitCode == 0 && !userAborted;
     }
 
     private static boolean conditionalBackRecoveryV410(
             String suPath, String taskName, String reason
     ) {
         if (userAborted || gameSolverOwnsPageV420 || gameIncompleteHoldV421) return false;
-        for (int i = 0; i <= 3; i++) {
-            if (userAborted) return false;
-            invalidateOcrCacheV411();
-            PageProbeV411 page = probePageV411(suPath, "返回检查/" + reason);
-            if (userAborted || page.kind == PageKindV411.MODULE_APP) return false;
-            if (page.kind == PageKindV411.TASK_PANEL) return true;
-            if (page.kind == PageKindV411.MINE || page.kind == PageKindV411.XIANYU_HOME
-                    || page.kind == PageKindV411.COIN_HOME) {
-                diagnostic("[条件返回] 已到 " + page.kind + "，停止后退，直接导航到任务面板");
-                return enterViaMineCoin(suPath);
-            }
-            if (i == 3 || !preferredRightBackOnceV410(suPath, reason)
-                    || !sleepAbortableV48(650L)) break;
+
+        // V4.44: completion-return navigation is deliberately a two-swipe burst.
+        // The old flow performed one swipe, waited 650ms, then inspected the page
+        // and possibly swiped again. That made the return visibly slow and could
+        // leave the executor sitting on an intermediate Xianyu page.
+        if (!preferredRightBackTwiceV410(suPath, reason)) {
+            TaskProfileStoreV48.recordFailure(taskName, "conditional_back_gesture_failed");
+            return false;
         }
-        TaskProfileStoreV48.recordFailure(taskName, "conditional_back_not_recovered");
+
+        invalidateOcrCacheV411();
+        sleepAbortableV48(180L);
+
+        PageProbeV411 page = probePageV411(suPath, "双返回检查/" + reason);
+        if (userAborted || page.kind == PageKindV411.MODULE_APP) return false;
+        if (page.kind == PageKindV411.TASK_PANEL) return true;
+        if (page.kind == PageKindV411.MINE || page.kind == PageKindV411.XIANYU_HOME
+                || page.kind == PageKindV411.COIN_HOME) {
+            diagnostic("[条件返回V4.44] 已到 " + page.kind + "，停止后退，直接导航到任务面板");
+            return enterViaMineCoin(suPath);
+        }
+
+        TaskProfileStoreV48.recordFailure(taskName, "conditional_back_not_recovered_after_double_swipe");
         return false;
     }
 
