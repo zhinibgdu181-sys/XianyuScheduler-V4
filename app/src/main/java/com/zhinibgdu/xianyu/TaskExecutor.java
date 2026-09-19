@@ -142,6 +142,8 @@ public final class TaskExecutor {
     // observer keeps learning from the human continuation instead of discarding it.
     private static volatile String currentExecutingTaskV464 = "";
     private static volatile boolean humanTeachingStartedV464 = false;
+    private static volatile Thread humanTeachingThreadV464;
+    private static volatile long humanTeachingGenerationV464 = 0L;
     private static final long HUMAN_TEACHING_WINDOW_MS_V464 = 90_000L;
     private static final long HUMAN_TEACHING_SAMPLE_MS_V464 = 950L;
     private static volatile Process touchMonitorProcess;
@@ -228,6 +230,9 @@ public final class TaskExecutor {
             return;
         }
         lastContext = context.getApplicationContext();
+        // A prior 90s passive observer must never overlap a new automation run.
+        // In particular, its final ScreenOcr.close() must not race the new solver.
+        stopHumanTeachingCaptureV464();
         LegacyDataCleanup.remove(lastContext);
         activeCategory = category == null ? TaskCategory.ALL : category;
         running = true;
@@ -258,13 +263,14 @@ public final class TaskExecutor {
                 sendStatus("", "FAILED", "任务线程异常：" + t.getClass().getSimpleName());
             } finally {
                 stopPhysicalTouchMonitorV48();
-                if (!humanTeachingStartedV464) {
+                running = false;
+                currentExecutingTaskV464 = "";
+                if (!isHumanTeachingThreadAliveV464()) {
                     ScreenOcr.close();
                 }
                 inBounceTask = false;
                 diagnostic("========== 任务结束 ==========");
                 notifyTask(lastContext, activeCategory.label, userAborted ? "任务已中止" : "任务已结束，已返回 APP");
-                running = false;
                 if (complete != null) {
                     try { complete.run(); } catch (Throwable t) { diagnostic("完成回调异常", t); }
                 }
@@ -5090,13 +5096,19 @@ public final class TaskExecutor {
     }
 
     /**
-     * V4.64: once a human takes over a fruit game, automation stops immediately.
-     * We then passively sample the board for a bounded window. Every structural
-     * transition is treated as a demonstration only after real board progress is
-     * observed; no synthetic taps are generated and no human action is interrupted.
+     * V4.65: once a human takes over a fruit game, automation stops immediately.
+     *
+     * Teaching is passive and conservative:
+     * - it never generates a tap/swipe;
+     * - a transition is only admitted after the resulting structural state remains
+     *   stable for a second observation;
+     * - impossible/no-progress observations are audit-only and never reinforce memory;
+     * - the observer is generation-scoped so it cannot close ScreenOcr for a later run.
      */
-    private static void startHumanTeachingCaptureV464() {
-        if (humanTeachingStartedV464) return;
+    private static synchronized void startHumanTeachingCaptureV464() {
+        Thread old = humanTeachingThreadV464;
+        if (old != null && old.isAlive()) return;
+
         String task = currentExecutingTaskV464 == null ? "" : currentExecutingTaskV464;
         String normalized = task.replaceAll("\\s+", "");
         if (!(normalized.contains("消了还想") || normalized.contains("还想消玩1关"))) {
@@ -5107,37 +5119,95 @@ public final class TaskExecutor {
         final String suPath = cachedSuPath;
         if (context == null || suPath == null || suPath.isEmpty()) return;
 
+        final long generation = ++humanTeachingGenerationV464;
         humanTeachingStartedV464 = true;
-        diagnostic("[真人经验V4.64] 自动操作已停止，开启90秒被动学习窗口；不发送任何点击");
+        diagnostic("[真人经验V4.65] 自动操作已停止，开启90秒被动学习窗口；仅记录经验证的结构经验，不回放真人点击");
+
         Thread thread = new Thread(() -> {
             FruitGameSolver.TeachingStateV464 previous = null;
+            FruitGameSolver.TeachingStateV464 pendingBefore = null;
+            FruitGameSolver.TeachingStateV464 pendingAfter = null;
             int learned = 0;
+            int unchangedSamples = 0;
+            boolean noProgressLogged = false;
             long deadline = SystemClock.elapsedRealtime() + HUMAN_TEACHING_WINDOW_MS_V464;
             try {
-                while (SystemClock.elapsedRealtime() < deadline) {
+                while (SystemClock.elapsedRealtime() < deadline
+                        && generation == humanTeachingGenerationV464) {
                     FruitGameSolver.TeachingStateV464 current =
                             FruitGameSolver.captureTeachingStateV464(context, suPath);
-                    if (current != null) {
-                        if (previous != null) {
-                            FruitHumanExperienceStore.Transition transition =
-                                    FruitHumanExperienceStore.classify(
-                                            previous.remaining, current.remaining,
-                                            previous.trayCount, current.trayCount,
-                                            previous.objects, current.objects,
-                                            previous.blocked, current.blocked);
-                            if (transition != null) {
-                                FruitHumanExperienceStore.record(
-                                        context, task, previous, current, transition);
-                                learned++;
-                                diagnostic("[真人经验V4.64] 学到第" + learned + "个真实操作："
-                                        + transition.strategy
-                                        + " / 剩余 " + previous.remaining + "→" + current.remaining
-                                        + " / 槽位 " + previous.trayCount + "→" + current.trayCount
-                                        + " / 对象 " + previous.objects + "→" + current.objects);
+                    if (current != null
+                            && generation == humanTeachingGenerationV464) {
+
+                        String rejected = FruitHumanExperienceStore.rejectReason(previous, current);
+                        if (rejected != null) {
+                            FruitHumanExperienceStore.recordRejectedObservation(
+                                    context, task, current, rejected);
+                            pendingBefore = null;
+                            pendingAfter = null;
+                            unchangedSamples = 0;
+                            noProgressLogged = false;
+                        } else {
+                            if (pendingAfter != null) {
+                                if (FruitHumanExperienceStore.sameStructuralState(pendingAfter, current)) {
+                                    FruitHumanExperienceStore.Transition transition =
+                                            FruitHumanExperienceStore.classify(
+                                                    pendingBefore.remaining, pendingAfter.remaining,
+                                                    pendingBefore.trayCount, pendingAfter.trayCount,
+                                                    pendingBefore.objects, pendingAfter.objects,
+                                                    pendingBefore.blocked, pendingAfter.blocked);
+                                    if (FruitHumanExperienceStore.shouldReinforce(transition)) {
+                                        FruitHumanExperienceStore.record(
+                                                context, task, pendingBefore, pendingAfter, transition);
+                                        learned++;
+                                        diagnostic("[真人经验V4.65] 收录第" + learned
+                                                + "个已验证经验：" + transition.strategy
+                                                + " / 剩余 " + pendingBefore.remaining + "→" + pendingAfter.remaining
+                                                + " / 槽位 " + pendingBefore.trayCount + "→" + pendingAfter.trayCount);
+                                    } else if (transition != null) {
+                                        FruitHumanExperienceStore.recordRejectedObservation(
+                                                context, task, pendingAfter, "transition_not_admitted");
+                                    }
+                                    pendingBefore = null;
+                                    pendingAfter = null;
+                                } else {
+                                    // The board moved again before the candidate after-state
+                                    // was confirmed. Discard it instead of guessing which human
+                                    // action caused the later state.
+                                    pendingBefore = null;
+                                    pendingAfter = null;
+                                }
+                            }
+
+                            if (previous != null && pendingAfter == null) {
+                                FruitGameSolver.TeachingStateV464 currentBefore = previous;
+                                FruitHumanExperienceStore.Transition transition =
+                                        FruitHumanExperienceStore.classify(
+                                                currentBefore.remaining, current.remaining,
+                                                currentBefore.trayCount, current.trayCount,
+                                                currentBefore.objects, current.objects,
+                                                currentBefore.blocked, current.blocked);
+                                if (FruitHumanExperienceStore.shouldReinforce(transition)) {
+                                    pendingBefore = currentBefore;
+                                    pendingAfter = current;
+                                } else if (FruitHumanExperienceStore.sameStructuralState(previous, current)) {
+                                    unchangedSamples++;
+                                    if (unchangedSamples >= 3 && !noProgressLogged) {
+                                        FruitHumanExperienceStore.recordRejectedObservation(
+                                                context, task, current,
+                                                "three_consecutive_samples_without_verified_progress");
+                                        noProgressLogged = true;
+                                    }
+                                } else {
+                                    unchangedSamples = 0;
+                                    noProgressLogged = false;
+                                }
                             }
                         }
+
                         previous = current;
                     }
+
                     try {
                         Thread.sleep(HUMAN_TEACHING_SAMPLE_MS_V464);
                     } catch (InterruptedException e) {
@@ -5146,14 +5216,45 @@ public final class TaskExecutor {
                     }
                 }
             } catch (Throwable t) {
-                diagnostic("[真人经验V4.64] 被动学习异常", t);
+                diagnostic("[真人经验V4.65] 被动学习异常", t);
             } finally {
-                diagnostic("[真人经验V4.64] 学习窗口结束：共记录 " + learned + " 个已验证真实操作");
-                ScreenOcr.close();
+                synchronized (TaskExecutor.class) {
+                    if (generation == humanTeachingGenerationV464
+                            && humanTeachingThreadV464 == Thread.currentThread()) {
+                        humanTeachingThreadV464 = null;
+                        humanTeachingStartedV464 = false;
+                        if (!running) {
+                            ScreenOcr.close();
+                        }
+                        diagnostic("[真人经验V4.65] 学习窗口结束：共记录 "
+                                + learned + " 个已验证经验；未验证观察全部丢弃");
+                    }
+                }
             }
-        }, "XianyuHumanTeaching-V464");
+        }, "XianyuHumanTeaching-V465");
         thread.setDaemon(true);
+        humanTeachingThreadV464 = thread;
         thread.start();
+    }
+
+    private static synchronized void stopHumanTeachingCaptureV464() {
+        humanTeachingGenerationV464++;
+        Thread thread = humanTeachingThreadV464;
+        humanTeachingThreadV464 = null;
+        humanTeachingStartedV464 = false;
+        if (thread != null && thread.isAlive()) {
+            thread.interrupt();
+            try {
+                thread.join(350L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    private static boolean isHumanTeachingThreadAliveV464() {
+        Thread thread = humanTeachingThreadV464;
+        return thread != null && thread.isAlive();
     }
 
     private static void startPhysicalTouchMonitorV48(String suPath) {
