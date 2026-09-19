@@ -3612,8 +3612,16 @@ public final class TaskExecutor {
         if (finalPage == PageKindV411.TASK_PANEL) return true;
         if (finalPage == PageKindV411.MODULE_APP) return false;
 
-        // Only after explicit game-exit confirmation do we use the normal task-panel
-        // recovery. This is not a blind BACK from an unresolved game page.
+        // Unknown/unfinished game pages are never fed into generic recovery.
+        // Only a positively identified non-game Xianyu page may use the normal
+        // task-panel restoration path.
+        if (finalPage == PageKindV411.FRUIT_PAIR_GAME
+                || finalPage == PageKindV411.UNKNOWN
+                || finalPage == PageKindV411.UNKNOWN_XIANYU) {
+            diagnostic("[水果V4.60] ❌ 失败页退出最终确认仍不明确，禁止普通导航/返回，保留现场");
+            return false;
+        }
+
         boolean recovered = recoverToXianyuTaskPanelV47(suPath, "水果失败页返回后任务面板恢复");
         if (recovered) {
             diagnostic("[水果V4.60] ✅ 失败页已离开，任务面板恢复成功：" + taskName);
