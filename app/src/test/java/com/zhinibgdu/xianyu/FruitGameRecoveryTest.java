@@ -223,6 +223,44 @@ public class FruitGameRecoveryTest {
         assertFalse(FruitGameSolver.isBridgeMateSimilarity(0.94, 0.04, 0.995, 0.70));
     }
 
+    @Test public void twoStepLookaheadFindsContinuationPairAfterCandidateAndMate() throws Exception {
+        Class<?> fruitClass = Class.forName("com.zhinibgdu.xianyu.FruitGameSolver$FruitObject");
+        java.lang.reflect.Constructor<?> ctor = fruitClass.getDeclaredConstructor(
+                float.class, float.class, float.class, float.class, float.class, float.class,
+                float[].class, boolean[].class, float[].class);
+        ctor.setAccessible(true);
+
+        Object a = fruitObject(ctor, 80f, 100f);
+        Object b = fruitObject(ctor, 180f, 100f);
+        Object c1 = fruitObject(ctor, 280f, 100f);
+        Object c2 = fruitObject(ctor, 380f, 100f);
+
+        Method method = FruitGameSolver.class.getDeclaredMethod(
+                "countReliablePairsAfterRemoving",
+                List.class, fruitClass, fruitClass, int.class, int.class, Set.class);
+        method.setAccessible(true);
+
+        List<Object> objects = Arrays.asList(a, b, c1, c2);
+        int pairs = (int) method.invoke(
+                null, objects, a, b, 500, 1000, Collections.emptySet());
+
+        assertTrue("continuation pair should be visible after the first pair is removed", pairs >= 1);
+    }
+
+    private static Object fruitObject(
+            java.lang.reflect.Constructor<?> ctor,
+            float x, float y
+    ) throws Exception {
+        float[] rgb = new float[32 * 32 * 3];
+        float[] hist = new float[72];
+        boolean[] shape = new boolean[32 * 32];
+        Arrays.fill(shape, true);
+        Arrays.fill(rgb, 0.5f);
+        Arrays.fill(hist, 1f / (float) Math.sqrt(hist.length));
+        return ctor.newInstance(x, y, x - 20f, y - 20f, x + 20f, y + 20f,
+                rgb, shape, hist);
+    }
+
     @Test public void secondTrayVerificationFailureReturnsNullAndDoesNotTap() throws Exception {
         for (int i = 0; i < 8; i++) frames.add(null);
         assertNull(observe(0));
