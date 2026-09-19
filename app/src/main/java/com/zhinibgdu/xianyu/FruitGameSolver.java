@@ -438,6 +438,8 @@ final class FruitGameSolver {
         int pairActions = 0;
         int noActionRetry = 0;
         int deadlockRestarts = 0;
+        int deadlockEvidenceCountV480 = 0;
+        long lastDeadlockRestartAttemptAtV480 = 0L;
         int twoSlotExplorationAttemptsV463 = 0;
         String unchangedBoardIdea = "";
         long unchangedBoardSince = SystemClock.elapsedRealtime();
@@ -715,6 +717,7 @@ final class FruitGameSolver {
                         if (revive == PopupDismissResult.ABORTED) return Result.ABORTED;
                         if (revive == PopupDismissResult.DISMISSED) {
                             noActionRetry = 0;
+                            deadlockEvidenceCountV480 = 0;
                             recovering = true;
                             host.log("[游戏V4.62] ✅ 复活弹窗已关闭，重新确认棋盘");
                             continue;
@@ -739,6 +742,7 @@ final class FruitGameSolver {
                             throw new RecoverableObservationException("OCR识别到道具弹窗但关闭失败");
                         }
                         noActionRetry = 0;
+                        deadlockEvidenceCountV480 = 0;
                         host.log("[弹窗V4.44.1] 弹窗关闭后立即重建棋盘，不计入无动作重试");
                         continue;
                     }
@@ -748,7 +752,16 @@ final class FruitGameSolver {
                     boolean learnedReject = StallIdeaStore.shouldSkip(context, waitIdea);
                     boolean timedOut = ideaAgeMs >= IDEA_TIMEOUT_MS;
                     boolean hardStalled = ideaAgeMs >= HARD_STALL_TIMEOUT_MS;
-                    if (!learnedReject && !timedOut) {
+
+                    // V4.80: 不再用易受视觉微抖动影响的“棋盘完全相同15秒”作为唯一死局门槛。
+                    // 2/3 或 3/3 槽位连续多次独立无动作确认后，就进入死局恢复。
+                    int deadlockConfirmationsRequired =
+                            tray.count >= TRAY_CAPACITY ? 3 : 4;
+                    boolean deadlockConfirmedV480 =
+                            tray.count >= 2
+                                    && deadlockEvidenceCountV480 >= deadlockConfirmationsRequired;
+
+                    if (!learnedReject && !timedOut && !deadlockConfirmedV480) {
                         noActionRetry++;
                         host.log("[思路V4.58] 当前等待/重建思路仍在15秒观察窗："
                                 + ideaAgeMs + "/" + IDEA_TIMEOUT_MS
@@ -766,10 +779,16 @@ final class FruitGameSolver {
                     // 2/3 或 3/3 时已经没有可点的直配、完整对子或安全解阻链。
                     // 旧版会在这里被异步弹窗的“关闭→重新建模”循环拖住数分钟。
                     // 先用本帧OCR确认仍是水果页，随后只给一次短弹窗机会；仍无解才重开。
-                    if (tray.count >= 2) {
-                        RestartResult restart = restartDeadlockedRound(host, checkpoint, deadlockRestarts);
-                        if (restart == RestartResult.ABORTED) return Result.ABORTED;
-                        if (restart == RestartResult.RESTARTED) {
+                    if (tray.count >= 2 && deadlockConfirmedV480) {
+                        long nowV480 = SystemClock.elapsedRealtime();
+                        if (nowV480 - lastDeadlockRestartAttemptAtV480 >= 5000L) {
+                            lastDeadlockRestartAttemptAtV480 = nowV480;
+                            host.log("[死局证据V4.80] 连续无动作确认 "
+                                    + deadlockEvidenceCountV480 + "/" + deadlockConfirmationsRequired
+                                    + "，进入重开流程");
+                            RestartResult restart = restartDeadlockedRound(host, checkpoint, deadlockRestarts);
+                            if (restart == RestartResult.ABORTED) return Result.ABORTED;
+                            if (restart == RestartResult.RESTARTED) {
                             deadlockRestarts++;
                             remaining = -1;
                             twoSlotExplorationAttemptsV463 = 0;
@@ -781,6 +800,7 @@ final class FruitGameSolver {
                             blockedPositionTtl.clear();
                             host.log("[死局重开V4.55] ✅ 已开始新局，清空旧棋盘坐标并立即重建模型");
                             continue;
+                            }
                         }
                     }
                     // 这里不能因为画面上存在“解锁”按钮就直接去看视频。
@@ -852,7 +872,18 @@ final class FruitGameSolver {
                     }
 
                     if (popupHandled) {
+                        deadlockEvidenceCountV480 = 0;
                         continue;
+                    }
+
+                    if (tray.count >= 2) {
+                        deadlockEvidenceCountV480++;
+                        host.log("[死局证据V4.80] 本次无动作确认="
+                                + deadlockEvidenceCountV480 + "/" + deadlockConfirmationsRequired
+                                + " / tray=" + tray.count + "/" + TRAY_CAPACITY
+                                + " / remaining=" + remaining);
+                    } else {
+                        deadlockEvidenceCountV480 = 0;
                     }
 
                     host.log("[水果V4.44-step4] 连续无动作达到阈值，准备安全停止前最后复核");
@@ -860,6 +891,7 @@ final class FruitGameSolver {
                 }
 
                 noActionRetry = 0;
+                deadlockEvidenceCountV480 = 0;
                 StallIdeaStore.recordRecovery(context, waitIdea);
                 host.log("[水果V4.44] move生成成功: trayChoice=" + (trayChoice != null)
                         + ", pair=" + (pair != null)
