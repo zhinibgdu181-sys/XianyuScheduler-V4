@@ -151,7 +151,7 @@ final class FruitHumanExperienceStore {
      */
     static boolean shouldReinforce(Context context, Transition transition) {
         return shouldReinforce(transition)
-                && TeachingOutcomeStore.taskReplayEligible();
+                && TeachingOutcomeStore.gameReplayEligible();
     }
 
     static void record(
@@ -210,7 +210,7 @@ final class FruitHumanExperienceStore {
      * is independently verified as SUCCESS. FAILURE/UNKNOWN are audit-only.
      */
     static synchronized void promoteCurrentSession(Context context) {
-        if (context == null || !TeachingOutcomeStore.taskReplayEligible()) return;
+        if (context == null || !TeachingOutcomeStore.gameReplayEligible()) return;
         String session = TeachingOutcomeStore.currentSessionId();
         if (session == null || session.isEmpty()) return;
 
