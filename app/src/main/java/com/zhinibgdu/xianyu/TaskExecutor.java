@@ -5420,13 +5420,14 @@ public final class TaskExecutor {
                     if (x != null) {
                         if (gestureActive && lastX >= 0) pathDistance += Math.abs(x - lastX);
                         lastX = x;
+                        // BTN_TOUCH/TRACKING_ID may arrive before the first ABS position
+                        // events. Bind the gesture start to the first valid coordinates
+                        // instead of permanently keeping startX/startY at -1.
+                        if (gestureActive && startX < 0) startX = x;
                     }
                     if (y != null) {
-                        if (gestureActive && lastY >= 0) {
-                            // The X and Y axes arrive as separate events; the path
-                            // approximation is refined on the next coordinate pair.
-                        }
                         lastY = y;
+                        if (gestureActive && startY < 0) startY = y;
                     }
 
                     long now = SystemClock.elapsedRealtime();
