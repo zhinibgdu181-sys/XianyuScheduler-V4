@@ -79,18 +79,20 @@ final class FruitHumanExperienceStore {
         if (beforeTray >= 0 && afterTray >= 0 && afterTray < beforeTray) {
             return new Transition(FruitStrategyExperienceStore.STRATEGY_TRAY_MATCH, true);
         }
+        // A tray increase is a distinct safety case. Do not let the generic
+        // unblock rule classify a risky tray fill as successful experience.
+        if (beforeTray >= 0 && afterTray >= 0 && afterTray > beforeTray) {
+            boolean safePushEvidence =
+                    (beforeDroppable >= 0 && afterDroppable > beforeDroppable)
+                            || (beforeDirectPairs >= 0 && afterDirectPairs > beforeDirectPairs);
+            if (afterTray < 3 && safePushEvidence) {
+                return new Transition(FruitStrategyExperienceStore.STRATEGY_SAFE_PUSH, true);
+            }
+            return null;
+        }
         if ((beforeObjects >= 0 && afterObjects >= 0 && afterObjects < beforeObjects)
                 || (beforeBlocked >= 0 && afterBlocked >= 0 && afterBlocked < beforeBlocked)) {
             return new Transition(FruitStrategyExperienceStore.STRATEGY_TRAY_UNBLOCK, true);
-        }
-        boolean safePushEvidence =
-                (beforeDroppable >= 0 && afterDroppable > beforeDroppable)
-                        || (beforeDirectPairs >= 0 && afterDirectPairs > beforeDirectPairs);
-        if (beforeTray >= 0 && afterTray >= 0
-                && afterTray > beforeTray
-                && afterTray < 3
-                && safePushEvidence) {
-            return new Transition(FruitStrategyExperienceStore.STRATEGY_SAFE_PUSH, true);
         }
         return null;
     }
