@@ -5209,7 +5209,7 @@ public final class TaskExecutor {
             } finally {
                 if (generation == humanOperationTeachingGenerationV467) {
                     humanOperationTeachingThreadV467 = null;
-                    finalizeHumanTeachingOutcomeV480(context, suPath);
+                    finalizeHumanTeachingOutcomeV480(context, cachedSuPath);
                     diagnostic("[真人经验V4.67] 通用真人操作学习窗口结束；"
                             + TeachingOutcomeStore.summary());
                 }
