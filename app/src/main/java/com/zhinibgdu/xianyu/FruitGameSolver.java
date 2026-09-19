@@ -88,6 +88,14 @@ final class FruitGameSolver {
     private static final int POST_TAP_SETTLED_CONFIRMATIONS = 2;
     private static final int FAST_REACQUIRE_RADIUS_PX = 24;
 
+    // V4.53：动作后不再固定空等 650~850ms。下一阶段本身会立刻截图并做
+    // 连续稳定帧确认，因此这里仅保留动画启动缓冲；若仍在动画中，由观察器继续等待。
+    private static final long DIRECT_TAP_SETTLE_MIN_MS = 300L;
+    private static final long DIRECT_TAP_SETTLE_MAX_MS = 440L;
+    private static final long PAIR_B_TAP_SETTLE_MIN_MS = 360L;
+    private static final long PAIR_B_TAP_SETTLE_MAX_MS = 500L;
+    private static final long IDLE_POPUP_PROBE_INTERVAL_MS = 1600L;
+
     // V4.37.0：截图回放中底部同类受采样/压缩影响约0.978~0.982。
     // 总分与更严格的RGB、直方图、形状三个门槛共同判断；不逐轮降低阈值。
     private static final double MIN_PAIR_SCORE = 0.975;
@@ -136,7 +144,11 @@ final class FruitGameSolver {
         if (context == null || suPath == null || suPath.isEmpty() || host == null) {
             return Result.SAFE_STOP_CLEAN;
         }
-        host.log("[水果V4.44-step5] Solver启动，进入动作生成与点击验证闭环");
+        host.log("[水果V4.53] Solver启动；启用自适应短等待：单水果 "
+                + DIRECT_TAP_SETTLE_MIN_MS + "~" + DIRECT_TAP_SETTLE_MAX_MS
+                + "ms / B "
+                + PAIR_B_TAP_SETTLE_MIN_MS + "~" + PAIR_B_TAP_SETTLE_MAX_MS
+                + "ms / 异步弹窗探测间隔=" + IDLE_POPUP_PROBE_INTERVAL_MS + "ms");
 
         if (!host.sleep(420L, 720L)) return Result.ABORTED;
 
@@ -274,7 +286,7 @@ final class FruitGameSolver {
         // V4.45.1：道具推广弹窗可能在长时间无操作后异步随机出现。
         // 不能只在“准备安全停止”时检查；游戏运行期间也要周期性用OCR探测。
         long lastIdlePopupProbeAt = 0L;
-        final long IDLE_POPUP_PROBE_INTERVAL_MS = 850L;
+        final long idlePopupProbeIntervalMs = IDLE_POPUP_PROBE_INTERVAL_MS;
 
         // 槽位计数表示“已占用槽”，不是“已解锁槽”。
         // 不允许把底部“解锁”按钮误判成当前棋盘的容量上限；
@@ -319,7 +331,7 @@ final class FruitGameSolver {
                 // V4.45.1：持续监听异步道具弹窗。该弹窗可能在长时间无操作后突然出现，
                 // 不能依赖“准备退出”阶段才检查；运行期间每约850ms主动做一次OCR探测。
                 long nowForPopupProbe = SystemClock.elapsedRealtime();
-                if (nowForPopupProbe - lastIdlePopupProbeAt >= IDLE_POPUP_PROBE_INTERVAL_MS) {
+                if (nowForPopupProbe - lastIdlePopupProbeAt >= idlePopupProbeIntervalMs) {
                     lastIdlePopupProbeAt = nowForPopupProbe;
                     ScreenOcr.Snapshot popupProbe = requireOcr(host,
                             "水果V4.45.1/运行中弹窗监听");
@@ -626,7 +638,7 @@ final class FruitGameSolver {
                         if (host.aborted()) return Result.ABORTED;
                         throw new RecoverableObservationException("水果点击发送失败，重新观察真实槽位");
                     }
-                    if (!host.sleep(650L, 800L)) return Result.ABORTED;
+                    if (!host.sleep(DIRECT_TAP_SETTLE_MIN_MS, DIRECT_TAP_SETTLE_MAX_MS)) return Result.ABORTED;
 
                     PostTapObservation after = observeTrayAfterTap(
                             context, suPath, host, Math.max(0, beforeTrayCount - 1),
@@ -723,7 +735,7 @@ final class FruitGameSolver {
                         if (host.aborted()) return Result.ABORTED;
                         throw new RecoverableObservationException("水果点击发送失败，重新观察真实槽位");
                     }
-                    if (!host.sleep(650L, 800L)) return Result.ABORTED;
+                    if (!host.sleep(DIRECT_TAP_SETTLE_MIN_MS, DIRECT_TAP_SETTLE_MAX_MS)) return Result.ABORTED;
 
                     PostTapObservation afterPush = observeTrayAfterTap(
                             context, suPath, host, beforeTrayCount + 1,
@@ -930,7 +942,7 @@ final class FruitGameSolver {
                     if (host.aborted()) return Result.ABORTED;
                     throw new RecoverableObservationException("水果点击发送失败，重新观察真实槽位");
                 }
-                if (!host.sleep(700L, 850L)) return Result.ABORTED;
+                if (!host.sleep(PAIR_B_TAP_SETTLE_MIN_MS, PAIR_B_TAP_SETTLE_MAX_MS)) return Result.ABORTED;
 
                 PostTapObservation afterBObs = observeTrayAfterTap(
                         context, suPath, host, beforeTrayCount,
