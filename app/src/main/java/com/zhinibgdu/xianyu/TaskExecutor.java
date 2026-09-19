@@ -3386,10 +3386,10 @@ public final class TaskExecutor {
         FruitGameSolver.Result result = FruitGameSolver.Result.SAFE_STOP_CLEAN;
         PageKindV411 finalPage = PageKindV411.UNKNOWN;
         try {
-            // Only bounded re-observation is allowed. No in-game function button
-            // (shuffle/eliminate/unlock/use) is ever touched by the solver.
-            for (int segment = 1; segment <= 2; segment++) {
-                diagnostic("[水果V4.36] 求解段 " + segment + "/2");
+            // Solver内部已经包含截图、OCR和槽位恢复。外层不再重复启动第二段，
+            // 避免稳定无动作后再次耗费约20~30秒；功能按钮仍禁止点击。
+            for (int segment = 1; segment <= 1; segment++) {
+                diagnostic("[水果V4.44.1] 求解段 " + segment + "/1");
                 try {
                     result = FruitGameSolver.solveOneRound(
                             lastContext,
@@ -3454,15 +3454,10 @@ public final class TaskExecutor {
                 if (result == FruitGameSolver.Result.ABORTED
                         || result == FruitGameSolver.Result.COMPLETED) break;
 
-                // CLEAN、DIRTY和进入页漏识别都先看实际页面。
-                // 第二段从截图/OCR/真实槽位重建，绝不重放第一段坐标。
+                // 停止后只确认实际页面，不再启动重复Solver。
                 finalPage = inspectFruitPageV442(suPath, "安全停止#" + segment);
                 if (userAborted || physicalTouchDetected) return false;
                 if (finalPage != PageKindV411.FRUIT_PAIR_GAME) break;
-                if (segment < 2) {
-                    diagnostic("[恢复V4.42] 水果页仍在，禁止BACK；仅允许再运行一次Solver");
-                    if (!paceSleepV415(300L, 500L)) return false;
-                }
             }
         } finally {
             endGameSolverOwnershipV420(taskName);

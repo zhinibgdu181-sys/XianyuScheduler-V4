@@ -76,10 +76,10 @@ public class FruitGameRecoveryTest {
         return FruitGameSolver.solveOneRound(context, "su", host);
     }
 
-    @Test public void lowDetectionWaitsForFiveFreshFramesBeforeStopping() {
+    @Test public void lowDetectionUsesOneFreshRetryBeforeStopping() {
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
-        assertEquals(6, captures); // original + five no-action retries
-        assertEquals(5, host.countLogs("[无动作V4.42]"));
+        assertEquals(2, captures); // original + one fresh no-action retry
+        assertEquals(1, host.countLogs("[无动作V4.42]"));
         assertEquals(0, host.taps);
     }
 
@@ -95,10 +95,10 @@ public class FruitGameRecoveryTest {
     @Test public void threeScreenshotFailuresCanRecoverOnFourthCapture() {
         frames.addAll(Arrays.asList(null, null, null));
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
-        assertEquals(9, captures);
+        assertEquals(5, captures);
         assertEquals(3, host.countLogs("[恢复V4.42] 重新截图"));
         assertEquals(1, host.countLogs("[恢复V4.42] 已重新确认"));
-        assertEquals(5, host.countLogs("[无动作V4.42]"));
+        assertEquals(1, host.countLogs("[无动作V4.42]"));
     }
 
     @Test public void fourthConsecutiveScreenshotFailureStops() {
@@ -112,7 +112,7 @@ public class FruitGameRecoveryTest {
     @Test public void successfulObservationResetsRecoveryBudget() {
         frames.addAll(Arrays.asList(null, null, null, bitmap(SKY), null, null, null));
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
-        assertEquals(12, captures);
+        assertEquals(8, captures);
         assertEquals(6, host.countLogs("[恢复V4.42] 重新截图"));
         assertEquals(2, host.countLogs("[恢复V4.42] 已重新确认"));
     }
@@ -124,7 +124,7 @@ public class FruitGameRecoveryTest {
         };
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
         assertEquals(1, host.countLogs("[恢复V4.42] 进入确认重试"));
-        assertEquals(6, captures);
+        assertEquals(2, captures);
     }
 
     @Test public void persistentEntryOcrExceptionIsBounded() {
@@ -140,8 +140,8 @@ public class FruitGameRecoveryTest {
                 : GAME);
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
         assertEquals(1, host.taps);
-        // 六次均来自进入正式棋盘后的观察；启动页本身不再额外截 PNG。
-        assertEquals(6, captures);
+        // 两次均来自进入正式棋盘后的观察；启动页本身不再额外截 PNG。
+        assertEquals(2, captures);
         assertEquals(1, host.countLogs("[开始页V4.43.9]"));
     }
 
@@ -151,10 +151,19 @@ public class FruitGameRecoveryTest {
         assertFalse(FruitGameSolver.looksLikeFruitStartScreen("得骰子赚闲鱼币 去完成"));
     }
 
+    @Test public void toolPopupTextIsRecognizedWithoutRelyingOnPanelColor() {
+        assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
+                "解锁 解锁所有槽位 使用 打乱 5%"));
+        assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
+                "随机打乱 立即使用"));
+        assertFalse(FruitGameSolver.looksLikeBlockingFunctionPopupText(
+                "剩余 196 消除 第1关 解锁 打乱 5%"));
+    }
+
     @Test public void missingRemainingBaselineRecoversBeforeDecisions() {
         host.ocr = reason -> snapshot(host.ocrCalls == 1 ? "第1关 消除 打乱" : GAME);
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
-        assertEquals(6, captures);
+        assertEquals(2, captures);
         assertEquals(0, host.taps);
     }
 
@@ -220,6 +229,14 @@ public class FruitGameRecoveryTest {
         assertEquals(0, host.taps);
     }
 
+    @Test public void intermediatePairUsesTrayFastPathWithoutOcr() throws Exception {
+        Object verification = verifyRemaining(1);
+        assertTrue(booleanField(verification, "confirmed"));
+        assertEquals(18, intField(verification, "afterRemaining"));
+        assertEquals(0, host.ocrCalls);
+        assertEquals(1, host.countLogs("[快速验证V4.44.1]"));
+    }
+
     @Test public void wrongRemainingValueAlsoGetsSecondChance() throws Exception {
         host.ocr = reason -> snapshot("剩余 " + (host.ocrCalls == 1 ? 19 : 18));
         assertTrue(booleanField(verifyRemaining(), "confirmed"));
@@ -253,16 +270,26 @@ public class FruitGameRecoveryTest {
     }
 
     private Object verifyRemaining() throws Exception {
+        return verifyRemaining(3);
+    }
+
+    private Object verifyRemaining(int actionIndex) throws Exception {
         Method method = FruitGameSolver.class.getDeclaredMethod("verifyPairRemaining",
                 FruitGameSolver.Host.class, int.class, int.class, String.class);
         method.setAccessible(true);
-        return method.invoke(null, host, 20, 1, "test");
+        return method.invoke(null, host, 20, actionIndex, "test");
     }
 
     private boolean booleanField(Object value, String name) throws Exception {
         Field field = value.getClass().getDeclaredField(name);
         field.setAccessible(true);
         return field.getBoolean(value);
+    }
+
+    private int intField(Object value, String name) throws Exception {
+        Field field = value.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.getInt(value);
     }
 
     private static ScreenOcr.Snapshot snapshot(String text) {
