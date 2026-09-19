@@ -217,6 +217,20 @@ public final class TaskExecutor {
         if (running) markUserAbortV48(reason == null || reason.isEmpty() ? "用户请求停止" : reason);
     }
 
+    /**
+     * V4.66: 前台服务真正销毁时，立即终止真人教学观察。
+     * 教学线程不再拥有独立于服务生命周期的后台存活能力。
+     */
+    public static boolean isHumanTeachingActiveV466() {
+        Thread thread = humanTeachingThreadV464;
+        return humanTeachingStartedV464 && thread != null && thread.isAlive();
+    }
+
+    public static void stopHumanTeachingForServiceDestroyV466() {
+        stopHumanTeachingCaptureV464();
+        diagnostic("[真人经验V4.66] 前台服务已销毁，立即停止真人教学观察");
+    }
+
     public static void run(Context context) { run(context, null); }
 
     public static void run(Context context, Runnable complete) {
