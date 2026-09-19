@@ -5424,11 +5424,17 @@ public final class TaskExecutor {
                         }
 
                         if (lastGestureEndAt > 0L && now > lastGestureEndAt) {
-                            HumanOperationExperienceStore.recordWait(
-                                    lastContext,
-                                    currentExecutingTaskV464,
-                                    activeCategory.label,
-                                    now - lastGestureEndAt);
+                            long waitMs = now - lastGestureEndAt;
+                            try {
+                                HumanOperationExperienceStore.recordWait(
+                                        lastContext,
+                                        currentExecutingTaskV464,
+                                        activeCategory.label,
+                                        waitMs);
+                                diagnostic("[真人经验V4.68] 已记录 WAIT：" + waitMs + "ms");
+                            } catch (Throwable t) {
+                                diagnostic("[真人经验V4.68] WAIT记录失败，但继续监听：" + t);
+                            }
                         }
 
                         physicalTouchDetected = true;
@@ -5454,22 +5460,32 @@ public final class TaskExecutor {
                             int duration = (int) Math.max(0L, now - downAt);
                             double directDistance = Math.hypot(endX - startX, endY - startY);
                             double angle = Math.toDegrees(Math.atan2(endY - startY, endX - startX));
-                            if (directDistance < 30.0 && duration < 450) {
-                                HumanOperationExperienceStore.recordRawTap(
-                                        lastContext,
-                                        currentExecutingTaskV464,
-                                        activeCategory.label,
-                                        endX, endY, screenW, screenH);
-                            } else {
-                                float effectivePath = Math.max(pathDistance, (float) directDistance);
-                                float speed = duration <= 0 ? 0f : effectivePath * 1000f / duration;
-                                HumanOperationExperienceStore.recordSwipe(
-                                        lastContext,
-                                        currentExecutingTaskV464,
-                                        activeCategory.label,
-                                        startX, startY, endX, endY,
-                                        duration, effectivePath, (float) angle, speed,
-                                        screenW, screenH);
+                            try {
+                                if (directDistance < 30.0 && duration < 450) {
+                                    HumanOperationExperienceStore.recordRawTap(
+                                            lastContext,
+                                            currentExecutingTaskV464,
+                                            activeCategory.label,
+                                            endX, endY, screenW, screenH);
+                                    diagnostic("[真人经验V4.68] 已记录 TAP：" + endX + "," + endY
+                                            + " duration=" + duration + "ms");
+                                } else {
+                                    float effectivePath = Math.max(pathDistance, (float) directDistance);
+                                    float speed = duration <= 0 ? 0f : effectivePath * 1000f / duration;
+                                    HumanOperationExperienceStore.recordSwipe(
+                                            lastContext,
+                                            currentExecutingTaskV464,
+                                            activeCategory.label,
+                                            startX, startY, endX, endY,
+                                            duration, effectivePath, (float) angle, speed,
+                                            screenW, screenH);
+                                    diagnostic("[真人经验V4.68] 已记录 SWIPE："
+                                            + startX + "," + startY + "→" + endX + "," + endY
+                                            + " duration=" + duration + "ms path=" + effectivePath
+                                            + " angle=" + angle + " speed=" + speed);
+                                }
+                            } catch (Throwable t) {
+                                diagnostic("[真人经验V4.68] 手势记录失败，但继续监听：" + t);
                             }
                             lastGestureEndAt = now;
                         }
