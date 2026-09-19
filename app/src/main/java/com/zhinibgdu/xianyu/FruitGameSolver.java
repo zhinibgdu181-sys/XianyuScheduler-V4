@@ -678,7 +678,8 @@ final class FruitGameSolver {
                             + " / directUnlock=" + safePush.directUnlockMate
                             + " / mateReady=" + safePush.mateDroppable
                             + " / continuationPairs=" + safePush.continuationPairs
-                            + " / unlock=" + safePush.unlockGain);
+                            + " / unlock=" + safePush.unlockGain
+                            + " / cascadeFollowers=" + safePush.cascadeFollowers);
 
                     if (handlePopupBeforeFruitTap(host, "安全压栈")) {
                         safeRecycle(frame.bitmap);
@@ -1718,6 +1719,7 @@ final class FruitGameSolver {
                             + " / expected=" + expectedCount + " / " + traySummary(tray));
                     if (!tray.stable) {
                         consecutiveBaseline = 0;
+                        expectedStableCount = 0;
                         if (lastStable != null) safeRecycle(lastStable.frame.bitmap);
                         lastStable = null;
                         if (!host.sleep(220L, 360L)) return null;
