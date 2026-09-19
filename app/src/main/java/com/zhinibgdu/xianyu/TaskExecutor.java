@@ -1838,10 +1838,19 @@ public final class TaskExecutor {
                 }
 
                 long cooldownRemain = TaskProfileStoreV48.cooldownRemainingMsV411(c.name);
-                if (cooldownRemain > 0L) {
+                // 小游戏任务必须优先进入真实游戏执行器。
+                // 普通任务的失败冷却只用于防止反复点击外部/浏览任务；
+                // 不能因为历史冷却记录把仍显示“去完成”的小游戏直接过滤掉，
+                // 否则会出现“任务卡仍在，但候选任务=0，分类被错误判定完成”。
+                boolean gameTask = activeCategory == TaskCategory.GAME;
+                if (cooldownRemain > 0L && !gameTask) {
                     diagnostic("[冷却V4.11] 本轮暂不执行：" + c.name
                             + "，剩余约" + Math.max(1L, cooldownRemain / 1000L) + "秒");
                     continue;
+                }
+                if (cooldownRemain > 0L && gameTask) {
+                    diagnostic("[小游戏冷却旁路V4.44] 仍检测到小游戏任务“" + c.name
+                            + "”，忽略历史冷却，继续启动游戏执行器");
                 }
 
                 String attemptKey = normalizeTaskAttemptKeyV46(c.name);
