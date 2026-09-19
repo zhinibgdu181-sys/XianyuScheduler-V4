@@ -225,7 +225,9 @@ final class FruitGameSolver {
     private static final long IDLE_POPUP_PROBE_INTERVAL_MS = 1600L;
     // A clean screenshot/OCR obtained immediately before planning is also a popup gate.
     // Re-running full-screen OCR for the same frame cost 2~3 seconds on the real device.
-    private static final long PRE_TAP_POPUP_CLEAN_TTL_MS = 3500L;
+    // V4.64: an asynchronous popup may appear during the old 3.5s cache window.
+    // Only reuse a truly immediate clean probe; anything older must pass the popup gate again.
+    private static final long PRE_TAP_POPUP_CLEAN_TTL_MS = 300L;
     private static final String FRUIT_FEATURE_PREFS = "xianyu_task_profiles_v48";
     private static final String FRUIT_FEATURE_PREFIX = "fruit_drop_feature_v1_";
 
