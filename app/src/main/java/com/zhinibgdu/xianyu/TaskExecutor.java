@@ -712,6 +712,9 @@ public final class TaskExecutor {
             boolean adLike = text.contains("跳转至详情页面或第三方应用")
                     || (text.contains("滑动或点击") && text.contains("第三方应用"))
                     || text.contains("跳过广告")
+                    // 闲鱼启动广告经常只显示“跳过5/跳过3”，OCR 不一定带“广告”二字。
+                    // dismissOpeningAdV47 只在冷启动后执行，因此这里识别“跳过”是安全的。
+                    || text.contains("跳过")
                     || text.contains("广告");
             if (!adLike) {
                 return true;
@@ -720,8 +723,8 @@ public final class TaskExecutor {
             sawAd = true;
 
             // 最优先点击广告右上角的“跳过广告 N”。
-            if (clickOcrTextAnyV45(suPath, ocr, false, "跳过广告")) {
-                diagnostic("[广告恢复] 已点击‘跳过广告’");
+            if (clickOcrTextAnyV45(suPath, ocr, false, "跳过广告", "跳过")) {
+                diagnostic("[广告恢复] 已点击启动广告跳过按钮");
                 sleepAbortableV48(500L);
                 ScreenOcr.Snapshot after = captureOcrV45(suPath, "跳过广告后检查");
                 String afterText = after == null ? "" : after.fullText;
@@ -1748,12 +1751,19 @@ public final class TaskExecutor {
             List<TaskCandidate> candidates =
                     findTaskCandidatesOcrV45(taskOcr);
 
-            // OCR 可能只识别出当前屏幕的一部分按钮。即使已经有 OCR 候选，
-            // 也补做一次 XML 候选合并，避免“还有未完成任务但 OCR 漏掉了按钮”
-            // 时直接把当前分类判定为没有任务。
-            if (xml == null) {
-                // OCR 漏掉整屏按钮时，必须仍然做一次 XML 兜底；不能因为 OCR=0
-                // 连续几次就把分类误判为完成。
+            // V4.43.8: UIAutomator 在实机 WebView 上单次通常需要约 2.4~2.9 秒。
+            // OCR 已稳定识别到按钮时先走快速路径；只有 OCR 完全为空，或当前
+            // OCR 视口与上轮耗尽视口相同、准备结束分类时，才做一次 XML 复核。
+            // 这样保留最终防漏检查，同时避免每滚动一屏都支付 XML dump 成本。
+            String ocrViewportFingerprint = taskCandidateFingerprintV4438(candidates);
+            boolean finalXmlConfirmation = !ocrViewportFingerprint.isEmpty()
+                    && ocrViewportFingerprint.equals(exhaustedViewport);
+
+            // OCR 完全为空时使用 XML 恢复候选；重复视口即将结束分类时，
+            // 再用 XML 合并候选完成一次保守复核。
+            if (xml == null && (candidates.isEmpty() || finalXmlConfirmation)) {
+                // OCR 漏掉整屏按钮时仍做 XML 兜底；到达重复视口、准备结束
+                // 分类时也做一次最终复核，不能仅凭单一 OCR 帧宣称完成。
                 xml = dumpUi(suPath);
             }
             if (xml != null) {
@@ -1856,15 +1866,12 @@ public final class TaskExecutor {
                     diagnostic("[任务分类] 当前页面存在 " + activeCategory.label
                             + " 任务卡，但没有任何可执行任务；将继续确认页面，已完成/冷却/跳过任务不再阻塞分类完成");
                 }
-                StringBuilder viewport = new StringBuilder();
-                for (TaskCandidate c : candidates) viewport.append(c.key()).append('|');
-                String fingerprint = viewport.toString();
+                String fingerprint = taskCandidateFingerprintV4438(candidates);
                 repeatedViewport = fingerprint.equals(exhaustedViewport) ? repeatedViewport + 1 : 0;
                 exhaustedViewport = fingerprint;
-                // 页面指纹相同只说明本次滑动没有带来新画面，不能立刻
-                // 等同于“本分类全部完成”。给 OCR/XML 再留两轮确认机会，
-                // 防止某一帧漏掉未完成任务按钮后提前结束。
-                if (repeatedViewport >= 2) {
+                // 第二次看到同一视口时，前面已经强制执行过一次 XML 最终复核；
+                // 此时可以安全结束，不再为相同底部页面多做一整轮 OCR/XML。
+                if (repeatedViewport >= 1) {
                     diagnostic("[任务分类] 连续多次扫描仍无可执行任务，确认当前分类没有更多可执行任务："
                             + activeCategory.label);
                     categoryExhausted = true;
@@ -2012,6 +2019,15 @@ public final class TaskExecutor {
         }
 
         return completed;
+    }
+
+    private static String taskCandidateFingerprintV4438(List<TaskCandidate> candidates) {
+        if (candidates == null || candidates.isEmpty()) return "";
+        StringBuilder viewport = new StringBuilder();
+        for (TaskCandidate candidate : candidates) {
+            if (candidate != null) viewport.append(candidate.key()).append('|');
+        }
+        return viewport.toString();
     }
 
     private static String getAppVersionName(Context context) {
