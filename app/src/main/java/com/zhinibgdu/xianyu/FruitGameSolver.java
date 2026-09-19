@@ -1787,8 +1787,12 @@ final class FruitGameSolver {
             int trayCount, int cascadeFollowers, boolean cascadeMate
     ) {
         if (trayCount < 0 || trayCount >= TRAY_CAPACITY) return false;
-        if (trayCount < TRAY_CAPACITY - 1) return true;
-        if (cascadeFollowers <= 0) return true;
+        int freeSlots = TRAY_CAPACITY - trayCount;
+        int additions = 1 + Math.max(0, cascadeFollowers);
+        if (additions <= freeSlots) return true;
+
+        // 唯一可接受的“超出容量”例外：候选本身进入槽位后，
+        // 紧接着唯一的级联水果就是它的同类，二者会立即二消，净占用为0。
         return cascadeFollowers == 1 && cascadeMate;
     }
 
