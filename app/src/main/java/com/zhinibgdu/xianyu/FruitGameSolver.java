@@ -102,10 +102,13 @@ final class FruitGameSolver {
                     return false;
                 }
             }
-            @Override public boolean aborted() { return false; }
+            @Override public boolean aborted() {
+                return Thread.currentThread().isInterrupted();
+            }
             @Override public void log(String message) {}
             @Override public ScreenOcr.Snapshot ocr(String reason) {
-                ScreenOcr.Snapshot snapshot = ScreenOcr.capture(context, suPath, () -> false);
+                ScreenOcr.Snapshot snapshot = ScreenOcr.capture(
+                        context, suPath, () -> Thread.currentThread().isInterrupted());
                 return snapshot == null ? ScreenOcr.Snapshot.empty() : snapshot;
             }
         };
