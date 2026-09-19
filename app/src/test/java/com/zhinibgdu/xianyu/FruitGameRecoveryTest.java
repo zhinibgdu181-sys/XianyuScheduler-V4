@@ -258,6 +258,17 @@ public class FruitGameRecoveryTest {
         assertFalse(FruitGameSolver.allowsThirdSlotCascade(2, 2, true));
         assertFalse(FruitGameSolver.allowsThirdSlotCascade(3, 0, false));
     }
+    @Test public void cascadeOccupancyCreditsIncomingFruitEliminations() {
+        // 1槽已有同类；点击根水果后有2个级联同类，其中1个与槽内二消。
+        assertTrue(FruitGameSolver.allowsCascadeOccupancy(1, 2, 1));
+        // 无任何二消抵扣时，1槽 + 根 + 2级联 = 4个实体，必须拒绝。
+        assertFalse(FruitGameSolver.allowsCascadeOccupancy(1, 2, 0));
+        // 根水果与唯一级联水果二消后，净占用回到1槽。
+        assertTrue(FruitGameSolver.allowsCascadeOccupancy(1, 1, 1));
+        // 3槽本身不能再引入任何新水果。
+        assertFalse(FruitGameSolver.allowsCascadeOccupancy(3, 0, 1));
+    }
+
 
     @Test public void expectedTrayCountRequiresTwoStableFrames() throws Exception {
         frames.add(bitmap(0xffff0000));
