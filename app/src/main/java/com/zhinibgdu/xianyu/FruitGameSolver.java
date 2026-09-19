@@ -82,6 +82,10 @@ final class FruitGameSolver {
     private static final double TRAY_HIST_MATCH_MIN = 0.975;
     private static final int TRAY_OBSERVE_RETRIES = 4;
     private static final int UNCHANGED_TRAY_CONFIRMATIONS = 2;
+    // A fruit tap may trigger a cascade: the clicked fruit leaves, one or more
+    // fruits above it can then fall into the tray. Do not return the post-tap
+    // observation on the first matching frame; require two settled frames.
+    private static final int POST_TAP_SETTLED_CONFIRMATIONS = 2;
     private static final int FAST_REACQUIRE_RADIUS_PX = 24;
 
     // V4.37.0：截图回放中底部同类受采样/压缩影响约0.978~0.982。
@@ -604,45 +608,54 @@ final class FruitGameSolver {
                     int afterTrayCount = after.tray.count;
                     safeRecycle(after.frame.bitmap);
 
-                    if (afterTrayCount == Math.max(0, beforeTrayCount - 1)) {
+                    if (afterTrayCount >= 0 && afterTrayCount <= TRAY_CAPACITY) {
+                        // V4.50：一次点击可能“二消 + 自动补槽”。因此最终槽位数
+                        // 不一定等于 before-1；剩余数下降2才是消除是否真实发生的最终证据。
                         RemainingVerification verify = verifyPairRemaining(
                                 host, beforeRemaining, pairActions + 1, "槽位直配");
                         if (verify.aborted) return Result.ABORTED;
                         if (verify.completed) return Result.COMPLETED;
-                        if (!verify.confirmed) {
-                            host.log("[水果V4.38.0] 槽位视觉已发生二消，但剩余数未闭环："
-                                    + beforeRemaining + "→" + verify.afterRemaining + "；停止复核");
+                        if (verify.confirmed) {
+                            pairActions++;
+                            remaining = verify.afterRemaining;
+                            blockedPositions.clear();
+                            blockedPositionTtl.clear();
+                            host.log("[水果V4.50] ✅ 槽位二消闭环确认（允许自动落果补槽）：剩余 "
+                                    + beforeRemaining + "→" + remaining
+                                    + " / 槽位 " + beforeTrayCount + "→" + afterTrayCount);
+                            continue;
+                        }
+
+                        if (afterTrayCount == Math.max(0, beforeTrayCount - 1)) {
+                            host.log("[水果V4.50] 槽位数量符合二消预期，但剩余数未闭环；停止复核");
                             saveCurrentFrameDiagnostic(context, suPath, host, "tray_pair_unverified");
                             return Result.SAFE_STOP_DIRTY;
                         }
-                        pairActions++;
-                        remaining = verify.afterRemaining;
-                        blockedPositions.clear();
-                        blockedPositionTtl.clear();
-                        host.log("[水果V4.38.0] ✅ 槽位二消确认：剩余 "
-                                + beforeRemaining + "→" + remaining
-                                + " / 槽位 " + beforeTrayCount + "→" + afterTrayCount);
-                        continue;
-                    }
 
-                    // 如果高置信槽位分类仍然判错，但新水果只是安全进入了槽位，
-                    // 不再追加任何点击，交给下一轮从真实槽位重新决策。
-                    if (afterTrayCount == beforeTrayCount + 1 && afterTrayCount <= TRAY_CAPACITY) {
-                        host.log("[槽位V4.38.0] 目标未形成二消而是进入槽位："
-                                + beforeTrayCount + "→" + afterTrayCount
-                                + "；立即重新建模，不再连点");
-                        continue;
-                    }
-                    if (afterTrayCount == beforeTrayCount) {
-                        markBlockedPosition(blockedPositions, blockedPositionTtl, target);
-                        host.log("[槽位V4.38.0] 点击后槽位未变化；该位置加入本轮黑名单，不连续点击");
-                        if (beforeTrayCount >= TRAY_CAPACITY) {
-                            return Result.SAFE_STOP_DIRTY;
+                        // 最终槽位比点击前多，优先视为“点击触发自动落果后的真实状态”；
+                        // 不再把它当成视觉污染，直接重新建模。
+                        if (afterTrayCount > beforeTrayCount) {
+                            host.log("[水果V4.50] 槽位匹配后发生自动落果补槽："
+                                    + beforeTrayCount + "→" + afterTrayCount
+                                    + "；不追点，立即重新建模");
+                            continue;
                         }
-                        continue;
+
+                        if (afterTrayCount == beforeTrayCount) {
+                            markBlockedPosition(blockedPositions, blockedPositionTtl, target);
+                            host.log("[槽位V4.50] 点击后槽位未消除且无补槽证据；位置加入本轮黑名单");
+                            if (beforeTrayCount >= TRAY_CAPACITY) {
+                                return Result.SAFE_STOP_DIRTY;
+                            }
+                            continue;
+                        }
+
+                        host.log("[槽位V4.50] 点击后槽位变化异常："
+                                + beforeTrayCount + "→" + afterTrayCount + "，DIRTY安全停止");
+                        return Result.SAFE_STOP_DIRTY;
                     }
 
-                    host.log("[槽位V4.38.0] 点击后槽位变化异常："
+                    host.log("[槽位V4.50] 点击后槽位数量非法："
                             + beforeTrayCount + "→" + afterTrayCount + "，DIRTY安全停止");
                     return Result.SAFE_STOP_DIRTY;
                 }
@@ -693,46 +706,52 @@ final class FruitGameSolver {
                     int afterTrayCount = afterPush.tray.count;
                     safeRecycle(afterPush.frame.bitmap);
 
-                    if (afterTrayCount == beforeTrayCount + 1) {
-                        host.log("[栈模型V4.41.0] ✅ 压栈确认：depth "
-                                + beforeTrayCount + "→" + afterTrayCount + "；重新截图规划TOP");
+                    if (afterTrayCount >= 0 && afterTrayCount <= TRAY_CAPACITY) {
+                        if (afterTrayCount > beforeTrayCount) {
+                            host.log("[栈模型V4.50] ✅ 压栈后真实槽位增加："
+                                    + beforeTrayCount + "→" + afterTrayCount
+                                    + "；允许级联落果完成后重新规划，不再假定一次点击只增加1槽");
+                            continue;
+                        }
+
+                        // V4.50：若点击触发“进入槽位 + 自动落果 + 二消”，最终槽位
+                        // 甚至可能回到原数量或减少。剩余数下降2优先于槽位数量判断。
+                        if (afterTrayCount <= beforeTrayCount) {
+                            RemainingVerification verify = verifyPairRemaining(
+                                    host, beforeRemaining, pairActions + 1, "压栈后级联二消");
+                            if (verify.aborted) return Result.ABORTED;
+                            if (verify.completed) return Result.COMPLETED;
+                            if (verify.confirmed) {
+                                pairActions++;
+                                remaining = verify.afterRemaining;
+                                blockedPositions.clear();
+                                blockedPositionTtl.clear();
+                                host.log("[栈模型V4.50] ✅ 压栈后发生级联二消：剩余 "
+                                        + beforeRemaining + "→" + remaining
+                                        + " / 槽位 " + beforeTrayCount + "→" + afterTrayCount);
+                                continue;
+                            }
+                        }
+
+                        if (afterTrayCount == beforeTrayCount) {
+                            markBlockedPosition(blockedPositions, blockedPositionTtl, target);
+                            host.log("[栈模型V4.50] 压栈点击未形成有效状态变化；"
+                                    + "坐标加入黑名单，重新规划");
+                            continue;
+                        }
+
+                        if (afterTrayCount < beforeTrayCount) {
+                            recovering = true;
+                            noActionRetry = 0;
+                            host.log("[栈模型V4.50] 压栈后槽位反常减少且未确认二消；"
+                                    + "重新OCR+截图，不连续点击");
+                            continue;
+                        }
+
                         continue;
                     }
 
-                    // 单次点击最多新增一个未匹配槽位。若检测从1直接跳到3，
-                    // 说明点击前后画面/槽位检测不同步（常见于弹窗覆盖或动画切换），
-                    // 绝不能把它当成真实游戏状态继续规划。
-                    if (afterTrayCount > beforeTrayCount + 1) {
-                        host.log("[栈模型V4.47] 槽位一次跳增 " + beforeTrayCount
-                                + "→" + afterTrayCount
-                                + "，判定为视觉/弹窗状态污染；禁止继续点水果，重新OCR+截图");
-                        recovering = true;
-                        noActionRetry = 0;
-                        continue;
-                    }
-
-                    if (beforeTrayCount == 1 && afterTrayCount == 0) {
-                        RemainingVerification verify = verifyPairRemaining(
-                                host, beforeRemaining, pairActions + 1, "压栈意外命中TOP");
-                        if (verify.aborted) return Result.ABORTED;
-                        if (verify.completed) return Result.COMPLETED;
-                        if (!verify.confirmed) return Result.SAFE_STOP_DIRTY;
-                        pairActions++;
-                        remaining = verify.afterRemaining;
-                        blockedPositions.clear();
-                        blockedPositionTtl.clear();
-                        host.log("[栈模型V4.41.0] ✅ 实际发生TOP二消：剩余 "
-                                + beforeRemaining + "→" + remaining);
-                        continue;
-                    }
-
-                    if (afterTrayCount == beforeTrayCount) {
-                        markBlockedPosition(blockedPositions, blockedPositionTtl, target);
-                        host.log("[栈模型V4.41.0] 压栈点击未生效；坐标加入黑名单，重新规划");
-                        continue;
-                    }
-
-                    host.log("[栈模型V4.41.0] 压栈后状态异常："
+                    host.log("[栈模型V4.50] 压栈后槽位数量非法："
                             + beforeTrayCount + "→" + afterTrayCount + "，DIRTY安全停止");
                     return Result.SAFE_STOP_DIRTY;
                 }
@@ -784,35 +803,44 @@ final class FruitGameSolver {
                 ownedAfterA = afterAObs;
                 int afterATrayCount = afterAObs.tray.count;
 
-                // 边界恢复：若A其实与原槽中的水果同类，它会直接完成二消，
-                // 此时不应该继续点原计划B。
-                if (beforeTrayCount > 0 && afterATrayCount == beforeTrayCount - 1) {
-                    safeRecycle(afterAObs.frame.bitmap);
-                    RemainingVerification verify = verifyPairRemaining(
-                            host, beforeRemaining, pairActions + 1, "A直接命中槽位");
-                    if (verify.aborted) return Result.ABORTED;
-                    if (verify.completed) return Result.COMPLETED;
-                    if (!verify.confirmed) return Result.SAFE_STOP_DIRTY;
-                    pairActions++;
-                    remaining = verify.afterRemaining;
-                    blockedPositions.clear();
-                    blockedPositionTtl.clear();
-                    host.log("[水果V4.38.0] ✅ A直接与原槽水果二消；取消计划B");
-                    continue;
-                }
+                // V4.50：A点击后可能同时触发“二消 + 自动落果补槽”，
+                // 因此不再要求槽位必须精确 +1。
+                if (afterATrayCount >= 0 && afterATrayCount <= TRAY_CAPACITY) {
+                    if (afterATrayCount <= beforeTrayCount) {
+                        RemainingVerification verify = verifyPairRemaining(
+                                host, beforeRemaining, pairActions + 1, "A点击后级联状态");
+                        if (verify.aborted) return Result.ABORTED;
+                        if (verify.completed) return Result.COMPLETED;
+                        if (verify.confirmed) {
+                            safeRecycle(afterAObs.frame.bitmap);
+                            pairActions++;
+                            remaining = verify.afterRemaining;
+                            blockedPositions.clear();
+                            blockedPositionTtl.clear();
+                            host.log("[水果V4.50] ✅ A点击直接/级联二消确认；取消计划B：剩余 "
+                                    + beforeRemaining + "→" + remaining
+                                    + " / 槽位 " + beforeTrayCount + "→" + afterATrayCount);
+                            continue;
+                        }
+                    }
 
-                if (afterATrayCount == beforeTrayCount) {
-                    markBlockedPosition(blockedPositions, blockedPositionTtl, pair.a);
-                    safeRecycle(afterAObs.frame.bitmap);
-                    host.log("[点击验证V4.38.0] A未进入槽位 / 槽位仍=" + beforeTrayCount
-                            + " / 对象基线=" + beforeObjectCount
-                            + "；不点B，重新规划其它可下落水果");
-                    continue;
-                }
+                    if (afterATrayCount == beforeTrayCount) {
+                        markBlockedPosition(blockedPositions, blockedPositionTtl, pair.a);
+                        safeRecycle(afterAObs.frame.bitmap);
+                        host.log("[点击验证V4.50] A点击后槽位回到原数且无二消闭环；"
+                                + "不点B，重新规划其它可下落水果");
+                        continue;
+                    }
 
-                if (afterATrayCount != beforeTrayCount + 1) {
+                    if (afterATrayCount > beforeTrayCount) {
+                        host.log("[点击验证V4.50] A触发自动落果：槽位 "
+                                + beforeTrayCount + "→" + afterATrayCount
+                                + "；允许级联稳定后重新定位B");
+                    }
+                    // 到这里 A 已经进入当前真实槽位状态；B 必须从这张新图重新定位。
+                } else {
                     safeRecycle(afterAObs.frame.bitmap);
-                    host.log("[槽位V4.38.0] A后槽位变化异常："
+                    host.log("[槽位V4.50] A后槽位数量非法："
                             + beforeTrayCount + "→" + afterATrayCount + "，DIRTY安全停止");
                     return Result.SAFE_STOP_DIRTY;
                 }
@@ -883,44 +911,50 @@ final class FruitGameSolver {
                 int afterBTrayCount = afterBObs.tray.count;
                 safeRecycle(afterBObs.frame.bitmap);
 
-                if (afterBTrayCount == beforeTrayCount) {
+                if (afterBTrayCount >= 0 && afterBTrayCount <= TRAY_CAPACITY) {
+                    // B发生级联落果时，二消后最终槽位可能大于 beforeTrayCount。
+                    // 所以先验证“剩余-2”这个游戏级事实，再看槽位数量。
                     RemainingVerification verify = verifyPairRemaining(
                             host, beforeRemaining, pairActions + 1, "棋盘对子");
                     if (verify.aborted) return Result.ABORTED;
                     if (verify.completed) return Result.COMPLETED;
-                    if (!verify.confirmed) {
-                        failedPairs.add(pairKeyV435(pair.a, pair.b));
-                        host.log("[水果V4.38.0] 槽位已回到基线，但剩余数未确认完整二消："
-                                + beforeRemaining + "→" + verify.afterRemaining);
-                        saveCurrentFrameDiagnostic(context, suPath, host, "pair_unverified");
-                        return Result.SAFE_STOP_DIRTY;
+                    if (verify.confirmed) {
+                        pairActions++;
+                        remaining = verify.afterRemaining;
+                        blockedPositions.clear();
+                        blockedPositionTtl.clear();
+                        host.log("[水果V4.50] ✅ 棋盘对子/级联落果二消确认：剩余 "
+                                + beforeRemaining + "→" + remaining
+                                + " / 槽位 " + beforeTrayCount + "→" + afterBTrayCount);
+                        continue;
                     }
-                    pairActions++;
-                    remaining = verify.afterRemaining;
-                    blockedPositions.clear();
-                    blockedPositionTtl.clear();
-                    host.log("[水果V4.38.0] ✅ 棋盘对子确认：剩余 "
-                            + beforeRemaining + "→" + remaining
-                            + " / 槽位 " + beforeTrayCount + "→" + afterBTrayCount);
-                    continue;
+
+                    if (afterBTrayCount > beforeTrayCount) {
+                        // 未确认二消，但槽位增加，说明至少发生了新的真实落果。
+                        // 不再把它标成失败，也不重复点B；下一轮按真实棋盘重新规划。
+                        host.log("[槽位V4.50] B点击后触发额外落果："
+                                + beforeTrayCount + "→" + afterBTrayCount
+                                + "；不追点，重新建模");
+                        continue;
+                    }
+
+                    if (afterBTrayCount == beforeTrayCount) {
+                        failedPairs.add(pairKeyV435(pair.a, pair.b));
+                        host.log("[槽位V4.50] B点击后槽位回到基线但未确认二消；"
+                                + "不追点，下一轮按真实槽位继续");
+                        continue;
+                    }
+
+                    if (afterBTrayCount < beforeTrayCount) {
+                        recovering = true;
+                        noActionRetry = 0;
+                        host.log("[槽位V4.50] B点击后槽位减少但剩余数未闭环；"
+                                + "重新OCR+截图，不追点");
+                        continue;
+                    }
                 }
 
-                if (afterBTrayCount == beforeTrayCount + 1) {
-                    markBlockedPosition(blockedPositions, blockedPositionTtl, reacquiredB);
-                    host.log("[槽位V4.38.0] B未完成二消，A仍留在槽中；"
-                            + "不再追点，下一轮按真实槽位继续");
-                    continue;
-                }
-
-                if (afterBTrayCount > beforeTrayCount
-                        && afterBTrayCount <= TRAY_CAPACITY) {
-                    host.log("[槽位V4.38.0] B后出现额外未配对槽位："
-                            + beforeTrayCount + "→" + afterBTrayCount
-                            + "；停止连点并重新建模");
-                    continue;
-                }
-
-                host.log("[槽位V4.38.0] B后槽位变化异常："
+                host.log("[槽位V4.50] B后槽位数量非法："
                         + beforeTrayCount + "→" + afterBTrayCount + "，DIRTY安全停止");
                 return Result.SAFE_STOP_DIRTY;
             } catch (RuntimeException e) {
@@ -1659,6 +1693,7 @@ final class FruitGameSolver {
     ) {
         PostTapObservation lastStable = null;
         int consecutiveBaseline = 0;
+        int expectedStableCount = 0;
         try {
             for (int attempt = 1; attempt <= TRAY_OBSERVE_RETRIES && !host.aborted(); attempt++) {
                 GameFrame frame = captureFrame(context, suPath, host);
@@ -1688,11 +1723,24 @@ final class FruitGameSolver {
                         if (!host.sleep(220L, 360L)) return null;
                         continue;
                     }
+
                     if (tray.count == expectedCount) {
-                        PostTapObservation result = new PostTapObservation(frame, tray, false);
-                        frame = null; // ownership transferred to caller
-                        return result;
+                        // 不要在第一张“期望槽位”画面就返回。点击可能刚刚触发
+                        // 上方水果自动下落；必须确认期望槽位连续稳定两帧。
+                        consecutiveBaseline = 0;
+                        if (lastStable != null) safeRecycle(lastStable.frame.bitmap);
+                        lastStable = new PostTapObservation(frame, tray, false);
+                        frame = null;
+                        if (++expectedStableCount >= POST_TAP_SETTLED_CONFIRMATIONS) {
+                            PostTapObservation result = lastStable;
+                            lastStable = null;
+                            return result;
+                        }
+                        if (!host.sleep(220L, 360L)) return null;
+                        continue;
                     }
+
+                    expectedStableCount = 0;
                     if (tray.count == baselineCount) {
                         consecutiveBaseline++;
                     } else {
