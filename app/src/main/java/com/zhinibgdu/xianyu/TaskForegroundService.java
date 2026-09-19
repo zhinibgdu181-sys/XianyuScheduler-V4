@@ -94,19 +94,7 @@ public class TaskForegroundService extends Service {
 
         active = true;
         mainHandler.post(renewWakeLock);
-        Runnable complete = () -> mainHandler.post(() -> {
-            if (destroyed) return;
-            active = false;
-            mainHandler.removeCallbacks(renewWakeLock);
-            TaskStatusReceiver.writeLog(
-                    getApplicationContext(),
-                    "INFO",
-                    "调度",
-                    "任务执行器已结束，停止前台服务"
-            );
-            stopForegroundCompat();
-            stopSelf();
-        });
+        Runnable complete = () -> mainHandler.post(this::finishAfterTaskExecutionV466);
 
         TaskExecutor.run(getApplicationContext(), category, complete);
 
@@ -118,10 +106,39 @@ public class TaskForegroundService extends Service {
         return null;
     }
 
+    private void finishAfterTaskExecutionV466() {
+        if (destroyed) return;
+
+        // 人工接管后，TaskExecutor 会先结束自动执行线程，但真人教学仍可能
+        // 正在被动采样。此时不能立即 stopSelf()，否则真人经验窗口会被服务一起杀掉。
+        if (TaskExecutor.isHumanTeachingActiveV466()) {
+            TaskStatusReceiver.writeLog(
+                    getApplicationContext(),
+                    "INFO",
+                    "真人经验",
+                    "自动任务线程已结束，保留前台服务等待真人教学窗口结束"
+            );
+            mainHandler.postDelayed(this::finishAfterTaskExecutionV466, 500L);
+            return;
+        }
+
+        active = false;
+        mainHandler.removeCallbacks(renewWakeLock);
+        TaskStatusReceiver.writeLog(
+                getApplicationContext(),
+                "INFO",
+                "调度",
+                "任务执行器及真人教学均已结束，停止前台服务"
+        );
+        stopForegroundCompat();
+        stopSelf();
+    }
+
     @Override
     public void onDestroy() {
         destroyed = true;
         mainHandler.removeCallbacksAndMessages(null);
+        TaskExecutor.stopHumanTeachingForServiceDestroyV466();
         if (active) TaskExecutor.requestStop("前台服务已销毁");
         active = false;
         try {
