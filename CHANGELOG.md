@@ -1,3 +1,11 @@
+# V4.63
+
+- Fruit game: add a bounded structural strategy-experience store. Similar states are bucketed by remaining count, tray occupancy, object/droppable/blocked scale, unlock opportunities, and continuation evidence instead of fixed coordinates.
+- Strategy memory can rank only candidates that already pass the current visual safety gates. It never authorizes a tap or bypasses GameTapPolicy; the historical bias is capped and needs repeated verified outcomes before becoming meaningful.
+- Record verified outcomes for tray matching, direct pairs, safe push, dependency push, tray-unblock, last-slot push, and controlled exploration so successful approaches are reinforced and ineffective approaches are downgraded on similar future boards.
+- Add a low-priority 2/3-slot controlled exploration path: only an unobstructed, non-cascading fruit that directly unlocks at least one blocked fruit may be tried, with a maximum of three attempts per round and normal post-tap verification/blacklisting.
+- Preserve the existing V4.60 explicit failure-page handoff and V4.62 revive-popup handling.
+
 # V4.62
 
 - Fruit game: recognize the post-failure “复活” video overlay separately from the terminal failure page.
