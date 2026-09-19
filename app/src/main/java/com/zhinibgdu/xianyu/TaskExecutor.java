@@ -5156,7 +5156,9 @@ public final class TaskExecutor {
                                                     pendingBefore.remaining, pendingAfter.remaining,
                                                     pendingBefore.trayCount, pendingAfter.trayCount,
                                                     pendingBefore.objects, pendingAfter.objects,
-                                                    pendingBefore.blocked, pendingAfter.blocked);
+                                                    pendingBefore.blocked, pendingAfter.blocked,
+                                                    pendingBefore.droppable, pendingAfter.droppable,
+                                                    pendingBefore.directPairs, pendingAfter.directPairs);
                                     if (FruitHumanExperienceStore.shouldReinforce(transition)) {
                                         FruitHumanExperienceStore.record(
                                                 context, task, pendingBefore, pendingAfter, transition);
@@ -5187,7 +5189,9 @@ public final class TaskExecutor {
                                                 currentBefore.remaining, current.remaining,
                                                 currentBefore.trayCount, current.trayCount,
                                                 currentBefore.objects, current.objects,
-                                                currentBefore.blocked, current.blocked);
+                                                currentBefore.blocked, current.blocked,
+                                                currentBefore.droppable, current.droppable,
+                                                currentBefore.directPairs, current.directPairs);
                                 if (FruitHumanExperienceStore.shouldReinforce(transition)) {
                                     pendingBefore = currentBefore;
                                     pendingAfter = current;
