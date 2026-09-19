@@ -52,6 +52,114 @@ final class FruitGameSolver {
         ABORTED
     }
 
+    static final class TeachingStateV464 {
+        final int remaining;
+        final int trayCount;
+        final int objects;
+        final int droppable;
+        final int blocked;
+        final int directPairs;
+        final int unlockGain;
+        final int continuationPairs;
+
+        TeachingStateV464(
+                int remaining,
+                int trayCount,
+                int objects,
+                int droppable,
+                int blocked,
+                int directPairs,
+                int unlockGain,
+                int continuationPairs
+        ) {
+            this.remaining = remaining;
+            this.trayCount = trayCount;
+            this.objects = objects;
+            this.droppable = droppable;
+            this.blocked = blocked;
+            this.directPairs = directPairs;
+            this.unlockGain = unlockGain;
+            this.continuationPairs = continuationPairs;
+        }
+    }
+
+    /**
+     * Passive observation entry point used only after a real human takeover.
+     * It never taps and never changes the solver state. The snapshot is used to
+     * turn real human progress into bounded structural strategy experience.
+     */
+    static TeachingStateV464 captureTeachingStateV464(Context context, String suPath) {
+        if (context == null || suPath == null || suPath.isEmpty()) return null;
+
+        Host host = new Host() {
+            @Override public boolean tap(int x, int y, String reason) { return false; }
+            @Override public boolean sleep(long minMs, long maxMs) {
+                try {
+                    Thread.sleep(Math.max(1L, minMs));
+                    return true;
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+            @Override public boolean aborted() { return false; }
+            @Override public void log(String message) {}
+            @Override public ScreenOcr.Snapshot ocr(String reason) {
+                ScreenOcr.Snapshot snapshot = ScreenOcr.capture(context, suPath, () -> false);
+                return snapshot == null ? ScreenOcr.Snapshot.empty() : snapshot;
+            }
+        };
+
+        GameFrame frame = captureFrame(context, suPath, host);
+        if (frame == null) return null;
+
+        try {
+            List<FruitObject> objects = detectFruitObjects(frame);
+            DropAnalysis drop = analyzeDroppability(
+                    objects, frame.bitmap.getWidth(), frame.bitmap.getHeight());
+            TrayState tray = detectTrayState(frame);
+            if (!tray.stable) return null;
+
+            ScreenOcr.Snapshot ocr = host.ocr("水果V4.64/真人示范状态");
+            String text = normalize(ocr == null ? "" : ocr.fullText);
+            int remaining = -1;
+            Matcher m = Pattern.compile("(?:剩余|剩下|剩)\\s*(\\d{1,4})").matcher(text);
+            if (m.find()) {
+                try { remaining = Integer.parseInt(m.group(1)); }
+                catch (NumberFormatException ignored) {}
+            }
+
+            int directPairs = 0;
+            try {
+                PairChoice pair = chooseBestPairWithThreshold(
+                        objects,
+                        frame.bitmap.getWidth(),
+                        frame.bitmap.getHeight(),
+                        MIN_PAIR_SCORE,
+                        new HashSet<>(),
+                        new HashSet<>()
+                );
+                directPairs = pair == null ? 0 : 1;
+            } catch (Throwable ignored) {
+                // Teaching data must never interfere with gameplay recognition.
+            }
+
+            int unlockGain = drop.blocked.isEmpty() ? 0 : 1;
+            return new TeachingStateV464(
+                    remaining,
+                    tray.count,
+                    objects.size(),
+                    drop.droppable.size(),
+                    drop.blocked.size(),
+                    directPairs,
+                    unlockGain,
+                    0
+            );
+        } finally {
+            safeRecycle(frame.bitmap);
+        }
+    }
+
     interface Host {
         boolean tap(int x, int y, String reason);
         default void onFrameSize(int width, int height) {}
@@ -74,6 +182,8 @@ final class FruitGameSolver {
     // immediately declaring a clean stall. Each click is still individually
     // verified and failed positions remain blacklisted for the current board.
     private static final int MAX_TWO_SLOT_EXPLORATION_ATTEMPTS_V463 = 3;
+    // V4.64: latest solver state is exposed read-only to the passive human-learning observer.
+    private static volatile TeachingStateV464 latestTeachingStateV464;
     private static final long IDEA_TIMEOUT_MS = 15_000L;
     private static final long HARD_STALL_TIMEOUT_MS = 30_000L;
     private static final int IDEA_LONG_TERM_REJECT_COUNT = 3;
