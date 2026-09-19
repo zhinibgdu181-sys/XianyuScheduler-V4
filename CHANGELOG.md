@@ -1,3 +1,9 @@
+# V4.62
+
+- Fruit game: recognize the post-failure “复活” video overlay separately from the terminal failure page.
+- Do not watch the revive video; close only the game overlay's top-right X, verify the overlay is gone, and rebuild the board state.
+- Added a dedicated tap-policy whitelist and regression tests for the revive-overlay close action.
+
 # V4.61
 
 - Xianyu: detect the explicit “有新版本可以升级了” overlay and click only its OCR-located “暂不升级” action.
