@@ -5384,9 +5384,7 @@ public final class TaskExecutor {
                 );
 
                 String line;
-                while (line != null) {
-                    line = reader.readLine();
-                    if (line == null) break;
+                while ((line = reader.readLine()) != null) {
 
                     String u = line.toUpperCase(Locale.US);
                     boolean touchDown =
