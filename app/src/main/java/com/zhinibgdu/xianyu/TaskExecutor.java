@@ -5372,7 +5372,8 @@ public final class TaskExecutor {
         physicalTouchMaxXV469 = touchMaxX;
         physicalTouchMaxYV469 = touchMaxY;
         diagnostic("[人工检测V4.69] 触摸坐标范围：X=" + touchMaxX + " Y=" + touchMaxY
-                + "，屏幕=" + screenW + "x" + screenH);\n        physicalTouchDevice = device;
+                + "，屏幕=" + screenW + "x" + screenH);
+        physicalTouchDevice = device;
         diagnostic("[人工检测] 监听物理触摸设备：" + device);
 
         Thread thread = new Thread(() -> {
