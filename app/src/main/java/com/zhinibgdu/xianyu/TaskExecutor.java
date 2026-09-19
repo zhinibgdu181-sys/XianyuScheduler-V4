@@ -5391,6 +5391,7 @@ public final class TaskExecutor {
                         "getevent -lt " + device + " 2>/dev/null"
                 });
                 touchMonitorProcess = process;
+                diagnostic("[人工检测V4.70] 已启动独立真人触摸监听：" + device);
 
                 BufferedReader reader = new BufferedReader(
                         new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8)
@@ -5457,6 +5458,7 @@ public final class TaskExecutor {
                         physicalTouchAt = now;
                         if (!userAborted) {
                             markUserAbortV48("检测到真实手指触摸屏幕");
+                            diagnostic("[人工检测V4.70] 首次真实触摸已触发人工接管；继续保留监听等待后续真人操作");
                         }
 
                         gestureActive = true;
@@ -5518,6 +5520,8 @@ public final class TaskExecutor {
                                 diagnostic("[真人经验V4.68] 手势记录失败，但继续监听：" + t);
                             }
                             lastGestureEndAt = now;
+                        } else {
+                            diagnostic("[人工检测V4.70] 收到抬起事件，但坐标未形成有效屏幕范围，丢弃本次手势");
                         }
                         gestureActive = false;
                         pendingWaitMs = 0L;
@@ -5529,9 +5533,8 @@ public final class TaskExecutor {
                     // we intentionally keep this reader alive for the teaching window so
                     // subsequent human gestures can be recorded.
                     if (!userAborted && !running) break;
-                    if (userAborted
-                            && humanOperationTeachingThreadV467 == null
-                            && !isHumanTeachingThreadAliveV464()) {
+                    if (userAborted && !isHumanTeachingActiveV466()) {
+                        diagnostic("[人工检测V4.70] 真人教学已结束，退出触摸监听");
                         break;
                     }
                 }
