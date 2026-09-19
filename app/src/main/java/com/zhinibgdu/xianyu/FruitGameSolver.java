@@ -1939,8 +1939,7 @@ final class FruitGameSolver {
     private static String normalize(String s) {
         if (s == null) return "";
         return s.replace('\r', ' ')
-                .replace('
-', ' ')
+                .replace('\n', ' ')
                 .replaceAll("\\s+", " ")
                 .trim();
     }
