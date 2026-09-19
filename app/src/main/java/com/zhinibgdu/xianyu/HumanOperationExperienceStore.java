@@ -6,7 +6,6 @@ import android.content.SharedPreferences;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 
@@ -50,6 +49,17 @@ final class HumanOperationExperienceStore {
                 TYPE_TAP, safe(task), safe(pageKey), targetCx, targetCy,
                 actualX, actualY, dx, dy, width, height);
         append(context, payload);
+    }
+
+    static synchronized void recordRawTap(
+            Context context,
+            String task,
+            String pageKey,
+            int actualX,
+            int actualY,
+            int width,
+            int height) {
+        recordTap(context, task, pageKey, -1, -1, actualX, actualY, width, height);
     }
 
     static synchronized void recordSwipe(
