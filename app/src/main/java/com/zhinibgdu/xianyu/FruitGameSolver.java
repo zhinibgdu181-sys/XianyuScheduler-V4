@@ -90,6 +90,13 @@ final class FruitGameSolver {
     private static final double MIN_HIST_COS = 0.990;
     private static final double MIN_SHAPE_IOU = 0.970;
 
+    // V4.44.2：过桥压栈允许同类水果因旋转/叶片方向产生更大的形状差异，
+    // 但颜色直方图仍保持高门槛，避免把柠檬、橙子等近色水果混为一类。
+    private static final double BRIDGE_MIN_PAIR_SCORE = 0.930;
+    private static final double BRIDGE_MAX_RGB_MAD = 0.045;
+    private static final double BRIDGE_MIN_HIST_COS = 0.992;
+    private static final double BRIDGE_MIN_SHAPE_IOU = 0.800;
+
     // V4.36.3：按实机截图标定 V 形漏斗，而不是把“底部”当成一条水平线。
     // 截图中左右斜坡外侧约从 61.2%H 开始，向中央下降到约 74.0%H；
     // 中间约 43.5%W~56.5%W 是坑洞入口。水果先竖直自由落体，碰到斜坡后再被导向中央坑洞。
@@ -333,9 +340,10 @@ final class FruitGameSolver {
                 // 栈模型：
                 // 1) 有TOP可消时永远先消TOP；
                 // 2) 0/1/2槽可启动一个已经锁定的完整A+A；
-                // 3) 如果0/1槽没有现成对子，才允许一次“可证明有后手”的单水果压栈。
-                //    depth=1时要求该水果直接挡住自己的同类，避免把第二格随便塞满。
-                // 4) depth=2/3绝不做单水果冒险。
+                // 3) 没有严格A+A时允许“可证明有后手”的过桥压栈：
+                //    depth=1可升2槽，要求同类已可下落或本次点击能直接释放同类；
+                //    depth=2可升3槽，但同类必须当前已经可直接下落，下一轮立即消栈顶。
+                // 4) depth=3绝不引入新类型，只允许TOP直配。
                 if (trayChoice == null && tray.count < TRAY_CAPACITY) {
                     for (double t : FALLBACK_THRESHOLDS_V436) {
                         pair = chooseBestPairWithThreshold(
@@ -346,7 +354,7 @@ final class FruitGameSolver {
                             break;
                         }
                     }
-                    if (pair == null && tray.count <= 1) {
+                    if (pair == null && tray.count <= 2) {
                         safePush = chooseBestSafePushV441(
                                 objects, drop, tray.count,
                                 frame.bitmap.getWidth(), frame.bitmap.getHeight(), blockedPositions);
@@ -372,6 +380,7 @@ final class FruitGameSolver {
                         : safePush != null
                         ? " / 安全压栈 mate=" + format(safePush.mateScore)
                                 + " directUnlock=" + safePush.directUnlockMate
+                                + " mateReady=" + safePush.mateDroppable
                                 + " unlock=" + safePush.unlockGain
                         : " / 无安全动作"));
 
@@ -521,6 +530,7 @@ final class FruitGameSolver {
                             + " / 点击=(" + tx + "," + ty + ")"
                             + " / mate=" + format(safePush.mateScore)
                             + " / directUnlock=" + safePush.directUnlockMate
+                            + " / mateReady=" + safePush.mateDroppable
                             + " / unlock=" + safePush.unlockGain);
 
                     fruitTapAttempted = true;
@@ -1193,9 +1203,9 @@ final class FruitGameSolver {
      * V4.41 保守压栈选择器。它只解决V4.38“0槽没有现成A+A就直接退出”的死点，
      * 不改视觉、不改ROI、不改像素数组。
      *
-     * depth=0：候选必须有高置信同类仍在棋盘中；优先选择能直接释放该同类的水果。
-     * depth=1：更严格，必须“候选本身正挡住自己的同类”，这样压入第二格后，
-     *          下一帧大概率立刻出现TOP同类，不允许无后手地把第二格塞满。
+     * depth=0：候选必须有高置信同类仍在棋盘中。
+     * depth=1：允许升到2槽；同类必须已经可下落，或候选移除后会直接释放同类。
+     * depth=2：允许升到3槽，但同类必须当前已经可下落，下一轮立即消除新TOP。
      */
     private static SafePushChoice chooseBestSafePushV441(
             List<FruitObject> objects,
@@ -1208,7 +1218,7 @@ final class FruitGameSolver {
         if (objects == null || objects.isEmpty() || drop == null || drop.droppable.isEmpty()) {
             return null;
         }
-        if (trayCount < 0 || trayCount > 1) return null;
+        if (trayCount < 0 || trayCount > 2) return null;
 
         SafePushChoice best = null;
         double denomY = Math.max(1.0, frameHeight);
@@ -1223,42 +1233,75 @@ final class FruitGameSolver {
 
             double mateScore = 0.0;
             FruitObject bestMate = null;
+            boolean bestMateDroppable = false;
+            boolean bestDirectUnlockMate = false;
             for (FruitObject other : objects) {
                 if (other == null || other == fruit) continue;
                 Similarity sim = similarity(fruit, other);
-                if (sim.rgbMad <= MAX_RGB_MAD
-                        && sim.histCos >= MIN_HIST_COS
-                        && sim.shapeIou >= MIN_SHAPE_IOU
-                        && sim.score >= MIN_PAIR_SCORE
+                if (isBridgeMateSimilarity(
+                        sim.score, sim.rgbMad, sim.histCos, sim.shapeIou)
                         && sim.score > mateScore) {
+                    boolean mateDroppable = drop.droppable.contains(other)
+                            && !isBlockedPosition(blockedPositions, other);
+                    boolean directUnlockMate = directlyUnlocksMate(fruit, other, drop);
+                    if (!allowsBridgePush(trayCount, directUnlockMate, mateDroppable)) continue;
                     mateScore = sim.score;
                     bestMate = other;
+                    bestMateDroppable = mateDroppable;
+                    bestDirectUnlockMate = directUnlockMate;
                 }
             }
             if (bestMate == null) continue;
 
             int unlockGain = 0;
-            boolean directUnlockMate = false;
             for (BlockingRelation relation : drop.blocked) {
                 if (relation == null || relation.blocker != fruit) continue;
                 unlockGain++;
-                if (relation.fruit == bestMate) directUnlockMate = true;
             }
-
-            // depth=1时不能为了“也许以后有同类”去占第二格，必须有明确的后手。
-            if (trayCount == 1 && !directUnlockMate) continue;
 
             double lower = clamp01(fruit.centerY / denomY);
             double rank = 0.64 * mateScore
                     + 0.18 * lower
                     + 0.10 * Math.min(1.0, unlockGain / 3.0)
-                    + (directUnlockMate ? 0.08 : 0.0);
+                    + (bestMateDroppable ? 0.10 : 0.0)
+                    + (bestDirectUnlockMate ? 0.08 : 0.0)
+                    - (trayCount == 2 ? 0.04 : 0.0);
 
             SafePushChoice candidate = new SafePushChoice(
-                    fruit, mateScore, directUnlockMate, unlockGain, rank);
+                    fruit, mateScore, bestDirectUnlockMate,
+                    bestMateDroppable, unlockGain, rank);
             if (best == null || candidate.rank > best.rank) best = candidate;
         }
         return best;
+    }
+
+    static boolean isBridgeMateSimilarity(
+            double score, double rgbMad, double histCos, double shapeIou
+    ) {
+        return rgbMad <= BRIDGE_MAX_RGB_MAD
+                && histCos >= BRIDGE_MIN_HIST_COS
+                && shapeIou >= BRIDGE_MIN_SHAPE_IOU
+                && score >= BRIDGE_MIN_PAIR_SCORE;
+    }
+
+    static boolean allowsBridgePush(
+            int trayCount, boolean directUnlockMate, boolean mateDroppable
+    ) {
+        if (trayCount == 0) return true;
+        if (trayCount == 1) return directUnlockMate || mateDroppable;
+        return trayCount == 2 && mateDroppable;
+    }
+
+    private static boolean directlyUnlocksMate(
+            FruitObject blocker, FruitObject mate, DropAnalysis drop
+    ) {
+        if (blocker == null || mate == null || drop == null) return false;
+        for (BlockingRelation relation : drop.blocked) {
+            if (relation != null && relation.blocker == blocker && relation.fruit == mate) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -2597,14 +2640,16 @@ final class FruitGameSolver {
         final FruitObject fruit;
         final double mateScore;
         final boolean directUnlockMate;
+        final boolean mateDroppable;
         final int unlockGain;
         final double rank;
 
         SafePushChoice(FruitObject fruit, double mateScore, boolean directUnlockMate,
-                       int unlockGain, double rank) {
+                       boolean mateDroppable, int unlockGain, double rank) {
             this.fruit = fruit;
             this.mateScore = mateScore;
             this.directUnlockMate = directUnlockMate;
+            this.mateDroppable = mateDroppable;
             this.unlockGain = unlockGain;
             this.rank = rank;
         }

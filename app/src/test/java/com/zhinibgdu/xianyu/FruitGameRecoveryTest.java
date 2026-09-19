@@ -204,6 +204,21 @@ public class FruitGameRecoveryTest {
         assertFalse(FruitGameSolver.isBlockedPosition(blocked, 470.0f, 650.0f));
     }
 
+    @Test public void bridgePushAllowsOneToTwoAndSafeTwoToThree() {
+        assertTrue(FruitGameSolver.allowsBridgePush(1, false, true));
+        assertTrue(FruitGameSolver.allowsBridgePush(1, true, false));
+        assertTrue(FruitGameSolver.allowsBridgePush(2, false, true));
+        assertFalse(FruitGameSolver.allowsBridgePush(2, true, false));
+        assertFalse(FruitGameSolver.allowsBridgePush(3, true, true));
+    }
+
+    @Test public void bridgeSimilarityAllowsRotationButKeepsColorStrict() {
+        assertTrue(FruitGameSolver.isBridgeMateSimilarity(0.94, 0.04, 0.995, 0.82));
+        assertFalse(FruitGameSolver.isBridgeMateSimilarity(0.94, 0.04, 0.980, 0.82));
+        assertFalse(FruitGameSolver.isBridgeMateSimilarity(0.94, 0.06, 0.995, 0.82));
+        assertFalse(FruitGameSolver.isBridgeMateSimilarity(0.94, 0.04, 0.995, 0.70));
+    }
+
     @Test public void secondTrayVerificationFailureReturnsNullAndDoesNotTap() throws Exception {
         for (int i = 0; i < 8; i++) frames.add(null);
         assertNull(observe(0));
