@@ -80,6 +80,34 @@ final class HumanOperationExperienceStore {
         append(context, payload);
     }
 
+    /** V4.72: 记录真人滑动曲线摘要与有限轨迹采样点。 */
+    static synchronized void recordSwipe(
+            Context context,
+            String task,
+            String pageKey,
+            int startX,
+            int startY,
+            int endX,
+            int endY,
+            int durationMs,
+            float pathDistance,
+            float angleDeg,
+            float avgSpeed,
+            float curvatureRad,
+            float maxDeviation,
+            float pathRatio,
+            List<int[]> trajectory,
+            int width,
+            int height) {
+        if (context == null || width <= 0 || height <= 0) return;
+        String payload = buildSwipePayload(startX, startY, endX, endY,
+                Math.max(0, durationMs), Math.max(0f, pathDistance),
+                angleDeg, Math.max(0f, avgSpeed), curvatureRad,
+                Math.max(0f, maxDeviation), Math.max(1f, pathRatio),
+                trajectory, width, height, task, pageKey);
+        append(context, payload);
+    }
+
     static synchronized void recordWait(
             Context context,
             String task,
@@ -205,6 +233,46 @@ final class HumanOperationExperienceStore {
                 .append('|').append(Float.toString(avgSpeed))
                 .append('|').append(width).append('|').append(height)
                 .toString();
+    }
+
+    private static String buildSwipePayload(
+            int startX, int startY, int endX, int endY,
+            int durationMs, float pathDistance, float angleDeg, float avgSpeed,
+            float curvatureRad, float maxDeviation, float pathRatio,
+            List<int[]> trajectory,
+            int width, int height, String task, String pageKey) {
+        return new StringBuilder(512)
+                .append("v2|").append(TYPE_SWIPE)
+                .append('|').append(safe(task))
+                .append('|').append(safe(pageKey))
+                .append('|').append(startX).append('|').append(startY)
+                .append('|').append(endX).append('|').append(endY)
+                .append('|').append(durationMs)
+                .append('|').append(Float.toString(pathDistance))
+                .append('|').append(Float.toString(angleDeg))
+                .append('|').append(Float.toString(avgSpeed))
+                .append('|').append(Float.toString(curvatureRad))
+                .append('|').append(Float.toString(maxDeviation))
+                .append('|').append(Float.toString(pathRatio))
+                .append('|').append(width).append('|').append(height)
+                .append('|').append(encodeTrajectory(trajectory, width, height))
+                .toString();
+    }
+
+    private static String encodeTrajectory(List<int[]> trajectory, int width, int height) {
+        if (trajectory == null || trajectory.isEmpty()) return "";
+        final int maxPoints = 32;
+        StringBuilder sb = new StringBuilder(maxPoints * 18);
+        int count = Math.min(maxPoints, trajectory.size());
+        for (int i = 0; i < count; i++) {
+            int[] p = trajectory.get(i);
+            if (p == null || p.length < 2) continue;
+            if (sb.length() > 0) sb.append(';');
+            int x = Math.max(0, Math.min(width, p[0]));
+            int y = Math.max(0, Math.min(height, p[1]));
+            sb.append(x).append(',').append(y);
+        }
+        return sb.toString();
     }
 
     private static String buildWaitPayload(long waitMs, String task, String pageKey) {

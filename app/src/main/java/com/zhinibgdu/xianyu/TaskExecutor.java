@@ -5380,6 +5380,7 @@ public final class TaskExecutor {
             Process process = null;
             int startX = -1, startY = -1, lastX = -1, lastY = -1;
             float pathDistance = 0f;
+            ArrayList<int[]> trajectory = new ArrayList<>();
             long downAt = 0L;
             long lastGestureEndAt = 0L;
             long pendingWaitMs = 0L;
@@ -5418,7 +5419,6 @@ public final class TaskExecutor {
                     Integer x = normalizeTouchCoordinateV469(rawX, touchMaxX, screenW);
                     Integer y = normalizeTouchCoordinateV469(rawY, touchMaxY, screenH);
                     if (x != null) {
-                        if (gestureActive && lastX >= 0) pathDistance += Math.abs(x - lastX);
                         lastX = x;
                         // BTN_TOUCH/TRACKING_ID may arrive before the first ABS position
                         // events. Bind the gesture start to the first valid coordinates
@@ -5428,6 +5428,10 @@ public final class TaskExecutor {
                     if (y != null) {
                         lastY = y;
                         if (gestureActive && startY < 0) startY = y;
+                    }
+                    if (gestureActive && lastX >= 0 && lastY >= 0
+                            && (x != null || y != null)) {
+                        appendGesturePointV472(trajectory, lastX, lastY);
                     }
 
                     long now = SystemClock.elapsedRealtime();
@@ -5469,6 +5473,10 @@ public final class TaskExecutor {
                         lastX = startX;
                         lastY = startY;
                         pathDistance = 0f;
+                        trajectory.clear();
+                        if (startX >= 0 && startY >= 0) {
+                            appendGesturePointV472(trajectory, startX, startY);
+                        }
                         continue;
                     }
 
@@ -5503,19 +5511,30 @@ public final class TaskExecutor {
                                     diagnostic("[真人经验V4.68] 已记录 TAP：" + endX + "," + endY
                                             + " duration=" + duration + "ms");
                                 } else {
-                                    float effectivePath = Math.max(pathDistance, (float) directDistance);
-                                    float speed = duration <= 0 ? 0f : effectivePath * 1000f / duration;
+                                    appendGesturePointV472(trajectory, endX, endY);
+                                    SwipeCurveMetricsV472 curve =
+                                            calculateSwipeCurveMetricsV472(
+                                                    startX, startY, endX, endY, trajectory);
+                                    float effectivePath = Math.max(
+                                            curve.pathDistance, (float) directDistance);
+                                    float speed = duration <= 0 ? 0f
+                                            : effectivePath * 1000f / duration;
                                     HumanOperationExperienceStore.recordSwipe(
                                             lastContext,
                                             currentExecutingTaskV464,
                                             activeCategory.label,
                                             startX, startY, endX, endY,
                                             duration, effectivePath, (float) angle, speed,
+                                            curve.curvatureRad, curve.maxDeviation,
+                                            curve.pathRatio, trajectory,
                                             screenW, screenH);
-                                    diagnostic("[真人经验V4.68] 已记录 SWIPE："
+                                    diagnostic("[真人经验V4.72] 已记录 SWIPE："
                                             + startX + "," + startY + "→" + endX + "," + endY
                                             + " duration=" + duration + "ms path=" + effectivePath
-                                            + " angle=" + angle + " speed=" + speed);
+                                            + " angle=" + angle + " curveRad=" + curve.curvatureRad
+                                            + " maxDev=" + curve.maxDeviation
+                                            + " pathRatio=" + curve.pathRatio
+                                            + " points=" + trajectory.size());
                                 }
                             } catch (Throwable t) {
                                 diagnostic("[真人经验V4.68] 手势记录失败，但继续监听：" + t);
@@ -5528,6 +5547,7 @@ public final class TaskExecutor {
                         pendingWaitMs = 0L;
                         startX = startY = lastX = lastY = -1;
                         pathDistance = 0f;
+                        trajectory.clear();
                     }
 
                     // Before takeover the old behavior remains immediate. After takeover
@@ -5553,6 +5573,80 @@ public final class TaskExecutor {
         thread.setDaemon(true);
         touchMonitorThread = thread;
         thread.start();
+    }
+
+    private static void appendGesturePointV472(List<int[]> points, int x, int y) {
+        if (points == null || x < 0 || y < 0) return;
+        if (!points.isEmpty()) {
+            int[] last = points.get(points.size() - 1);
+            if (last != null && last.length >= 2 && last[0] == x && last[1] == y) return;
+        }
+        final int maxPoints = 32;
+        if (points.size() < maxPoints) {
+            points.add(new int[]{x, y});
+        } else {
+            int index = 1 + ((points.size() * 7) % (maxPoints - 2));
+            points.set(index, new int[]{x, y});
+        }
+    }
+
+    private static final class SwipeCurveMetricsV472 {
+        final float pathDistance;
+        final float curvatureRad;
+        final float maxDeviation;
+        final float pathRatio;
+
+        SwipeCurveMetricsV472(float pathDistance, float curvatureRad,
+                              float maxDeviation, float pathRatio) {
+            this.pathDistance = pathDistance;
+            this.curvatureRad = curvatureRad;
+            this.maxDeviation = maxDeviation;
+            this.pathRatio = pathRatio;
+        }
+    }
+
+    private static SwipeCurveMetricsV472 calculateSwipeCurveMetricsV472(
+            int startX, int startY, int endX, int endY, List<int[]> points) {
+        double direct = Math.hypot(endX - startX, endY - startY);
+        if (points == null || points.size() < 2) {
+            return new SwipeCurveMetricsV472((float) direct, 0f, 0f, 1f);
+        }
+        double path = 0d;
+        double totalTurn = 0d;
+        double maxDeviation = 0d;
+        double baseDx = endX - startX;
+        double baseDy = endY - startY;
+        double baseLen = Math.hypot(baseDx, baseDy);
+        for (int i = 1; i < points.size(); i++) {
+            int[] a = points.get(i - 1);
+            int[] b = points.get(i);
+            if (a == null || b == null || a.length < 2 || b.length < 2) continue;
+            path += Math.hypot(b[0] - a[0], b[1] - a[1]);
+        }
+        for (int i = 1; i < points.size() - 1; i++) {
+            int[] prev = points.get(i - 1);
+            int[] cur = points.get(i);
+            int[] next = points.get(i + 1);
+            if (prev == null || cur == null || next == null
+                    || prev.length < 2 || cur.length < 2 || next.length < 2) continue;
+            double v1x = cur[0] - prev[0], v1y = cur[1] - prev[1];
+            double v2x = next[0] - cur[0], v2y = next[1] - cur[1];
+            double l1 = Math.hypot(v1x, v1y), l2 = Math.hypot(v2x, v2y);
+            if (l1 > 0.01 && l2 > 0.01) {
+                double dot = (v1x * v2x + v1y * v2y) / (l1 * l2);
+                dot = Math.max(-1d, Math.min(1d, dot));
+                totalTurn += Math.acos(dot);
+            }
+            if (baseLen > 0.01) {
+                double cross = Math.abs(
+                        baseDx * (cur[1] - startY) - baseDy * (cur[0] - startX));
+                maxDeviation = Math.max(maxDeviation, cross / baseLen);
+            }
+        }
+        float ratio = (float) (baseLen > 0.01 ? Math.max(1d, path / baseLen) : 1d);
+        return new SwipeCurveMetricsV472(
+                (float) Math.max(path, direct), (float) totalTurn,
+                (float) maxDeviation, ratio);
     }
 
     private static int[] getTouchscreenAxisMaxV469(String suPath, String device) {
