@@ -5246,17 +5246,21 @@ public final class TaskExecutor {
             if (verification.verified) {
                 TeachingOutcomeStore.setTaskResult(
                         context, TeachingOutcomeStore.SUCCESS, verification.reason);
+                FruitHumanExperienceStore.promoteCurrentSession(context);
+                HumanOperationExperienceStore.finalizeCurrentSessionOutcome(context);
                 diagnostic("[真人经验V4.80] 教学会话任务终局=SUCCESS："
                         + TeachingOutcomeStore.summary());
             } else {
                 TeachingOutcomeStore.setTaskResult(
                         context, TeachingOutcomeStore.UNKNOWN, verification.reason);
+                HumanOperationExperienceStore.finalizeCurrentSessionOutcome(context);
                 diagnostic("[真人经验V4.80] 教学会话无法确认任务完成，终局=UNKNOWN："
                         + verification.reason);
             }
         } catch (Throwable t) {
             TeachingOutcomeStore.setTaskResult(
                     context, TeachingOutcomeStore.UNKNOWN, "verification_exception");
+            HumanOperationExperienceStore.finalizeCurrentSessionOutcome(context);
             diagnostic("[真人经验V4.80] 教学会话终局验证异常，保持 UNKNOWN", t);
         }
     }
@@ -5330,18 +5334,19 @@ public final class TaskExecutor {
                                                     pendingBefore.blocked, pendingAfter.blocked,
                                                     pendingBefore.droppable, pendingAfter.droppable,
                                                     pendingBefore.directPairs, pendingAfter.directPairs);
-                                    if (FruitHumanExperienceStore.shouldReinforce(
-                                            context, transition)) {
+                                    if (transition != null) {
+                                        // Always retain the structural transition as audit data.
+                                        // Promotion is deferred until the task outcome is SUCCESS.
                                         FruitHumanExperienceStore.record(
                                                 context, task, pendingBefore, pendingAfter, transition);
-                                        learned++;
-                                        diagnostic("[真人经验V4.65] 收录第" + learned
-                                                + "个已验证经验：" + transition.strategy
-                                                + " / 剩余 " + pendingBefore.remaining + "→" + pendingAfter.remaining
-                                                + " / 槽位 " + pendingBefore.trayCount + "→" + pendingAfter.trayCount);
-                                    } else if (transition != null) {
-                                        FruitHumanExperienceStore.recordRejectedObservation(
-                                                context, task, pendingAfter, "transition_not_admitted");
+                                        if (TeachingOutcomeStore.taskReplayEligible()) {
+                                            learned++;
+                                            diagnostic("[真人经验V4.80] 已验证任务结果后收录水果经验："
+                                                    + transition.strategy);
+                                        } else {
+                                            diagnostic("[真人经验V4.80] 结构进展仅进入待定审计，未收录成功策略："
+                                                    + transition.strategy);
+                                        }
                                     }
                                     pendingBefore = null;
                                     pendingAfter = null;
