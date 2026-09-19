@@ -17,7 +17,9 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Function;
 
 import static org.junit.Assert.*;
@@ -175,6 +177,24 @@ public class FruitGameRecoveryTest {
         for (int i = 0; i < 4; i++) verify(frames.get(i), atLeastOnce()).recycle();
     }
 
+    @Test public void unchangedTrayReturnsAfterTwoStableFrames() throws Exception {
+        frames.add(bitmap(SKY));
+        frames.add(bitmap(SKY));
+        Object observation = observe(1, 0);
+        assertNotNull(observation);
+        assertEquals(2, captures);
+        assertEquals(1, host.countLogs("[验证V4.44.0]"));
+        assertEquals(0, host.taps);
+    }
+
+    @Test public void blockedPositionCoversAdjacentDetectionBuckets() {
+        Set<String> blocked = new HashSet<>();
+        blocked.add("36,51");
+        assertTrue(FruitGameSolver.isBlockedPosition(blocked, 433.5f, 606.5f));
+        assertTrue(FruitGameSolver.isBlockedPosition(blocked, 445.0f, 618.0f));
+        assertFalse(FruitGameSolver.isBlockedPosition(blocked, 470.0f, 650.0f));
+    }
+
     @Test public void secondTrayVerificationFailureReturnsNullAndDoesNotTap() throws Exception {
         for (int i = 0; i < 8; i++) frames.add(null);
         assertNull(observe(0));
@@ -221,10 +241,15 @@ public class FruitGameRecoveryTest {
     }
 
     private Object observe(int expectedCount) throws Exception {
+        return observe(expectedCount, 1);
+    }
+
+    private Object observe(int expectedCount, int baselineCount) throws Exception {
         Method method = FruitGameSolver.class.getDeclaredMethod("observeTrayAfterTap",
-                Context.class, String.class, FruitGameSolver.Host.class, int.class, String.class);
+                Context.class, String.class, FruitGameSolver.Host.class,
+                int.class, int.class, String.class);
         method.setAccessible(true);
-        return method.invoke(null, context, "su", host, expectedCount, "test");
+        return method.invoke(null, context, "su", host, expectedCount, baselineCount, "test");
     }
 
     private Object verifyRemaining() throws Exception {
