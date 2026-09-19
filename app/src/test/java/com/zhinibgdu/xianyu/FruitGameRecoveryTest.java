@@ -171,6 +171,26 @@ public class FruitGameRecoveryTest {
         assertFalse(GameTapPolicy.allows(500, 120, 1000, 1000, "水果游戏-死局确认重开"));
     }
 
+    @Test public void revivePopupRequiresReviveContext() {
+        assertTrue(FruitGameSolver.looksLikeRevivePopup(
+                "复活 还剩206个水果过关复活吗 视频复活"));
+        assertTrue(FruitGameSolver.looksLikeRevivePopup(
+                "还剩206个水果过关复活吗 复活"));
+        assertFalse(FruitGameSolver.looksLikeRevivePopup(
+                "水果游戏 第1关 剩余206 消除 打乱"));
+        assertFalse(FruitGameSolver.looksLikeRevivePopup(
+                "失败 本关已被挑战6次 重新挑战 返回主页"));
+    }
+
+    @Test public void revivePopupCloseCoordinateIsWhitelisted() {
+        assertTrue(GameTapPolicy.allows(
+                930, 650, 1080, 2340, "水果游戏-关闭复活弹窗"));
+        assertFalse(GameTapPolicy.allows(
+                930, 1100, 1080, 2340, "水果游戏-关闭复活弹窗"));
+        assertFalse(GameTapPolicy.allows(
+                500, 650, 1080, 2340, "水果游戏-关闭复活弹窗"));
+    }
+
     @Test public void toolPopupTextRequiresPopupOnlyEvidence() {
         // 三种真实弹窗：都有明确的“使用”动作或“解锁所有槽位”正文。
         assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
