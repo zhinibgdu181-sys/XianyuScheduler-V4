@@ -40,6 +40,7 @@ final class FruitGameSolver {
         COMPLETED,
         SAFE_STOP_CLEAN,
         SAFE_STOP_DIRTY,
+        GAME_FAILED,
         NOT_FRUIT_GAME,
         ABORTED
     }
@@ -186,6 +187,11 @@ final class FruitGameSolver {
                 if (host.aborted()) return Result.ABORTED;
 
                 firstText = normalize(firstOcr == null ? "" : firstOcr.fullText);
+
+                if (looksLikeFailedRound(firstText)) {
+                    host.log("[游戏V4.60] ✅ 进入即检测到水果游戏失败页，交给上层执行受控返回主页");
+                    return Result.GAME_FAILED;
+                }
 
                 /*
                  * V4.48：先确认水果游戏主体已经进入，再处理覆盖在其上的道具弹窗。
@@ -339,6 +345,10 @@ final class FruitGameSolver {
                     ScreenOcr.Snapshot current = requireOcr(host, "水果V4.42/恢复页面确认");
                     if (host.aborted()) return Result.ABORTED;
                     String currentText = normalize(current.fullText);
+                    if (looksLikeFailedRound(currentText)) {
+                        host.log("[游戏V4.60] ✅ 恢复检查发现明确失败页，停止继续求解");
+                        return Result.GAME_FAILED;
+                    }
                     if (looksLikeTaskPanel(currentText)) return Result.NOT_FRUIT_GAME;
                     if (isRoundCompleted(currentText)) return Result.COMPLETED;
                     if (!looksLikeFruitGame(currentText)) {
@@ -571,6 +581,10 @@ final class FruitGameSolver {
                     ScreenOcr.Snapshot checkpoint = requireOcr(host,"水果游戏V4.38.0/无安全动作检查");
                     if (host.aborted()) return Result.ABORTED;
                     String text = normalize(checkpoint == null ? "" : checkpoint.fullText);
+                    if (looksLikeFailedRound(text)) {
+                        host.log("[游戏V4.60] ✅ 无动作复核确认失败页：不再重开/乱点，转入受控返回");
+                        return Result.GAME_FAILED;
+                    }
                     if (isRoundCompleted(text)) {
                         host.log("[游戏V4.38.0] ✅ 已检测到一关完成状态");
                         return Result.COMPLETED;
@@ -3045,6 +3059,21 @@ final class FruitGameSolver {
         boolean controls = t.contains("消除") && t.contains("打乱");
         boolean stage = t.contains("第1关") || t.contains("剩余") || t.contains("解锁");
         return controls && stage;
+    }
+
+    /**
+     * V4.60: Explicit fruit-game failure page. This is a terminal game state,
+     * not an ambiguous SAFE_STOP: the page itself exposes a "返回主页" exit.
+     */
+    static boolean looksLikeFailedRound(String text) {
+        String t = normalize(text);
+        if (t.isEmpty()) return false;
+        boolean failed = t.contains("失败") || t.contains("本关已被挑战");
+        boolean hasHome = t.contains("返回主页");
+        boolean hasRetryOrChallenge = t.contains("重新挑战")
+                || t.contains("重新开始")
+                || t.contains("本关已被挑战");
+        return failed && hasHome && hasRetryOrChallenge;
     }
 
     static boolean looksLikeMahjongPairGame(String text) {
