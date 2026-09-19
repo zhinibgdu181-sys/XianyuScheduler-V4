@@ -68,6 +68,11 @@ final class FruitGameSolver {
     private static final int MAX_RECOVERY_RETRY = 3;
     private static final int MAX_NO_ACTION_RETRY = 1;
     private static final int MAX_DEADLOCK_RESTARTS = 2;
+    // V4.63: when the third slot is the only remaining safe search frontier,
+    // allow a small number of controlled two-slot explorations instead of
+    // immediately declaring a clean stall. Each click is still individually
+    // verified and failed positions remain blacklisted for the current board.
+    private static final int MAX_TWO_SLOT_EXPLORATION_ATTEMPTS_V463 = 3;
     private static final long IDEA_TIMEOUT_MS = 15_000L;
     private static final long HARD_STALL_TIMEOUT_MS = 30_000L;
     private static final int IDEA_LONG_TERM_REJECT_COUNT = 3;
@@ -317,6 +322,7 @@ final class FruitGameSolver {
         int pairActions = 0;
         int noActionRetry = 0;
         int deadlockRestarts = 0;
+        int twoSlotExplorationAttemptsV463 = 0;
         String unchangedBoardIdea = "";
         long unchangedBoardSince = SystemClock.elapsedRealtime();
         Set<String> rejectedIdeasThisRound = new HashSet<>();
@@ -660,6 +666,7 @@ final class FruitGameSolver {
                         if (restart == RestartResult.RESTARTED) {
                             deadlockRestarts++;
                             remaining = -1;
+                            twoSlotExplorationAttemptsV463 = 0;
                             noActionRetry = 0;
                             recovering = true;
                             fruitTapAttempted = false;
@@ -4309,6 +4316,67 @@ final class FruitGameSolver {
         return "T" + trayCount + "_O" + objectBucket + "_D" + clearBucket
                 + "_B" + blockedBucket + "_R" + remainingBucket;
     }
+
+    /**
+     * V4.63: classify a safe-push candidate into a strategy family. This is
+     * intentionally based on the structural plan, not its exact coordinates.
+     */
+    private static String strategyTypeV463(SafePushChoice choice, int trayCount) {
+        if (choice == null) return FruitStrategyExperienceStore.STRATEGY_SAFE_PUSH;
+        if (choice.dependencySlot != null && !choice.dependencySlot.isEmpty()) {
+            return FruitStrategyExperienceStore.STRATEGY_TRAY_UNBLOCK;
+        }
+        if (choice.dependencyChain) {
+            return FruitStrategyExperienceStore.STRATEGY_DEPENDENCY_PUSH;
+        }
+        if (choice.mateScore <= 0.001) {
+            return FruitStrategyExperienceStore.STRATEGY_EXPLORATION;
+        }
+        if (trayCount == 2) {
+            return FruitStrategyExperienceStore.STRATEGY_LAST_SLOT_PUSH;
+        }
+        return FruitStrategyExperienceStore.STRATEGY_SAFE_PUSH;
+    }
+
+    /**
+     * V4.63: choose between already safety-validated strategy candidates.
+     * Historical experience can move a candidate by at most ±0.18; it can never
+     * make a non-candidate clickable and can never bypass GameTapPolicy.
+     */
+    private static SafePushChoice chooseBestStrategyCandidateV463(
+            Context context,
+            int remaining,
+            TrayState tray,
+            List<FruitObject> objects,
+            DropAnalysis drop,
+            int directPairs,
+            SafePushChoice... candidates
+    ) {
+        if (candidates == null || candidates.length == 0) return null;
+
+        int trayCount = tray == null ? -1 : tray.count;
+        int objectCount = objects == null ? 0 : objects.size();
+        int droppable = drop == null ? 0 : drop.droppable.size();
+        int blocked = drop == null ? 0 : drop.blocked.size();
+
+        SafePushChoice best = null;
+        double bestScore = -Double.MAX_VALUE;
+        for (SafePushChoice candidate : candidates) {
+            if (candidate == null || candidate.fruit == null) continue;
+            String strategy = strategyTypeV463(candidate, trayCount);
+            double bias = FruitStrategyExperienceStore.bias(
+                    context, strategy, remaining, trayCount, objectCount, droppable, blocked,
+                    directPairs, candidate.unlockGain, candidate.continuationPairs);
+            double score = candidate.rank + bias;
+            if (best == null || score > bestScore + 0.00001
+                    || (Math.abs(score - bestScore) <= 0.00001 && candidate.rank > best.rank)) {
+                best = candidate;
+                bestScore = score;
+            }
+        }
+        return best;
+    }
+
 
     /**
      * Learns only that waiting on an unchanged board is ineffective. It never
