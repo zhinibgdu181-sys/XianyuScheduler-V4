@@ -132,6 +132,23 @@ public class FruitGameRecoveryTest {
         assertEquals(0, captures);
     }
 
+    @Test public void startScreenUsesOcrSizeWithoutExtraScreenshot() {
+        host.ocr = reason -> snapshot(host.ocrCalls == 1
+                ? "VERSION1.0.2 开始游戏 第1关 图鉴 排行榜"
+                : GAME);
+        assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
+        assertEquals(1, host.taps);
+        // 六次均来自进入正式棋盘后的观察；启动页本身不再额外截 PNG。
+        assertEquals(6, captures);
+        assertEquals(1, host.countLogs("[开始页V4.43.9]"));
+    }
+
+    @Test public void startScreenIsRecognizedAsFruitSurface() {
+        assertTrue(FruitGameSolver.looksLikeFruitStartScreen(
+                "VERSION1.0.2 d6f51 开始游戏 第1关 图鉴 排行榜"));
+        assertFalse(FruitGameSolver.looksLikeFruitStartScreen("得骰子赚闲鱼币 去完成"));
+    }
+
     @Test public void missingRemainingBaselineRecoversBeforeDecisions() {
         host.ocr = reason -> snapshot(host.ocrCalls == 1 ? "第1关 消除 打乱" : GAME);
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());

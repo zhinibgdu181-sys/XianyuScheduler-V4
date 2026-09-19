@@ -150,16 +150,33 @@ final class FruitGameSolver {
                 }
 
                 if (looksLikeFruitStartScreen(firstText)) {
-                    GameFrame startFrame = captureFrame(context, suPath, host);
-                    if (startFrame == null) {
-                        throw new RecoverableObservationException("开始页截图失败");
+                    // OCR 已经给出了屏幕尺寸和“开始游戏”文本框。旧逻辑为了
+                    // 获取同样的宽高又做一次 PNG 截图，实机上会额外阻塞约
+                    // 2~3 秒，用户容易误以为程序没反应而手动点击。优先直接
+                    // 使用 OCR 按钮中心；识别不到框时才使用经过白名单约束的
+                    // 比例坐标，不再进行冗余截图。
+                    int width = firstOcr == null ? 0 : firstOcr.width;
+                    int height = firstOcr == null ? 0 : firstOcr.height;
+                    if (width <= 0 || height <= 0) {
+                        throw new RecoverableObservationException("开始页OCR尺寸无效");
                     }
-                    int startX = Math.round(startFrame.originalWidth * 0.50f);
-                    int startY = Math.round(startFrame.originalHeight * 0.75f);
-                    safeRecycle(startFrame.bitmap);
 
-                    host.log("[游戏V4.36] 检测到‘开始游戏’页，点击开始 → "
-                            + startX + "," + startY);
+                    ScreenOcr.Item startButton = firstOcr.findBest("开始游戏");
+                    int startX = startButton == null
+                            ? Math.round(width * 0.50f) : startButton.centerX();
+                    int startY = startButton == null
+                            ? Math.round(height * 0.75f) : startButton.centerY();
+
+                    // OCR 偶尔会把标题区中的“开始游戏”片段当成按钮。只有落在
+                    // GameTapPolicy 的启动按钮白名单范围内才采用 OCR 坐标。
+                    if (!isFruitStartButtonCoordinate(startX, startY, width, height)) {
+                        startX = Math.round(width * 0.50f);
+                        startY = Math.round(height * 0.75f);
+                    }
+
+                    host.log("[开始页V4.43.9] 检测到‘开始游戏’页，直接点击 → "
+                            + startX + "," + startY
+                            + (startButton == null ? " / 比例坐标" : " / OCR按钮中心"));
                     if (host.aborted()) return Result.ABORTED;
                     if (!host.tap(startX, startY, "水果游戏-开始游戏")) {
                         if (host.aborted()) return Result.ABORTED;
@@ -1224,6 +1241,16 @@ final class FruitGameSolver {
         return t.contains("开始游戏")
                 || (t.contains("第1关") && t.contains("开始")
                     && !t.contains("消除") && !t.contains("打乱"));
+    }
+
+    private static boolean isFruitStartButtonCoordinate(
+            int x, int y, int width, int height
+    ) {
+        if (width <= 0 || height <= 0) return false;
+        double nx = x / (double) width;
+        double ny = y / (double) height;
+        return nx >= 560.0 / 1440.0 && nx <= 880.0 / 1440.0
+                && ny >= 2180.0 / 3120.0 && ny <= 2500.0 / 3120.0;
     }
 
     /**
