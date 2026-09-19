@@ -58,7 +58,8 @@ final class FruitGameSolver {
     private static final long MAX_ROUND_MS = 30L * 60L * 1000L;
     private static final int MAX_PAIR_ACTIONS = 130;
     private static final int MAX_RECOVERY_RETRY = 3;
-    private static final int MAX_NO_ACTION_RETRY = 5;
+    private static final int MAX_NO_ACTION_RETRY = 1;
+    private static final int REMAINING_OCR_INTERVAL = 3;
     // A failed fruit tap must stay blocked until a confirmed elimination changes the board.
     // The old 12s TTL expired while the eight-frame verification was still running, which
     // allowed the same covered fruit to be selected again immediately afterwards.
@@ -145,6 +146,17 @@ final class FruitGameSolver {
                 if (host.aborted()) return Result.ABORTED;
 
                 firstText = normalize(firstOcr == null ? "" : firstOcr.fullText);
+
+                if (looksLikeBlockingFunctionPopupText(firstText)) {
+                    PopupDismissResult popup = dismissBlockingFunctionPopupFromOcr(
+                            host, firstOcr, "进入确认");
+                    if (popup == PopupDismissResult.ABORTED) return Result.ABORTED;
+                    if (popup != PopupDismissResult.DISMISSED) {
+                        throw new RecoverableObservationException("OCR识别到道具弹窗但关闭失败");
+                    }
+                    firstText = "";
+                    continue;
+                }
 
                 if (looksLikeFruitGame(firstText)
                         || (!looksLikeTaskPanel(firstText) && isRoundCompleted(firstText))) {
@@ -274,6 +286,7 @@ final class FruitGameSolver {
                     if (popup != PopupDismissResult.DISMISSED) {
                         throw new RecoverableObservationException("无法确认弹窗已关闭");
                     }
+                    noActionRetry = 0;
                     host.log("[弹窗V4.36] 弹窗关闭后旧水果坐标全部作废，重新分析棋盘");
                     continue;
                 }
@@ -380,6 +393,17 @@ final class FruitGameSolver {
                         host.log("[游戏V4.38.0] ✅ 已检测到一关完成状态");
                         return Result.COMPLETED;
                     }
+                    if (looksLikeBlockingFunctionPopupText(text)) {
+                        PopupDismissResult popup = dismissBlockingFunctionPopupFromOcr(
+                                host, checkpoint, "无安全动作检查");
+                        if (popup == PopupDismissResult.ABORTED) return Result.ABORTED;
+                        if (popup != PopupDismissResult.DISMISSED) {
+                            throw new RecoverableObservationException("OCR识别到道具弹窗但关闭失败");
+                        }
+                        noActionRetry = 0;
+                        host.log("[弹窗V4.44.1] 弹窗关闭后立即重建棋盘，不计入无动作重试");
+                        continue;
+                    }
 
                     if (noActionRetry < MAX_NO_ACTION_RETRY) {
                         host.log("[水果V4.44-step5] 当前轮未生成有效动作，进入重新建模流程 retry=" + (noActionRetry + 1));
@@ -399,7 +423,7 @@ final class FruitGameSolver {
                         host.log("[游戏V4.38.0] 当前没有‘可直接下落 + 高置信同类’安全对子，CLEAN安全停止");
                     }
                     host.log("[水果V4.44-step4] 连续无动作达到阈值，准备安全停止前最后复核");
-                    return Result.SAFE_STOP_CLEAN;
+                    return fruitTapAttempted ? Result.SAFE_STOP_DIRTY : Result.SAFE_STOP_CLEAN;
                 }
 
                 noActionRetry = 0;
@@ -817,6 +841,40 @@ final class FruitGameSolver {
         }
 
         host.log("[弹窗V4.36] ✅ 弹窗确认已关闭");
+        return PopupDismissResult.DISMISSED;
+    }
+
+    private static PopupDismissResult dismissBlockingFunctionPopupFromOcr(
+            Host host, ScreenOcr.Snapshot popup, String stage
+    ) {
+        if (host == null || popup == null
+                || !looksLikeBlockingFunctionPopupText(popup.fullText)) {
+            return PopupDismissResult.NOT_PRESENT;
+        }
+        if (host.aborted()) return PopupDismissResult.ABORTED;
+        if (popup.width <= 0 || popup.height <= 0) return PopupDismissResult.FAILED;
+
+        int closeX = Math.round(popup.width * 0.866f);
+        int closeY = Math.round(popup.height * 0.281f);
+        host.log("[弹窗V4.44.1] " + stage
+                + " OCR检测到道具弹窗，立即关闭X=" + closeX + "," + closeY);
+        if (!host.tap(closeX, closeY, "水果游戏-关闭道具弹窗")) {
+            return host.aborted() ? PopupDismissResult.ABORTED : PopupDismissResult.FAILED;
+        }
+        if (!host.sleep(260L, 420L)) return PopupDismissResult.ABORTED;
+
+        ScreenOcr.Snapshot verify;
+        try {
+            verify = requireOcr(host, "水果V4.44.1/道具弹窗关闭复检");
+        } catch (RuntimeException e) {
+            host.log("[弹窗V4.44.1] 关闭后OCR复检异常：" + e.getClass().getSimpleName());
+            return PopupDismissResult.FAILED;
+        }
+        if (looksLikeBlockingFunctionPopupText(verify == null ? "" : verify.fullText)) {
+            host.log("[弹窗V4.44.1] ❌ 点击X后OCR仍识别到道具弹窗");
+            return PopupDismissResult.FAILED;
+        }
+        host.log("[弹窗V4.44.1] ✅ OCR确认道具弹窗已关闭");
         return PopupDismissResult.DISMISSED;
     }
 
@@ -1243,6 +1301,13 @@ final class FruitGameSolver {
             int actionIndex,
             String stage
     ) {
+        if (actionIndex % REMAINING_OCR_INTERVAL != 0 && beforeRemaining > 6) {
+            int estimatedRemaining = Math.max(0, beforeRemaining - 2);
+            host.log("[快速验证V4.44.1] " + stage + "已由稳定槽位闭环确认；"
+                    + "剩余数按 " + beforeRemaining + "→" + estimatedRemaining
+                    + " 推进，第" + actionIndex + "次二消跳过OCR");
+            return new RemainingVerification(true, false, false, estimatedRemaining);
+        }
         int afterRemaining = -1;
         for (int verification = 1; verification <= 2; verification++) {
             if (host.aborted()) return RemainingVerification.aborted();
@@ -1274,6 +1339,15 @@ final class FruitGameSolver {
         return t.contains("开始游戏")
                 || (t.contains("第1关") && t.contains("开始")
                     && !t.contains("消除") && !t.contains("打乱"));
+    }
+
+    static boolean looksLikeBlockingFunctionPopupText(String text) {
+        String t = normalize(text);
+        if (t.isEmpty()) return false;
+        if (t.contains("解锁所有槽位")) return true;
+        boolean useAction = t.contains("使用") || t.contains("立即使用") || t.contains("确认使用");
+        boolean toolName = t.contains("解锁") || t.contains("消除") || t.contains("打乱");
+        return useAction && toolName;
     }
 
     private static boolean isFruitStartButtonCoordinate(
