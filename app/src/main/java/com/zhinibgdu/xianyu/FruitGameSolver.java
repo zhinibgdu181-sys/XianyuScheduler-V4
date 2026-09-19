@@ -1416,15 +1416,152 @@ final class FruitGameSolver {
                 if (hist < TRAY_HIST_MATCH_MIN) continue;
 
                 double lower = clamp01(fruit.centerY / denomY);
-                // 保留槽位顺序作为极弱的稳定性 tie-break，绝不否决 MID/BOTTOM 的合法二消。
+
+                /*
+                 * V4.49：残局不能只按“当前这一消有多像”贪心。
+                 * 3/3 时尤其危险：多个槽位都可能有候选，如果随便消掉一个，
+                 * 下一步可能再也没有可落槽的同类水果。
+                 *
+                 * 因此这里做两层只读前瞻：
+                 *   当前候选消掉 -> 剩余槽/棋盘还能不能立即产生下一消；
+                 *   再消一次 -> 是否还能继续产生第三步。
+                 *
+                 * 这不是模拟游戏内部物理，只利用当前已经确认的水果坐标和
+                 * 槽位直方图做保守的“可执行后手”判断。真实点击后仍然完全
+                 * 重新截图，不复用预测状态。
+                 */
+                int followup1 = countTrayFollowupsAfterRemoval(
+                        tray, objects, fruit, trayItem, frameWidth, frameHeight, blockedPositions);
+                int followup2 = countTrayFollowupsAfterSecondRemoval(
+                        tray, objects, fruit, trayItem, frameWidth, frameHeight, blockedPositions);
+
+                // 槽位顺序只做极弱 tie-break，绝不否决 MID/BOTTOM 合法二消。
                 double slotTieBreak = (tray.items.size() - slotIndex) * 0.0001;
-                double rank = 0.84 * hist + 0.16 * lower + slotTieBreak;
+
+                /*
+                 * 前瞻权重高于Y位置，但低于当前匹配置信度。
+                 * 3/3残局中，一个能继续产生后手的0.978匹配，
+                 * 应优先于一个消完以后马上无动作的0.982匹配。
+                 */
+                double rank = 0.70 * hist
+                        + 0.12 * lower
+                        + 0.12 * Math.min(1.0, followup1 / 2.0)
+                        + 0.05 * Math.min(1.0, followup2 / 2.0)
+                        + slotTieBreak;
+
+                if (tray.count >= TRAY_CAPACITY) {
+                    hostlessLogTraySearch(
+                            "3槽残局候选 slot=" + trayItem.slotName
+                                    + " hist=" + format(hist)
+                                    + " follow1=" + followup1
+                                    + " follow2=" + followup2
+                                    + " rank=" + format(rank));
+                }
+
                 TrayMatchChoice candidate = new TrayMatchChoice(trayItem, fruit, hist, rank);
                 if (best == null || candidate.rank > best.rank) best = candidate;
             }
         }
 
         return best;
+    }
+
+    /**
+     * V4.49：计算“消掉当前槽位匹配后”的直接后手数量。
+     * 只读，不修改真实TrayState/objects；实际点击后必须重新建模。
+     */
+    private static int countTrayFollowupsAfterRemoval(
+            TrayState tray,
+            List<FruitObject> objects,
+            FruitObject removedBoardFruit,
+            TrayItem removedTrayItem,
+            int frameWidth,
+            int frameHeight,
+            Set<String> blockedPositions
+    ) {
+        if (tray == null || objects == null || removedBoardFruit == null || removedTrayItem == null) return 0;
+        int count = 0;
+        for (FruitObject candidate : objects) {
+            if (candidate == null || candidate == removedBoardFruit
+                    || isBlockedPosition(blockedPositions, candidate)) continue;
+            if (findNearestBlockingFruit(candidate, objects, frameWidth, frameHeight) != null) continue;
+
+            for (TrayItem item : tray.items) {
+                if (item == null || item == removedTrayItem || item.hist == null) continue;
+                if (histogramCos(item.hist, candidate.hist) >= TRAY_HIST_MATCH_MIN) {
+                    count++;
+                    break;
+                }
+            }
+        }
+        return count;
+    }
+
+    /**
+     * V4.49：在第一步后再看一层，避免选择“只能再消一次然后立即死”的残局动作。
+     * 这里采用最保守的计数：只要存在至少两个不同的可执行后手，就认为存在
+     * 两步以上的连续空间；不存在则返回0/1。
+     */
+    private static int countTrayFollowupsAfterSecondRemoval(
+            TrayState tray,
+            List<FruitObject> objects,
+            FruitObject removedBoardFruit,
+            TrayItem removedTrayItem,
+            int frameWidth,
+            int frameHeight,
+            Set<String> blockedPositions
+    ) {
+        if (tray == null || objects == null || removedBoardFruit == null || removedTrayItem == null) return 0;
+
+        List<TrayItem> remainingTray = new ArrayList<>();
+        for (TrayItem item : tray.items) {
+            if (item != null && item != removedTrayItem) remainingTray.add(item);
+        }
+
+        int best = 0;
+        for (FruitObject first : objects) {
+            if (first == null || first == removedBoardFruit
+                    || isBlockedPosition(blockedPositions, first)) continue;
+            if (findNearestBlockingFruit(first, objects, frameWidth, frameHeight) != null) continue;
+
+            TrayItem firstMatch = null;
+            double firstHist = 0.0;
+            for (TrayItem item : remainingTray) {
+                if (item == null || item.hist == null) continue;
+                double h = histogramCos(item.hist, first.hist);
+                if (h >= TRAY_HIST_MATCH_MIN && h > firstHist) {
+                    firstHist = h;
+                    firstMatch = item;
+                }
+            }
+            if (firstMatch == null) continue;
+
+            int second = 0;
+            for (FruitObject candidate : objects) {
+                if (candidate == null || candidate == removedBoardFruit || candidate == first
+                        || isBlockedPosition(blockedPositions, candidate)) continue;
+                if (findNearestBlockingFruit(candidate, objects, frameWidth, frameHeight) != null) continue;
+
+                for (TrayItem item : remainingTray) {
+                    if (item == null || item == firstMatch || item.hist == null) continue;
+                    if (histogramCos(item.hist, candidate.hist) >= TRAY_HIST_MATCH_MIN) {
+                        second++;
+                        break;
+                    }
+                }
+            }
+            best = Math.max(best, second);
+            if (best >= 2) return best;
+        }
+        return best;
+    }
+
+    /**
+     * 诊断日志不应依赖Host对象，因此这里保持为空壳；3槽残局的详细候选信息
+     * 由主循环的决策日志承载。保留方法只是为了避免把求解核心和UI日志耦合。
+     */
+    private static void hostlessLogTraySearch(String message) {
+        // Intentionally no-op. Do not emit per-candidate logs on every frame.
     }
 
     /** Read-only evidence for missed TOP matches; uses the existing descriptors and drop analysis. */
