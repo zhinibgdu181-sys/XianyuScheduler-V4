@@ -82,6 +82,7 @@ final class FruitGameSolver {
     private static final double TRAY_HIST_MATCH_MIN = 0.985;
     private static final int TRAY_OBSERVE_RETRIES = 4;
     private static final int UNCHANGED_TRAY_CONFIRMATIONS = 2;
+    private static final int FAST_REACQUIRE_RADIUS_PX = 24;
 
     // V4.37.0：截图回放中底部同类受采样/压缩影响约0.978~0.982。
     // 总分与更严格的RGB、直方图、形状三个门槛共同判断；不逐轮降低阈值。
@@ -431,6 +432,33 @@ final class FruitGameSolver {
                     } else {
                         host.log("[游戏V4.38.0] 当前没有‘可直接下落 + 高置信同类’安全对子，CLEAN安全停止");
                     }
+                    // 道具推荐弹窗有时会在“无动作”OCR完成后才淡入。旧逻辑在这里
+                    // 立即返回，随后外层最终页面探针虽然能读到“解锁所有槽位/使用”，
+                    // 却已经失去关闭并继续求解的机会。退出前再给弹窗一个短暂出现窗口；
+                    // 仅在明确识别到弹窗时点击固定X，关闭后回到本轮重新建模。
+                    if (fruitTapAttempted) {
+                        if (!host.sleep(260L, 420L)) return Result.ABORTED;
+                        ScreenOcr.Snapshot lateCheckpoint;
+                        try {
+                            lateCheckpoint = requireOcr(host, "水果V4.44.3/安全停止前弹窗复核");
+                        } catch (RuntimeException e) {
+                            lateCheckpoint = null;
+                            host.log("[弹窗V4.44.3] 安全停止前复核异常："
+                                    + e.getClass().getSimpleName());
+                        }
+                        if (looksLikeBlockingFunctionPopupText(
+                                lateCheckpoint == null ? "" : lateCheckpoint.fullText)) {
+                            PopupDismissResult popup = dismissBlockingFunctionPopupFromOcr(
+                                    host, lateCheckpoint, "安全停止前最终复核");
+                            if (popup == PopupDismissResult.ABORTED) return Result.ABORTED;
+                            if (popup == PopupDismissResult.DISMISSED) {
+                                noActionRetry = 0;
+                                host.log("[弹窗V4.44.3] 晚到道具弹窗已关闭，继续重建棋盘");
+                                continue;
+                            }
+                            return Result.SAFE_STOP_DIRTY;
+                        }
+                    }
                     host.log("[水果V4.44-step4] 连续无动作达到阈值，准备安全停止前最后复核");
                     return fruitTapAttempted ? Result.SAFE_STOP_DIRTY : Result.SAFE_STOP_CLEAN;
                 }
@@ -610,7 +638,9 @@ final class FruitGameSolver {
                     if (host.aborted()) return Result.ABORTED;
                     throw new RecoverableObservationException("水果点击发送失败，重新观察真实槽位");
                 }
-                if (!host.sleep(650L, 800L)) return Result.ABORTED;
+                // screencap本身在实机约需2~3秒，已经覆盖绝大多数下落动画；
+                // 不再额外固定等待650~800ms。仍保留真实槽位截图确认，绝不盲点B。
+                if (!host.sleep(120L, 220L)) return Result.ABORTED;
 
                 PostTapObservation afterAObs = observeTrayAfterTap(
                         context, suPath, host, beforeTrayCount + 1,
@@ -656,20 +686,31 @@ final class FruitGameSolver {
                     return Result.SAFE_STOP_DIRTY;
                 }
 
-                List<FruitObject> afterObjects = detectFruitObjects(afterAObs.frame);
-                DropAnalysis afterDrop = analyzeDroppability(
-                        afterObjects, afterAObs.frame.bitmap.getWidth(), afterAObs.frame.bitmap.getHeight());
-                host.log("[点击验证V4.38.0] A已确认进入槽位 / 槽位="
-                        + beforeTrayCount + "→" + afterATrayCount
-                        + " / 水果=" + afterObjects.size()
-                        + " / 可直接下落=" + afterDrop.droppable.size());
-
-                // A进入槽后，B使用“全棋盘同类 + 当前可下落”重新定位，
-                // 不再把旧B限制在原坐标附近。
-                FruitMatch reacquired = findBestMatchingFruitGlobal(
-                        expectedB, afterObjects,
-                        afterAObs.frame.bitmap.getWidth(), afterAObs.frame.bitmap.getHeight(),
-                        blockedPositions);
+                // 先在已锁定B的原坐标附近做小范围模板重定位。实机日志中B通常只漂移
+                // 0~2像素；旧代码却每次都重跑整张棋盘的连通域、形态学和模板恢复，
+                // 单次额外耗时约1.5~2.1秒。局部验证失败时仍回退全棋盘检测，安全门槛不变。
+                long reacquireStarted = SystemClock.elapsedRealtime();
+                FruitMatch reacquired = findMatchingFruitNearPlan(
+                        expectedB, afterAObs.frame, blockedPositions);
+                List<FruitObject> afterObjects = null;
+                DropAnalysis afterDrop = null;
+                if (reacquired == null) {
+                    afterObjects = detectFruitObjects(afterAObs.frame);
+                    afterDrop = analyzeDroppability(
+                            afterObjects, afterAObs.frame.bitmap.getWidth(), afterAObs.frame.bitmap.getHeight());
+                    reacquired = findBestMatchingFruitGlobal(
+                            expectedB, afterObjects,
+                            afterAObs.frame.bitmap.getWidth(), afterAObs.frame.bitmap.getHeight(),
+                            blockedPositions);
+                    host.log("[点击验证V4.44.3] A已确认进入槽位；局部B未命中，"
+                            + "已回退全棋盘 / 水果=" + afterObjects.size()
+                            + " / 可直接下落=" + afterDrop.droppable.size());
+                } else {
+                    host.log("[点击验证V4.44.3] A已确认进入槽位 / 槽位="
+                            + beforeTrayCount + "→" + afterATrayCount
+                            + " / B局部重定位耗时="
+                            + (SystemClock.elapsedRealtime() - reacquireStarted) + "ms");
+                }
                 if (reacquired == null) {
                     host.log("[水果V4.38.0] A已安全进入槽位，但当前没有可直接下落的同类B；"
                             + "保留真实槽位状态，下一轮优先找槽位匹配，不盲点");
@@ -1387,10 +1428,66 @@ final class FruitGameSolver {
     static boolean looksLikeBlockingFunctionPopupText(String text) {
         String t = normalize(text);
         if (t.isEmpty()) return false;
-        if (t.contains("解锁所有槽位")) return true;
+        if (t.contains("解锁所有槽位") || t.contains("解锁所有糟位")) return true;
         boolean useAction = t.contains("使用") || t.contains("立即使用") || t.contains("确认使用");
         boolean toolName = t.contains("解锁") || t.contains("消除") || t.contains("打乱");
         return useAction && toolName;
+    }
+
+    /**
+     * V4.44.3 快速B重定位：只搜索原计划位置周围，不重跑全棋盘形态学。
+     * 必须同时通过原有总分、RGB、直方图和形状门槛；任何不确定性都返回null，
+     * 由调用方回退到完整检测。
+     */
+    private static FruitMatch findMatchingFruitNearPlan(
+            FruitObject expected, GameFrame frame, Set<String> blockedPositions
+    ) {
+        if (expected == null || frame == null || frame.bitmap == null) return null;
+        Bitmap bitmap = frame.bitmap;
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        int bw = Math.max(1, Math.round(expected.width()));
+        int bh = Math.max(1, Math.round(expected.height()));
+        int baseX = Math.round(expected.left);
+        int baseY = Math.round(expected.top);
+        int[] pixels = new int[width * height];
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
+
+        int[] samples = new int[GRID * GRID];
+        int sampleCount = 0;
+        for (int k = 0; k < expected.shape.length; k++) {
+            if (expected.shape[k]) samples[sampleCount++] = k;
+        }
+        if (sampleCount < GRID * GRID * 0.30) return null;
+
+        FruitMatch best = null;
+        for (int dy = -FAST_REACQUIRE_RADIUS_PX; dy <= FAST_REACQUIRE_RADIUS_PX; dy += 3) {
+            for (int dx = -FAST_REACQUIRE_RADIUS_PX; dx <= FAST_REACQUIRE_RADIUS_PX; dx += 3) {
+                int x = baseX + dx;
+                int y = baseY + dy;
+                if (x < 0 || y < 0 || x + bw >= width || y + bh >= height) continue;
+                if (templateError(expected, samples, sampleCount, pixels, width,
+                        x, y, bw, bh, 24) > 0.080) continue;
+                if (templateError(expected, samples, sampleCount, pixels, width,
+                        x, y, bw, bh, sampleCount) > 0.048) continue;
+                FruitObject observed = observedTemplate(expected, pixels, width, x, y, bw, bh);
+                if (isBlockedPosition(blockedPositions, observed)) continue;
+                Similarity sim = similarity(expected, observed);
+                if (!passesStrictPairSimilarity(sim)) continue;
+                if (best == null || sim.score > best.similarity.score) {
+                    best = new FruitMatch(observed, sim, sim.score);
+                }
+            }
+        }
+        return best;
+    }
+
+    private static boolean passesStrictPairSimilarity(Similarity sim) {
+        return sim != null
+                && sim.score >= MIN_PAIR_SCORE
+                && sim.rgbMad <= MAX_RGB_MAD
+                && sim.histCos >= MIN_HIST_COS
+                && sim.shapeIou >= MIN_SHAPE_IOU;
     }
 
     private static boolean isFruitStartButtonCoordinate(

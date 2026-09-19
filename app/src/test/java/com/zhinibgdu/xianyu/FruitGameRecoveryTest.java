@@ -156,6 +156,8 @@ public class FruitGameRecoveryTest {
                 "解锁 解锁所有槽位 使用 打乱 5%"));
         assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
                 "随机打乱 立即使用"));
+        assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
+                "解锁 解锁所有糟位 D使用 打乱 12%"));
         assertFalse(FruitGameSolver.looksLikeBlockingFunctionPopupText(
                 "剩余 196 消除 第1关 解锁 打乱 5%"));
     }
