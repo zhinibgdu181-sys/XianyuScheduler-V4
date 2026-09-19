@@ -412,7 +412,7 @@ final class FruitGameSolver {
                     }
                     if (pair == null && tray.count <= 2) {
                         safePush = chooseBestSafePushV441(
-                                objects, drop, tray.count,
+                                objects, drop, tray,
                                 frame.bitmap.getWidth(), frame.bitmap.getHeight(), blockedPositions);
 
                         // V4.46：单纯“找同类后手”仍然会漏掉真正需要解锁的局面。
@@ -1799,6 +1799,127 @@ final class FruitGameSolver {
         return cascadeFollowers == 1 && cascadeMate;
     }
 
+    /**
+     * V4.51：级联不能只按“总共掉下来几个水果”计算容量。
+     * 级联水果如果与现有槽位或点击根水果组成二消，会在进入槽位的同时释放容量。
+     *
+     * 例如：1槽已有葡萄；点击挡住两颗葡萄的龙眼/火龙果后，两颗葡萄会依次落槽。
+     * 原来的 additions=3 会错误拒绝；实际第一颗葡萄与槽内葡萄二消，最终占用可保持在2槽。
+     */
+    static boolean allowsCascadeOccupancy(
+            int trayCount, int cascadeFollowers, int eliminationPairs
+    ) {
+        if (trayCount < 0 || trayCount >= TRAY_CAPACITY) return false;
+        if (cascadeFollowers < 0 || eliminationPairs < 0) return false;
+        int incoming = 1 + cascadeFollowers;
+        // 每完成一次二消，净占用减少2个“水果实体”。
+        int projected = trayCount + incoming - 2 * eliminationPairs;
+        return projected <= TRAY_CAPACITY;
+    }
+
+    private static int projectCascadeTrayCount(
+            int trayCount, int incoming, int eliminationPairs
+    ) {
+        if (trayCount < 0) return Integer.MAX_VALUE;
+        return trayCount + Math.max(0, incoming) - 2 * Math.max(0, eliminationPairs);
+    }
+
+    /**
+     * 只计算当前 root + 其潜在级联后手与既有槽位之间的可消除配对数，
+     * 再对剩余级联水果做同类配对。不存在真实点击，执行后仍必须重新截图确认。
+     */
+    private static int countCascadeEliminationPairs(
+            FruitObject root,
+            List<FruitObject> objects,
+            DropAnalysis drop,
+            List<TrayItem> trayItems
+    ) {
+        if (root == null || objects == null || drop == null) return 0;
+
+        List<FruitObject> incoming = collectPotentialCascadeFollowers(root, objects, drop);
+        if (incoming.isEmpty()) return 0;
+
+        boolean[] usedIncoming = new boolean[incoming.size()];
+        int pairs = 0;
+
+        // 先用已有槽位吸收最明显的同类级联水果；每个槽位只能被二消一次。
+        if (trayItems != null) {
+            for (TrayItem item : trayItems) {
+                if (item == null || item.hist == null) continue;
+                int bestIndex = -1;
+                double bestHist = TRAY_HIST_MATCH_MIN;
+                for (int i = 0; i < incoming.size(); i++) {
+                    if (usedIncoming[i]) continue;
+                    FruitObject f = incoming.get(i);
+                    double hist = histogramCos(item.hist, f.hist);
+                    if (hist >= bestHist) {
+                        bestHist = hist;
+                        bestIndex = i;
+                    }
+                }
+                if (bestIndex >= 0) {
+                    usedIncoming[bestIndex] = true;
+                    pairs++;
+                }
+            }
+        }
+
+        // 再处理“点击根水果 + 级联水果”或“两个级联水果”自身二消。
+        while (true) {
+            int bestI = -1;
+            int bestJ = -1;
+            double bestHist = TRAY_HIST_MATCH_MIN;
+            for (int i = 0; i < incoming.size(); i++) {
+                if (usedIncoming[i]) continue;
+                for (int j = i + 1; j < incoming.size(); j++) {
+                    if (usedIncoming[j]) continue;
+                    double hist = histogramCos(incoming.get(i).hist, incoming.get(j).hist);
+                    if (hist >= bestHist) {
+                        bestHist = hist;
+                        bestI = i;
+                        bestJ = j;
+                    }
+                }
+            }
+            if (bestI < 0) break;
+            usedIncoming[bestI] = true;
+            usedIncoming[bestJ] = true;
+            pairs++;
+        }
+        return pairs;
+    }
+
+    private static List<FruitObject> collectPotentialCascadeFollowers(
+            FruitObject root,
+            List<FruitObject> objects,
+            DropAnalysis drop
+    ) {
+        List<FruitObject> result = new ArrayList<>();
+        if (root == null || objects == null || drop == null || drop.blocked.isEmpty()) {
+            return result;
+        }
+
+        Set<FruitObject> seen = new HashSet<>();
+        List<FruitObject> frontier = new ArrayList<>();
+        seen.add(root);
+        frontier.add(root);
+        while (!frontier.isEmpty()) {
+            FruitObject current = frontier.remove(frontier.size() - 1);
+            for (BlockingRelation relation : drop.blocked) {
+                if (relation == null || relation.blocker != current || relation.fruit == null) continue;
+                if (!objects.contains(relation.fruit) || seen.contains(relation.fruit)) continue;
+                seen.add(relation.fruit);
+                result.add(relation.fruit);
+                frontier.add(relation.fruit);
+            }
+        }
+        return result;
+    }
+
+    private static void hostlessLogCascadeGuard(String message) {
+        // Intentionally no-op; retained as a hook for future diagnostic logging.
+    }
+
     private static int countPotentialCascadeFollowers(
             FruitObject root,
             List<FruitObject> objects,
@@ -1851,11 +1972,12 @@ final class FruitGameSolver {
     private static SafePushChoice chooseBestSafePushV441(
             List<FruitObject> objects,
             DropAnalysis drop,
-            int trayCount,
+            TrayState tray,
             int frameWidth,
             int frameHeight,
             Set<String> blockedPositions
     ) {
+        int trayCount = tray == null ? -1 : tray.count;
         if (objects == null || objects.isEmpty() || drop == null || drop.droppable.isEmpty()) {
             return null;
         }
@@ -1895,9 +2017,12 @@ final class FruitGameSolver {
             if (bestMate == null) continue;
 
             int cascadeFollowers = countPotentialCascadeFollowers(fruit, objects, drop);
-            boolean cascadeMate = isPotentialCascadeFollower(
-                    fruit, bestMate, objects, drop);
-            if (!allowsThirdSlotCascade(trayCount, cascadeFollowers, cascadeMate)) {
+            int cascadePairs = countCascadeEliminationPairs(
+                    fruit, objects, drop, tray == null ? null : tray.items);
+            int projectedTrayCount = projectCascadeTrayCount(
+                    trayCount, 1 + cascadeFollowers, cascadePairs);
+            if (!allowsCascadeOccupancy(
+                    trayCount, cascadeFollowers, cascadePairs)) {
                 continue;
             }
 
@@ -1934,6 +2059,13 @@ final class FruitGameSolver {
                     fruit, mateScore, bestDirectUnlockMate,
                     bestMateDroppable, unlockGain, continuationPairs, rank,
                     false, cascadeFollowers);
+            if (cascadeFollowers > 0) {
+                hostlessLogCascadeGuard(
+                        "safePush tray=" + trayCount
+                                + " followers=" + cascadeFollowers
+                                + " elimPairs=" + cascadePairs
+                                + " projected=" + projectedTrayCount);
+            }
             if (best == null || candidate.rank > best.rank) best = candidate;
         }
         return best;
@@ -2023,9 +2155,12 @@ final class FruitGameSolver {
                 if (trayCount == 0) chain = Math.max(chain, blockerMatch);
 
                 int cascadeFollowers = countPotentialCascadeFollowers(blocker, objects, drop);
-                boolean cascadeMate = isPotentialCascadeFollower(
-                        blocker, released, objects, drop);
-                if (!allowsThirdSlotCascade(trayCount, cascadeFollowers, cascadeMate)) continue;
+                int cascadePairs = countCascadeEliminationPairs(
+                        blocker, objects, drop, tray.items);
+                int projectedTrayCount = projectCascadeTrayCount(
+                        trayCount, 1 + cascadeFollowers, cascadePairs);
+                if (!allowsCascadeOccupancy(
+                        trayCount, cascadeFollowers, cascadePairs)) continue;
 
                 double lower = clamp01(blocker.centerY / Math.max(1.0, frameHeight));
 
@@ -2039,6 +2174,13 @@ final class FruitGameSolver {
 
                 SafePushChoice candidate = new SafePushChoice(
                         blocker, chain, true, true, 1, 1, rank, true, cascadeFollowers);
+                if (cascadeFollowers > 0) {
+                    hostlessLogCascadeGuard(
+                            "dependency tray=" + trayCount
+                                    + " followers=" + cascadeFollowers
+                                    + " elimPairs=" + cascadePairs
+                                    + " projected=" + projectedTrayCount);
+                }
                 if (best == null || candidate.rank > best.rank) {
                     best = candidate;
                 }
