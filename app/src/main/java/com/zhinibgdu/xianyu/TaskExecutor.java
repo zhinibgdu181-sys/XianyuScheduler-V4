@@ -4742,8 +4742,8 @@ public final class TaskExecutor {
         return false;
     }
 
-    /** One edge-back gesture; callers verify the resulting page before continuing. */
-    private static boolean preferredRightBackOnceV410(String suPath, String reason) {
+    /** Two edge-back gestures sent in one burst; callers verify the resulting page afterwards. */
+    private static boolean preferredRightBackTwiceV410(String suPath, String reason) {
         if (userAborted) return false;
         int[] screen = getScreenSizeV43(suPath);
         if (screen == null) return false;
@@ -4751,32 +4751,51 @@ public final class TaskExecutor {
         int y = Math.round(height * 0.75f);
         int startX = Math.max(1, width - 2);
         int endX = Math.round(width * 0.76f);
-        diagnostic("[右侧返回V4.11] " + reason + "：最右边缘 x=" + startX
-                + " → " + endX + "，y=" + y + "(~75%H)");
-        RootResult r = rootWithPath(suPath, "input swipe " + startX + " " + y
-                + " " + endX + " " + y + " 260");
-        return r.exitCode == 0;
+
+        diagnostic("[右侧返回V4.44] " + reason + "：快速连续返回2次，x="
+                + startX + " → " + endX + "，y=" + y + "(~75%H)");
+
+        RootResult first = rootWithPath(suPath, "input swipe " + startX + " " + y
+                + " " + endX + " " + y + " 220");
+        if (first.exitCode != 0 || userAborted) return false;
+
+        // Only a very short gap between the two gestures. Do not perform the old
+        // 650ms wait, and do not probe OCR between the two back gestures.
+        SystemClock.sleep(80L);
+        if (userAborted) return false;
+
+        RootResult second = rootWithPath(suPath, "input swipe " + startX + " " + y
+                + " " + endX + " " + y + " 220");
+        return second.exitCode == 0 && !userAborted;
     }
 
     private static boolean conditionalBackRecoveryV410(
             String suPath, String taskName, String reason
     ) {
         if (userAborted || gameSolverOwnsPageV420 || gameIncompleteHoldV421) return false;
-        for (int i = 0; i <= 3; i++) {
-            if (userAborted) return false;
-            invalidateOcrCacheV411();
-            PageProbeV411 page = probePageV411(suPath, "返回检查/" + reason);
-            if (userAborted || page.kind == PageKindV411.MODULE_APP) return false;
-            if (page.kind == PageKindV411.TASK_PANEL) return true;
-            if (page.kind == PageKindV411.MINE || page.kind == PageKindV411.XIANYU_HOME
-                    || page.kind == PageKindV411.COIN_HOME) {
-                diagnostic("[条件返回] 已到 " + page.kind + "，停止后退，直接导航到任务面板");
-                return enterViaMineCoin(suPath);
-            }
-            if (i == 3 || !preferredRightBackOnceV410(suPath, reason)
-                    || !sleepAbortableV48(650L)) break;
+
+        // V4.44: completion-return navigation is deliberately a two-swipe burst.
+        // The old flow performed one swipe, waited 650ms, then inspected the page
+        // and possibly swiped again. That made the return visibly slow and could
+        // leave the executor sitting on an intermediate Xianyu page.
+        if (!preferredRightBackTwiceV410(suPath, reason)) {
+            TaskProfileStoreV48.recordFailure(taskName, "conditional_back_gesture_failed");
+            return false;
         }
-        TaskProfileStoreV48.recordFailure(taskName, "conditional_back_not_recovered");
+
+        invalidateOcrCacheV411();
+        sleepAbortableV48(180L);
+
+        PageProbeV411 page = probePageV411(suPath, "双返回检查/" + reason);
+        if (userAborted || page.kind == PageKindV411.MODULE_APP) return false;
+        if (page.kind == PageKindV411.TASK_PANEL) return true;
+        if (page.kind == PageKindV411.MINE || page.kind == PageKindV411.XIANYU_HOME
+                || page.kind == PageKindV411.COIN_HOME) {
+            diagnostic("[条件返回V4.44] 已到 " + page.kind + "，停止后退，直接导航到任务面板");
+            return enterViaMineCoin(suPath);
+        }
+
+        TaskProfileStoreV48.recordFailure(taskName, "conditional_back_not_recovered_after_double_swipe");
         return false;
     }
 
