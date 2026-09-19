@@ -2310,26 +2310,49 @@ final class FruitGameSolver {
                 if (relation != null && relation.blocker == fruit) unlockGain++;
             }
             boolean hasMate = false;
+            boolean mateReadyAfterTap = false;
             for (FruitObject other : objects) {
                 if (other == fruit) continue;
                 Similarity sim = similarity(fruit, other);
                 if (isBridgeMateSimilarity(sim.score, sim.rgbMad, sim.histCos, sim.shapeIou)) {
                     hasMate = true;
-                    break;
+                    if (drop.droppable.contains(other)
+                            || isDirectlyBlockedBy(other, fruit, drop)) {
+                        mateReadyAfterTap = true;
+                        break;
+                    }
                 }
+            }
+            // 最后一槽绝不能再走“先填满以后再想办法”的路径。实录中
+            // cascadeFollowers=8 的目标把2/3直接送成3/3死局。这里复用统一
+            // 最后一槽安全门：无级联，并且同类后手现在可点或会被本次直接释放。
+            if (!allowsLastSlotPush(2, mateReadyAfterTap, hasMate, cascadeFollowers)) {
+                continue;
             }
             double lower = clamp01(fruit.centerY / Math.max(1.0, frameHeight));
             // 第三槽必须推进：优先能解锁、已有同类后手、级联最少且更靠下者。
             // 特征库不参与此分数，避免历史数据影响当前局面是否操作。
             double rank = 0.48 * Math.min(1.0, unlockGain / 2.0)
-                    + 0.28 * (hasMate ? 1.0 : 0.0)
+                    + 0.28 * (mateReadyAfterTap ? 1.0 : 0.0)
                     + 0.18 * lower - 0.06 * Math.min(2, cascadeFollowers);
             SafePushChoice candidate = new SafePushChoice(
                     fruit, hasMate ? BRIDGE_MIN_PAIR_SCORE : 0.0,
-                    hasMate, false, unlockGain, 0, rank, false, cascadeFollowers);
+                    hasMate, mateReadyAfterTap, unlockGain, 0, rank, false, cascadeFollowers);
             if (best == null || candidate.rank > best.rank) best = candidate;
         }
         return best;
+    }
+
+    private static boolean isDirectlyBlockedBy(
+            FruitObject target, FruitObject blocker, DropAnalysis drop
+    ) {
+        if (target == null || blocker == null || drop == null) return false;
+        for (BlockingRelation relation : drop.blocked) {
+            if (relation != null && relation.fruit == target && relation.blocker == blocker) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
