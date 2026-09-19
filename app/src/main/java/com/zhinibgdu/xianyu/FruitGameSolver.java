@@ -371,12 +371,10 @@ final class FruitGameSolver {
                 SafePushChoice safePush = null;
                 double hitThreshold = MIN_PAIR_SCORE;
                 // 栈模型：
-                // 1) 有TOP可消时永远先消TOP；
-                // 2) 0/1/2槽可启动一个已经锁定的完整A+A；
-                // 3) 没有严格A+A时允许“可证明有后手”的过桥压栈：
-                //    depth=1可升2槽，要求同类已可下落或本次点击能直接释放同类；
-                //    depth=2可升3槽，但同类必须当前已经可直接下落，下一轮立即消栈顶。
-                // 4) depth=3绝不引入新类型，只允许TOP直配。
+                // 1) 优先处理“棋盘水果 + 任意已占槽水果”的直接二消；
+                // 2) 0/1/2槽且没有直接二消时，才可启动已经证明有后手的安全压栈；
+                // 3) 没有严格A+A时允许“可证明有后手”的过桥压栈；
+                // 4) 3槽已满时禁止引入任何新类型，只允许与TOP/MID/BOTTOM任一槽位直配。
                 if (trayChoice == null && tray.count < TRAY_CAPACITY) {
                     for (double t : FALLBACK_THRESHOLDS_V436) {
                         pair = chooseBestPairWithThreshold(
@@ -414,7 +412,8 @@ final class FruitGameSolver {
                         + " / 漏斗外沿≈" + Math.round(frame.originalHeight * FUNNEL_OUTER_Y_FRAC)
                         + " / 中央入口≈" + Math.round(frame.originalHeight * FUNNEL_INNER_Y_FRAC)
                         + (trayChoice != null
-                        ? " / TOP直配 hist=" + format(trayChoice.histCos)
+                        ? " / 槽位直配[" + trayChoice.trayItem.slotName + "] hist="
+                                + format(trayChoice.histCos)
                                 + " rank=" + format(trayChoice.rank)
                         : pair != null
                         ? " / 棋盘对子=" + format(pair.score)
