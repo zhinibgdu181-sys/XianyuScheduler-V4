@@ -10,7 +10,7 @@ public class FruitStrategyExperienceStoreTest {
         String a = FruitStrategyExperienceStore.structuralKey(
                 200, 2, 31, 6, 9, 0, 2, 0);
         String b = FruitStrategyExperienceStore.structuralKey(
-                203, 2, 33, 6, 10, 0, 2, 0);
+                203, 2, 31, 6, 9, 0, 2, 0);
         assertEquals("nearby structural states should share the same coarse memory bucket", a, b);
 
         String differentTray = FruitStrategyExperienceStore.structuralKey(
