@@ -11,6 +11,11 @@ import java.util.Locale;
  * The store remembers which already-safety-validated strategy families worked
  * in similar board states. It never authorizes a tap, changes occlusion gates,
  * or bypasses GameTapPolicy. Memory is only a bounded ranking prior.
+ *
+ * Human demonstrations have an even stricter admission path: only a verified
+ * positive structural outcome may reinforce a known strategy family. Raw manual
+ * taps, manual-takeover events, ambiguous observations, and rejected outcomes
+ * never enter the ranking store.
  */
 final class FruitStrategyExperienceStore {
 
@@ -48,7 +53,7 @@ final class FruitStrategyExperienceStore {
             int continuationPairs
     ) {
         SharedPreferences prefs = prefs(context);
-        if (prefs == null || strategy == null || strategy.isEmpty()) return 0.0;
+        if (prefs == null || !isKnownStrategy(strategy)) return 0.0;
 
         String key = key(strategy, remaining, trayCount, objects, droppable,
                 blocked, directPairs, unlockGain, continuationPairs);
@@ -60,6 +65,16 @@ final class FruitStrategyExperienceStore {
         if (last > 0L && System.currentTimeMillis() - last > TTL_MS) return 0.0;
 
         return biasFromCounts(success, failure);
+    }
+
+    static boolean isKnownStrategy(String strategy) {
+        return STRATEGY_TRAY_MATCH.equals(strategy)
+                || STRATEGY_PAIR.equals(strategy)
+                || STRATEGY_SAFE_PUSH.equals(strategy)
+                || STRATEGY_LAST_SLOT_PUSH.equals(strategy)
+                || STRATEGY_DEPENDENCY_PUSH.equals(strategy)
+                || STRATEGY_TRAY_UNBLOCK.equals(strategy)
+                || STRATEGY_EXPLORATION.equals(strategy);
     }
 
     static double biasFromCounts(int success, int failure) {
@@ -91,7 +106,7 @@ final class FruitStrategyExperienceStore {
             boolean success
     ) {
         SharedPreferences prefs = prefs(context);
-        if (prefs == null || strategy == null || strategy.isEmpty()) return;
+        if (prefs == null || !isKnownStrategy(strategy)) return;
 
         String key = key(strategy, remaining, trayCount, objects, droppable,
                 blocked, directPairs, unlockGain, continuationPairs);
@@ -101,6 +116,31 @@ final class FruitStrategyExperienceStore {
                 .putInt(key + suffix, Math.min(MAX_OUTCOME_COUNT, old + 1))
                 .putLong(key + "_last", System.currentTimeMillis())
                 .apply();
+    }
+
+    /**
+     * Human teaching admission point.
+     *
+     * This deliberately has no boolean parameter: a human demonstration may only
+     * reinforce the strategy store through this method after the caller has
+     * positively verified a structural improvement. This prevents a future caller
+     * from accidentally feeding manual/ambiguous/failure observations into memory.
+     */
+    static void recordVerifiedHumanSuccess(
+            Context context,
+            String strategy,
+            int remaining,
+            int trayCount,
+            int objects,
+            int droppable,
+            int blocked,
+            int directPairs,
+            int unlockGain,
+            int continuationPairs
+    ) {
+        if (!isKnownStrategy(strategy)) return;
+        record(context, strategy, remaining, trayCount, objects, droppable, blocked,
+                directPairs, unlockGain, continuationPairs, true);
     }
 
     /**
