@@ -395,12 +395,30 @@ final class FruitGameSolver {
                 PairChoice pair = null;
                 SafePushChoice safePush = null;
                 double hitThreshold = MIN_PAIR_SCORE;
+
+                // V4.51：直接槽位匹配被挡住时，先沿阻挡链反向找真正可点击的根节点。
+                // 这条路径对1/2/3槽都有效；3槽也允许，因为最终目标本身会与槽内同类二消。
+                if (trayChoice == null && tray.count > 0) {
+                    SafePushChoice unblockPush = chooseBestTrayUnblockPush(
+                            tray, objects, drop, tray.count,
+                            frame.bitmap.getWidth(), frame.bitmap.getHeight(),
+                            blockedPositions);
+                    if (unblockPush != null) {
+                        safePush = unblockPush;
+                        host.log("[规划V4.51] 找到槽位同类反向解阻链：槽="
+                                + unblockPush.dependencySlot
+                                + " / chainDepth=" + unblockPush.dependencyDepth
+                                + " / match=" + format(unblockPush.mateScore)
+                                + " / rootCascade=" + unblockPush.cascadeFollowers);
+                    }
+                }
+
                 // 栈模型：
                 // 1) 优先处理“棋盘水果 + 任意已占槽水果”的直接二消；
-                // 2) 0/1/2槽且没有直接二消时，才可启动已经证明有后手的安全压栈；
+                // 2) 没有直接二消/解阻链时，0/1/2槽才可启动已经证明有后手的安全压栈；
                 // 3) 没有严格A+A时允许“可证明有后手”的过桥压栈；
                 // 4) 3槽已满时禁止引入任何新类型，只允许与TOP/MID/BOTTOM任一槽位直配。
-                if (trayChoice == null && tray.count < TRAY_CAPACITY) {
+                if (trayChoice == null && safePush == null && tray.count < TRAY_CAPACITY) {
                     for (double t : FALLBACK_THRESHOLDS_V436) {
                         pair = chooseBestPairWithThreshold(
                                 objects, frame.bitmap.getWidth(), frame.bitmap.getHeight(),
@@ -454,6 +472,10 @@ final class FruitGameSolver {
                                 + " mateReady=" + safePush.mateDroppable
                                 + " continuationPairs=" + safePush.continuationPairs
                                 + " unlock=" + safePush.unlockGain
+                                + (safePush.dependencyDepth > 0
+                                ? " unblockDepth=" + safePush.dependencyDepth
+                                + " unblockSlot=" + safePush.dependencySlot
+                                : "")
                         : " / 无安全动作"));
 
                 if (trayChoice == null && pair == null && safePush == null) {
@@ -2072,6 +2094,130 @@ final class FruitGameSolver {
             if (best == null || candidate.rank > best.rank) best = candidate;
         }
         return best;
+    }
+
+    /**
+     * V4.51：反向解阻链。
+     *
+     * 当“槽位同类水果”已经被棋盘其它水果挡住时，不能因为目标本身不可直接下落
+     * 就判定无动作。沿 BlockingRelation 反向追踪：
+     *
+     *   槽内A <- 棋盘A <- B <- C <- ... <- R
+     *
+     * 只要最终找到真正可直接下落的 R，就允许先点击 R，让整条链自然释放。
+     * 点击后仍由真实槽位/剩余数闭环确认，不复用预测坐标。
+     */
+    private static SafePushChoice chooseBestTrayUnblockPush(
+            TrayState tray,
+            List<FruitObject> objects,
+            DropAnalysis drop,
+            int trayCount,
+            int frameWidth,
+            int frameHeight,
+            Set<String> blockedPositions
+    ) {
+        if (tray == null || !tray.stable || tray.items.isEmpty()
+                || objects == null || objects.isEmpty()
+                || drop == null || drop.droppable.isEmpty()) {
+            return null;
+        }
+
+        SafePushChoice best = null;
+        double denomY = Math.max(1.0, frameHeight);
+
+        for (TrayItem trayItem : tray.items) {
+            if (trayItem == null || trayItem.hist == null) continue;
+
+            for (FruitObject target : objects) {
+                if (target == null || isBlockedPosition(blockedPositions, target)) continue;
+                double hist = histogramCos(trayItem.hist, target.hist);
+                if (hist < TRAY_HIST_MATCH_MIN) continue;
+
+                int[] depthHolder = new int[]{0};
+                FruitObject root = findUnblockChainRoot(
+                        target, objects, drop, blockedPositions, depthHolder);
+                if (root == null || root == target || depthHolder[0] <= 0) continue;
+                if (!drop.droppable.contains(root)) continue;
+                if (!hasConservativeDropClearance(root, objects, frameWidth, frameHeight)) continue;
+                if (!isPotentialCascadeFollower(root, target, objects, drop)) continue;
+
+                int cascadeFollowers = countPotentialCascadeFollowers(root, objects, drop);
+                int cascadePairs = countCascadeEliminationPairs(
+                        root, objects, drop, tray.items);
+                int projectedTrayCount = projectCascadeTrayCount(
+                        trayCount, 1 + cascadeFollowers, cascadePairs);
+
+                if (!allowsCascadeOccupancy(
+                        trayCount, cascadeFollowers, cascadePairs)) {
+                    continue;
+                }
+
+                double lower = clamp01(root.centerY / denomY);
+                // 先保证“能释放槽内同类”；在多个链都可行时：
+                // 匹配置信度 > 解阻链更短 > 更靠下的真正可点根节点。
+                double rank = 0.68 * hist
+                        + 0.20 * Math.min(1.0, 1.0 / depthHolder[0])
+                        + 0.10 * lower
+                        + 0.02 * Math.min(1.0, cascadePairs / 2.0);
+
+                SafePushChoice candidate = new SafePushChoice(
+                        root, hist, true, true,
+                        depthHolder[0], 1, rank, true, cascadeFollowers,
+                        depthHolder[0], trayItem.slotName);
+
+                if (best == null || candidate.rank > best.rank) {
+                    best = candidate;
+                }
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 从一个“与槽位同类但被阻挡”的目标，沿阻挡关系向下追踪到真正可直接下落的根。
+     * BlockingRelation 定义为 relation.fruit（上方水果） <- relation.blocker（下方阻挡者）。
+     */
+    private static FruitObject findUnblockChainRoot(
+            FruitObject target,
+            List<FruitObject> objects,
+            DropAnalysis drop,
+            Set<String> blockedPositions,
+            int[] depthHolder
+    ) {
+        if (target == null || objects == null || drop == null) return null;
+
+        Set<FruitObject> seen = new HashSet<>();
+        FruitObject current = target;
+        int depth = 0;
+
+        while (current != null && depth <= objects.size()) {
+            if (depth > 0 && drop.droppable.contains(current)
+                    && !isBlockedPosition(blockedPositions, current)) {
+                if (depthHolder != null && depthHolder.length > 0) {
+                    depthHolder[0] = depth;
+                }
+                return current;
+            }
+
+            FruitObject blocker = null;
+            double nearestY = -Double.MAX_VALUE;
+            for (BlockingRelation relation : drop.blocked) {
+                if (relation == null || relation.fruit != current || relation.blocker == null) continue;
+                if (!objects.contains(relation.blocker)
+                        || isBlockedPosition(blockedPositions, relation.blocker)) continue;
+                if (relation.blocker.centerY > nearestY) {
+                    blocker = relation.blocker;
+                    nearestY = relation.blocker.centerY;
+                }
+            }
+
+            if (blocker == null || seen.contains(blocker)) return null;
+            seen.add(current);
+            current = blocker;
+            depth++;
+        }
+
+        return null;
     }
 
     /**
@@ -3724,24 +3870,35 @@ final class FruitGameSolver {
         final int cascadeFollowers;
 
         final boolean dependencyChain;
+        final int dependencyDepth;
+        final String dependencySlot;
 
         SafePushChoice(FruitObject fruit, double mateScore, boolean directUnlockMate,
                        boolean mateDroppable, int unlockGain, int continuationPairs,
                        double rank) {
             this(fruit, mateScore, directUnlockMate, mateDroppable,
-                    unlockGain, continuationPairs, rank, false, 0);
+                    unlockGain, continuationPairs, rank, false, 0, 0, null);
         }
 
         SafePushChoice(FruitObject fruit, double mateScore, boolean directUnlockMate,
                        boolean mateDroppable, int unlockGain, int continuationPairs,
                        double rank, boolean dependencyChain) {
             this(fruit, mateScore, directUnlockMate, mateDroppable,
-                    unlockGain, continuationPairs, rank, dependencyChain, 0);
+                    unlockGain, continuationPairs, rank, dependencyChain, 0, 0, null);
         }
 
         SafePushChoice(FruitObject fruit, double mateScore, boolean directUnlockMate,
                        boolean mateDroppable, int unlockGain, int continuationPairs,
                        double rank, boolean dependencyChain, int cascadeFollowers) {
+            this(fruit, mateScore, directUnlockMate, mateDroppable,
+                    unlockGain, continuationPairs, rank, dependencyChain,
+                    cascadeFollowers, 0, null);
+        }
+
+        SafePushChoice(FruitObject fruit, double mateScore, boolean directUnlockMate,
+                       boolean mateDroppable, int unlockGain, int continuationPairs,
+                       double rank, boolean dependencyChain, int cascadeFollowers,
+                       int dependencyDepth, String dependencySlot) {
             this.fruit = fruit;
             this.mateScore = mateScore;
             this.directUnlockMate = directUnlockMate;
@@ -3751,6 +3908,8 @@ final class FruitGameSolver {
             this.rank = rank;
             this.dependencyChain = dependencyChain;
             this.cascadeFollowers = cascadeFollowers;
+            this.dependencyDepth = dependencyDepth;
+            this.dependencySlot = dependencySlot;
         }
     }
 
