@@ -299,7 +299,10 @@ final class FruitGameSolver {
         boolean fruitTapAttempted = false;
         // V4.45.1：道具推广弹窗可能在长时间无操作后异步随机出现。
         // 不能只在“准备安全停止”时检查；游戏运行期间按1600ms节奏用OCR探测。
-        long lastIdlePopupProbeAt = 0L;
+        long lastIdlePopupProbeAt = SystemClock.elapsedRealtime();
+        // 首帧已经会经过轻量视觉弹窗检测；旧版又做一次全屏OCR，使开始后
+        // 明明可下落却先空等3~4秒。
+        boolean firstPlanningPass = true;
         final long idlePopupProbeIntervalMs = IDLE_POPUP_PROBE_INTERVAL_MS;
 
         // 槽位计数表示“已占用槽”，不是“已解锁槽”。
@@ -345,7 +348,8 @@ final class FruitGameSolver {
                 // V4.45.1：持续监听异步道具弹窗。该弹窗可能在长时间无操作后突然出现，
                 // 不能依赖“准备退出”阶段才检查；运行期间每约850ms主动做一次OCR探测。
                 long nowForPopupProbe = SystemClock.elapsedRealtime();
-                if (nowForPopupProbe - lastIdlePopupProbeAt >= idlePopupProbeIntervalMs) {
+                if (!firstPlanningPass
+                        && nowForPopupProbe - lastIdlePopupProbeAt >= idlePopupProbeIntervalMs) {
                     ScreenOcr.Snapshot popupProbe = requireOcr(host,
                             "水果V4.45.1/运行中弹窗监听");
                     if (host.aborted()) return Result.ABORTED;
@@ -384,6 +388,7 @@ final class FruitGameSolver {
                 // The current bitmap has just passed the visual popup detector. Keep its
                 // timestamp so the click path does not OCR the same surface again.
                 lastIdlePopupProbeAt = SystemClock.elapsedRealtime();
+                firstPlanningPass = false;
 
                 long visionStarted = SystemClock.elapsedRealtime();
                 List<FruitObject> objects = detectFruitObjects(frame);
@@ -492,6 +497,19 @@ final class FruitGameSolver {
                             if (safePush != null) {
                                 host.log("[规划V4.54] 当前仅" + tray.count
                                         + "槽占用，使用一个空槽探索解阻；第三槽仍保留给确定二消");
+                            }
+                        }
+                        // 录像中的本局正是2/3槽、6颗水果已无遮挡，却因“第三槽
+                        // 必须已有直接二消”而完全不动。最后一槽允许作为一次受控
+                        // 解阻：只点明确可下落、不会级联、且能释放水果或存在高置信
+                        // 后手的目标；点后必须观察真实槽位，失败即黑名单/重开。
+                        if (safePush == null && tray.count == 2) {
+                            safePush = chooseBestLastSlotRecoveryPush(
+                                    objects, drop, frame.bitmap.getWidth(), frame.bitmap.getHeight(),
+                                    featureStore, blockedPositions);
+                            if (safePush != null) {
+                                host.log("[规划V4.56] 2/3槽无直配，使用受控第三槽解阻，"
+                                        + "不再原地OCR空转");
                             }
                         }
                     }
@@ -2273,6 +2291,51 @@ final class FruitGameSolver {
         return best;
     }
 
+    /** Last-slot fallback used only after every direct pair and strict continuation failed. */
+    private static SafePushChoice chooseBestLastSlotRecoveryPush(
+            List<FruitObject> objects,
+            DropAnalysis drop,
+            int frameWidth,
+            int frameHeight,
+            FruitDropFeatureStore featureStore,
+            Set<String> blockedPositions
+    ) {
+        if (objects == null || drop == null || drop.droppable.isEmpty()) return null;
+        SafePushChoice best = null;
+        for (FruitObject fruit : drop.droppable) {
+            if (fruit == null || isBlockedPosition(blockedPositions, fruit)) continue;
+            if (!hasConservativeDropClearance(fruit, objects, frameWidth, frameHeight)) continue;
+            if (countPotentialCascadeFollowers(fruit, objects, drop) != 0) continue;
+
+            int unlockGain = 0;
+            for (BlockingRelation relation : drop.blocked) {
+                if (relation != null && relation.blocker == fruit) unlockGain++;
+            }
+            boolean hasMate = false;
+            for (FruitObject other : objects) {
+                if (other == fruit) continue;
+                Similarity sim = similarity(fruit, other);
+                if (isBridgeMateSimilarity(sim.score, sim.rgbMad, sim.histCos, sim.shapeIou)) {
+                    hasMate = true;
+                    break;
+                }
+            }
+            // 禁止把纯随机水果塞进第三槽：必须能解锁至少一个目标，或已经看到
+            // 后续同类（即使该同类暂时被挡住）。
+            if (unlockGain <= 0 && !hasMate) continue;
+            double lower = clamp01(fruit.centerY / Math.max(1.0, frameHeight));
+            double learned = featureStore == null ? 0.0 : featureStore.prior(fruit);
+            double rank = 0.54 * Math.min(1.0, unlockGain / 2.0)
+                    + 0.32 * (hasMate ? 1.0 : 0.0)
+                    + 0.09 * lower + 0.05 * learned;
+            SafePushChoice candidate = new SafePushChoice(
+                    fruit, hasMate ? BRIDGE_MIN_PAIR_SCORE : 0.0,
+                    hasMate, false, unlockGain, 0, rank, false, 0);
+            if (best == null || candidate.rank > best.rank) best = candidate;
+        }
+        return best;
+    }
+
     /**
      * V4.51：反向解阻链。
      *
@@ -2825,8 +2888,10 @@ final class FruitGameSolver {
             return RestartResult.NOT_AVAILABLE;
         }
 
-        int gearX = Math.round(checkpoint.width * 0.052f);
-        int gearY = Math.round(checkpoint.height * 0.047f);
+        // 实录为左上角约(2.5%,2.0%)；上一版把y按4.7%计算，落到了游戏外层
+        // 导航区，可能误离开小游戏。
+        int gearX = Math.round(checkpoint.width * 0.025f);
+        int gearY = Math.round(checkpoint.height * 0.020f);
         host.log("[死局重开V4.55] 连续无解，打开设置菜单尝试重新开始 "
                 + (restartCount + 1) + "/" + MAX_DEADLOCK_RESTARTS);
         if (!host.tap(gearX, gearY, "水果游戏-死局设置")) {

@@ -163,7 +163,7 @@ public class FruitGameRecoveryTest {
     }
 
     @Test public void deadlockRestartTapsAreRestrictedToGearAndDialog() {
-        assertTrue(GameTapPolicy.allows(52, 47, 1000, 1000, "水果游戏-死局设置"));
+        assertTrue(GameTapPolicy.allows(25, 20, 1000, 1000, "水果游戏-死局设置"));
         assertFalse(GameTapPolicy.allows(500, 47, 1000, 1000, "水果游戏-死局设置"));
         assertTrue(GameTapPolicy.allows(500, 500, 1000, 1000, "水果游戏-死局重新开始"));
         assertFalse(GameTapPolicy.allows(500, 120, 1000, 1000, "水果游戏-死局确认重开"));
