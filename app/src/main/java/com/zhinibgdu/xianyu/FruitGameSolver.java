@@ -391,6 +391,20 @@ final class FruitGameSolver {
                         safePush = chooseBestSafePushV441(
                                 objects, drop, tray.count,
                                 frame.bitmap.getWidth(), frame.bitmap.getHeight(), blockedPositions);
+
+                        // V4.46：单纯“找同类后手”仍然会漏掉真正需要解锁的局面。
+                        // 例如：A 与槽内/另一颗水果高度相似，但 A 被 B 压住；B 本身可安全下落。
+                        // 这时正确动作不是随便压一个“看起来有后手”的水果，而是先点 B，
+                        // 释放 A，再让 A 完成下一步二消。这里把这种依赖链作为独立候选参与竞争。
+                        SafePushChoice dependencyPush = chooseBestDependencyPushV446(
+                                objects, drop, tray, tray.count,
+                                frame.bitmap.getWidth(), frame.bitmap.getHeight(),
+                                blockedPositions);
+                        if (dependencyPush != null
+                                && (safePush == null || dependencyPush.rank > safePush.rank)) {
+                            safePush = dependencyPush;
+                            host.log("[规划V4.46] 选择依赖链压栈：先解除阻挡，再执行后手二消");
+                        }
                     }
                 }
 
@@ -616,7 +630,9 @@ final class FruitGameSolver {
                     int ty = mapY(frame, target.centerY);
                     safeRecycle(frame.bitmap);
 
-                    host.log("[决策V4.41.0] 安全压栈 / depth=" + beforeTrayCount
+                    host.log("[决策V4.46] "
+                            + (safePush.dependencyChain ? "依赖链压栈" : "安全压栈")
+                            + " / depth=" + beforeTrayCount
                             + " / 点击=(" + tx + "," + ty + ")"
                             + " / mate=" + format(safePush.mateScore)
                             + " / directUnlock=" + safePush.directUnlockMate
@@ -1566,6 +1582,109 @@ final class FruitGameSolver {
                     fruit, mateScore, bestDirectUnlockMate,
                     bestMateDroppable, unlockGain, continuationPairs, rank);
             if (best == null || candidate.rank > best.rank) best = candidate;
+        }
+        return best;
+    }
+
+    /**
+     * V4.46 依赖链规划：
+     *
+     * 当“可直接下落的安全水果”本身没有足够强的同类后手时，
+     * 不立即停止。先检查它是不是某个高置信水果的直接阻挡者。
+     *
+     * 典型链：
+     *   B(可下落) -> 点击B入槽 -> A释放 -> A与槽内水果/另一颗可下落水果配对
+     *
+     * 这是单水果评分无法表达的状态转移，因此这里显式枚举一层依赖。
+     * 真实执行仍然一次只点击一个水果，点击后重新截图，不复用旧坐标。
+     */
+    private static SafePushChoice chooseBestDependencyPushV446(
+            List<FruitObject> objects,
+            DropAnalysis drop,
+            TrayState tray,
+            int trayCount,
+            int frameWidth,
+            int frameHeight,
+            Set<String> blockedPositions
+    ) {
+        if (objects == null || objects.isEmpty() || drop == null || tray == null) return null;
+        if (trayCount < 0 || trayCount > 2 || drop.droppable.isEmpty()) return null;
+
+        SafePushChoice best = null;
+
+        for (FruitObject blocker : drop.droppable) {
+            if (blocker == null || isBlockedPosition(blockedPositions, blocker)) continue;
+
+            // 点击 blocker 后，它从棋盘消失；只在这个假设状态下判断被它压住的水果。
+            List<FruitObject> remaining = new ArrayList<>();
+            for (FruitObject f : objects) {
+                if (f != null && f != blocker) remaining.add(f);
+            }
+
+            for (BlockingRelation relation : drop.blocked) {
+                if (relation == null || relation.blocker != blocker || relation.fruit == null) continue;
+                FruitObject released = relation.fruit;
+                if (isBlockedPosition(blockedPositions, released)) continue;
+
+                if (findNearestBlockingFruit(released, remaining, frameWidth, frameHeight) != null) {
+                    continue;
+                }
+
+                double trayMatch = 0.0;
+                for (TrayItem item : tray.items) {
+                    if (item == null || item.hist == null) continue;
+                    trayMatch = Math.max(trayMatch, cosine(released.hist, item.hist));
+                }
+
+                double boardMatch = 0.0;
+                FruitObject boardMate = null;
+                for (FruitObject other : remaining) {
+                    if (other == null || other == released) continue;
+                    if (isBlockedPosition(blockedPositions, other)) continue;
+                    if (findNearestBlockingFruit(other, remaining, frameWidth, frameHeight) != null) {
+                        continue;
+                    }
+                    Similarity sim = similarity(released, other);
+                    if (sim.rgbMad <= MAX_RGB_MAD
+                            && sim.histCos >= MIN_HIST_COS
+                            && sim.shapeIou >= MIN_SHAPE_IOU
+                            && sim.score >= MIN_PAIR_SCORE
+                            && sim.score > boardMatch) {
+                        boardMatch = sim.score;
+                        boardMate = other;
+                    }
+                }
+
+                // trayCount=2 时，blocker 入第三槽后没有空位启动另一种类型，
+                // 所以释放出来的水果必须能直接匹配 blocker 自身，或者与当前TOP直配。
+                double blockerMatch = similarity(blocker, released).score;
+                boolean topSafe = trayCount < 2
+                        || blockerMatch >= MIN_PAIR_SCORE
+                        || trayMatch >= TRAY_HIST_MATCH_MIN;
+
+                boolean useful = trayMatch >= TRAY_HIST_MATCH_MIN
+                        || boardMatch >= MIN_PAIR_SCORE
+                        || (trayCount == 0 && blockerMatch >= MIN_PAIR_SCORE);
+                if (!useful || !topSafe) continue;
+
+                double chain = Math.max(trayMatch, boardMatch);
+                if (trayCount == 0) chain = Math.max(chain, blockerMatch);
+                double lower = clamp01(blocker.centerY / Math.max(1.0, frameHeight));
+
+                // “能立刻释放一个可执行后手”权重最高；距离底部只做次要排序。
+                double rank = 0.58 * chain
+                        + 0.24
+                        + (trayMatch >= TRAY_HIST_MATCH_MIN ? 0.10 : 0.0)
+                        + (boardMate != null ? 0.05 : 0.0)
+                        + 0.03 * lower
+                        - (trayCount == 2 ? 0.06 : 0.0);
+
+                SafePushChoice candidate = new SafePushChoice(
+                        blocker, chain, true, true, 1, 1, rank, true);
+                if (best == null || candidate.rank > best.rank) {
+                    best = candidate;
+                }
+            }
         }
         return best;
     }
@@ -3061,9 +3180,18 @@ final class FruitGameSolver {
         final int continuationPairs;
         final double rank;
 
+        final boolean dependencyChain;
+
         SafePushChoice(FruitObject fruit, double mateScore, boolean directUnlockMate,
                        boolean mateDroppable, int unlockGain, int continuationPairs,
                        double rank) {
+            this(fruit, mateScore, directUnlockMate, mateDroppable,
+                    unlockGain, continuationPairs, rank, false);
+        }
+
+        SafePushChoice(FruitObject fruit, double mateScore, boolean directUnlockMate,
+                       boolean mateDroppable, int unlockGain, int continuationPairs,
+                       double rank, boolean dependencyChain) {
             this.fruit = fruit;
             this.mateScore = mateScore;
             this.directUnlockMate = directUnlockMate;
@@ -3071,6 +3199,7 @@ final class FruitGameSolver {
             this.unlockGain = unlockGain;
             this.continuationPairs = continuationPairs;
             this.rank = rank;
+            this.dependencyChain = dependencyChain;
         }
     }
 
