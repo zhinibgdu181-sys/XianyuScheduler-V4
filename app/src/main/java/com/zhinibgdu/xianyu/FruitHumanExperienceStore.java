@@ -265,9 +265,6 @@ final class FruitHumanExperienceStore {
         }
 
         prefs.edit().putString(LOG_KEY, next.toString()).apply();
-        if (promoted > 0) {
-            LogBridge.d("[真人经验V4.80] 仅因任务终局 SUCCESS 收录水果经验：" + promoted);
-        }
     }
 
     private static int parseRight(String value, char prefix) {
