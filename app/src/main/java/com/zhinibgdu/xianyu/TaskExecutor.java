@@ -138,6 +138,11 @@ public final class TaskExecutor {
     private static volatile boolean physicalTouchDetected = false;
     private static volatile long physicalTouchAt = 0L;
     private static volatile String physicalTouchDevice = "";
+    // V4.69: touchscreen event coordinates may use a raw ABS range (e.g. 0..4095)
+    // instead of physical pixels. Cache the device ranges so learned coordinates
+    // are normalized before being persisted.
+    private static volatile int physicalTouchMaxXV469 = 0;
+    private static volatile int physicalTouchMaxYV469 = 0;
     // V4.64: the automation still stops immediately on real touch, but a passive
     // observer keeps learning from the human continuation instead of discarding it.
     private static volatile String currentExecutingTaskV464 = "";
@@ -5361,7 +5366,13 @@ public final class TaskExecutor {
         final int[] screenSize = getScreenSizeV43(suPath);
         final int screenW = screenSize != null && screenSize.length >= 2 ? screenSize[0] : 0;
         final int screenH = screenSize != null && screenSize.length >= 2 ? screenSize[1] : 0;
-        physicalTouchDevice = device;
+        int[] touchMax = getTouchscreenAxisMaxV469(suPath, device);
+        final int touchMaxX = touchMax[0];
+        final int touchMaxY = touchMax[1];
+        physicalTouchMaxXV469 = touchMaxX;
+        physicalTouchMaxYV469 = touchMaxY;
+        diagnostic("[人工检测V4.69] 触摸坐标范围：X=" + touchMaxX + " Y=" + touchMaxY
+                + "，屏幕=" + screenW + "x" + screenH);\n        physicalTouchDevice = device;
         diagnostic("[人工检测] 监听物理触摸设备：" + device);
 
         Thread thread = new Thread(() -> {
@@ -5399,8 +5410,10 @@ public final class TaskExecutor {
                                     || (u.contains("ABS_MT_TRACKING_ID")
                                     && (u.endsWith("FFFFFFFF") || u.endsWith("-1")));
 
-                    Integer x = parseTouchCoordinateV467(u, "ABS_MT_POSITION_X");
-                    Integer y = parseTouchCoordinateV467(u, "ABS_MT_POSITION_Y");
+                    Integer rawX = parseTouchCoordinateV467(u, "ABS_MT_POSITION_X");
+                    Integer rawY = parseTouchCoordinateV467(u, "ABS_MT_POSITION_Y");
+                    Integer x = normalizeTouchCoordinateV469(rawX, touchMaxX, screenW);
+                    Integer y = normalizeTouchCoordinateV469(rawY, touchMaxY, screenH);
                     if (x != null) {
                         if (gestureActive && lastX >= 0) pathDistance += Math.abs(x - lastX);
                         lastX = x;
@@ -5416,6 +5429,10 @@ public final class TaskExecutor {
                     long now = SystemClock.elapsedRealtime();
 
                     if (touchDown) {
+                        // BTN_TOUCH and ABS_MT_TRACKING_ID can both announce the same
+                        // finger-down. Once a gesture is active, the second down is a
+                        // duplicate event, not a new gesture.
+                        if (gestureActive) continue;
                         if (now <= syntheticInputIgnoreUntilV411
                                 && now - lastSyntheticInputAtV411 <= 220L) {
                             diagnostic("[人工检测V4.11] 忽略与程序输入高度同步的触摸事件，delta="
@@ -5518,6 +5535,49 @@ public final class TaskExecutor {
         thread.setDaemon(true);
         touchMonitorThread = thread;
         thread.start();
+    }
+
+    private static int[] getTouchscreenAxisMaxV469(String suPath, String device) {
+        int maxX = 0;
+        int maxY = 0;
+        try {
+            RootResult r = rootWithPath(suPath, "getevent -pl " + device + " 2>/dev/null");
+            String text = r == null || r.stdout == null ? "" : r.stdout;
+            String[] lines = text.split("\\r?\\n");
+            String currentAxis = "";
+            for (String line : lines) {
+                String lower = line.toLowerCase(Locale.US);
+                if (lower.contains("abs_mt_position_x") || lower.contains("0035")) {
+                    currentAxis = "x";
+                } else if (lower.contains("abs_mt_position_y") || lower.contains("0036")) {
+                    currentAxis = "y";
+                }
+                Matcher m = Pattern.compile("max\\s+(\\d+)").matcher(lower);
+                if (m.find()) {
+                    int value = Integer.parseInt(m.group(1));
+                    if ("x".equals(currentAxis)) maxX = Math.max(maxX, value);
+                    if ("y".equals(currentAxis)) maxY = Math.max(maxY, value);
+                }
+            }
+        } catch (Throwable t) {
+            diagnostic("[人工检测V4.69] 无法读取触摸ABS范围：" + t);
+        }
+        return new int[]{maxX, maxY};
+    }
+
+    private static Integer normalizeTouchCoordinateV469(Integer raw, int rawMax, int screenMax) {
+        if (raw == null || screenMax <= 0) return raw;
+        if (rawMax > 0) {
+            long scaled = Math.round((double) raw * screenMax / rawMax);
+            return (int) Math.max(0L, Math.min((long) screenMax, scaled));
+        }
+        // Conservative fallback for devices that omit ABS metadata: only scale
+        // when the raw value is clearly outside the physical pixel range.
+        if (raw > Math.round(screenMax * 1.25f)) {
+            return (int) Math.max(0L, Math.min((long) screenMax,
+                    Math.round((double) raw * screenMax / 4095.0)));
+        }
+        return Math.max(0, Math.min(screenMax, raw));
     }
 
     private static Integer parseTouchCoordinateV467(String line, String axis) {
