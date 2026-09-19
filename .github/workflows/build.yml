@@ -70,6 +70,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: xianyu-v4.44.3-debug
+          name: xianyu-v4.44.4-debug
           path: app/build/outputs/apk/**/*.apk
           if-no-files-found: error

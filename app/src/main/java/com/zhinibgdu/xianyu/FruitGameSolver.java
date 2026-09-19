@@ -95,6 +95,9 @@ final class FruitGameSolver {
     private static final long PAIR_B_TAP_SETTLE_MIN_MS = 360L;
     private static final long PAIR_B_TAP_SETTLE_MAX_MS = 500L;
     private static final long IDLE_POPUP_PROBE_INTERVAL_MS = 1600L;
+    // A clean screenshot/OCR obtained immediately before planning is also a popup gate.
+    // Re-running full-screen OCR for the same frame cost 2~3 seconds on the real device.
+    private static final long PRE_TAP_POPUP_CLEAN_TTL_MS = 3500L;
 
     // V4.37.0：截图回放中底部同类受采样/压缩影响约0.978~0.982。
     // 总分与更严格的RGB、直方图、形状三个门槛共同判断；不逐轮降低阈值。
@@ -332,7 +335,6 @@ final class FruitGameSolver {
                 // 不能依赖“准备退出”阶段才检查；运行期间每约850ms主动做一次OCR探测。
                 long nowForPopupProbe = SystemClock.elapsedRealtime();
                 if (nowForPopupProbe - lastIdlePopupProbeAt >= idlePopupProbeIntervalMs) {
-                    lastIdlePopupProbeAt = nowForPopupProbe;
                     ScreenOcr.Snapshot popupProbe = requireOcr(host,
                             "水果V4.45.1/运行中弹窗监听");
                     if (host.aborted()) return Result.ABORTED;
@@ -350,6 +352,7 @@ final class FruitGameSolver {
                         host.log("[弹窗V4.45.1] ✅ 异步道具弹窗已关闭，当前视觉状态全部作废，重新截图建模");
                         continue;
                     }
+                    lastIdlePopupProbeAt = SystemClock.elapsedRealtime();
                 }
 
                 // V4.36：小游戏会在长时间无操作时自动弹出“解锁/消除/打乱”推广窗。
@@ -367,6 +370,9 @@ final class FruitGameSolver {
                     host.log("[弹窗V4.36] 弹窗关闭后旧水果坐标全部作废，重新分析棋盘");
                     continue;
                 }
+                // The current bitmap has just passed the visual popup detector. Keep its
+                // timestamp so the click path does not OCR the same surface again.
+                lastIdlePopupProbeAt = SystemClock.elapsedRealtime();
 
                 long visionStarted = SystemClock.elapsedRealtime();
                 List<FruitObject> objects = detectFruitObjects(frame);
@@ -457,6 +463,20 @@ final class FruitGameSolver {
                                 && (safePush == null || dependencyPush.rank > safePush.rank)) {
                             safePush = dependencyPush;
                             host.log("[规划V4.46] 选择依赖链压栈：先解除阻挡，再执行后手二消");
+                        }
+
+                        // 0/1槽时不能因为暂时看不到完整对子就停几十秒。允许只占用
+                        // 一个空槽的探索点击，优先选择能释放最多上层水果的底层目标。
+                        // 2槽不走此路径：最后一槽必须已经有可直接点击的同类后手。
+                        if (safePush == null && tray.count <= 1) {
+                            safePush = chooseBestExplorationPush(
+                                    objects, drop, tray.count,
+                                    frame.bitmap.getWidth(), frame.bitmap.getHeight(),
+                                    blockedPositions);
+                            if (safePush != null) {
+                                host.log("[规划V4.54] 当前仅" + tray.count
+                                        + "槽占用，使用一个空槽探索解阻；第三槽仍保留给确定二消");
+                            }
                         }
                     }
                 }
@@ -625,7 +645,7 @@ final class FruitGameSolver {
                             + " / hist=" + format(trayChoice.histCos)
                             + " / 槽位=" + beforeTrayCount + "→期望" + Math.max(0, beforeTrayCount - 1));
 
-                    if (handlePopupBeforeFruitTap(host, "槽位匹配")) {
+                    if (handlePopupBeforeFruitTap(host, "槽位匹配", lastIdlePopupProbeAt)) {
                         safeRecycle(frame.bitmap);
                         frame = null;
                         recovering = true;
@@ -647,13 +667,17 @@ final class FruitGameSolver {
                         return host.aborted() ? Result.ABORTED : Result.SAFE_STOP_DIRTY;
                     }
                     int afterTrayCount = after.tray.count;
+                    lastIdlePopupProbeAt = SystemClock.elapsedRealtime();
                     safeRecycle(after.frame.bitmap);
 
                     if (afterTrayCount >= 0 && afterTrayCount <= TRAY_CAPACITY) {
                         // V4.50：一次点击可能“二消 + 自动补槽”。因此最终槽位数
                         // 不一定等于 before-1；剩余数下降2才是消除是否真实发生的最终证据。
+                        boolean exactTrayEvidence = afterTrayCount
+                                == Math.max(0, beforeTrayCount - 1);
                         RemainingVerification verify = verifyPairRemaining(
-                                host, beforeRemaining, pairActions + 1, "槽位直配");
+                                host, beforeRemaining, pairActions + 1, "槽位直配",
+                                !exactTrayEvidence);
                         if (verify.aborted) return Result.ABORTED;
                         if (verify.completed) return Result.COMPLETED;
                         if (verify.confirmed) {
@@ -722,7 +746,7 @@ final class FruitGameSolver {
                             + " / unlock=" + safePush.unlockGain
                             + " / cascadeFollowers=" + safePush.cascadeFollowers);
 
-                    if (handlePopupBeforeFruitTap(host, "安全压栈")) {
+                    if (handlePopupBeforeFruitTap(host, "安全压栈", lastIdlePopupProbeAt)) {
                         safeRecycle(frame.bitmap);
                         frame = null;
                         recovering = true;
@@ -746,6 +770,7 @@ final class FruitGameSolver {
                     }
 
                     int afterTrayCount = afterPush.tray.count;
+                    lastIdlePopupProbeAt = SystemClock.elapsedRealtime();
                     safeRecycle(afterPush.frame.bitmap);
 
                     if (afterTrayCount >= 0 && afterTrayCount <= TRAY_CAPACITY) {
@@ -818,7 +843,7 @@ final class FruitGameSolver {
                         + " / 槽位=" + beforeTrayCount
                         + " / 原因=槽位未满且完整A/B均已锁定可直接下落");
 
-                if (handlePopupBeforeFruitTap(host, "配对A")) {
+                if (handlePopupBeforeFruitTap(host, "配对A", lastIdlePopupProbeAt)) {
                     // A尚未点击，此时不存在afterAObs；弹窗处理后直接重新观察。
                     recovering = true;
                     noActionRetry = 0;
@@ -844,6 +869,9 @@ final class FruitGameSolver {
 
                 ownedAfterA = afterAObs;
                 int afterATrayCount = afterAObs.tray.count;
+                // observeTrayAfterTap rejects/handles popup frames. Its returned frame is
+                // therefore a fresh clean gate for the immediately following B click.
+                lastIdlePopupProbeAt = SystemClock.elapsedRealtime();
 
                 // V4.50：A点击后可能同时触发“二消 + 自动落果补槽”，
                 // 因此不再要求槽位必须精确 +1。
@@ -931,7 +959,7 @@ final class FruitGameSolver {
                         + " hist=" + format(reacquired.similarity.histCos)
                         + " shape=" + format(reacquired.similarity.shapeIou));
 
-                if (handlePopupBeforeFruitTap(host, "配对B")) {
+                if (handlePopupBeforeFruitTap(host, "配对B", lastIdlePopupProbeAt)) {
                     recovering = true;
                     noActionRetry = 0;
                     continue;
@@ -951,6 +979,7 @@ final class FruitGameSolver {
                     return host.aborted() ? Result.ABORTED : Result.SAFE_STOP_DIRTY;
                 }
                 int afterBTrayCount = afterBObs.tray.count;
+                lastIdlePopupProbeAt = SystemClock.elapsedRealtime();
                 safeRecycle(afterBObs.frame.bitmap);
 
                 if (afterBTrayCount >= 0 && afterBTrayCount <= TRAY_CAPACITY) {
@@ -1064,8 +1093,18 @@ final class FruitGameSolver {
      * 任何规划坐标都不能绕过这个闸门。返回true表示本次点击被弹窗处理打断，
      * 调用方必须丢弃旧棋盘并重新规划。
      */
-    private static boolean handlePopupBeforeFruitTap(Host host, String stage) {
+    private static boolean handlePopupBeforeFruitTap(
+            Host host, String stage, long lastCleanProbeAtMs
+    ) {
         if (host == null || host.aborted()) return false;
+        long cleanAgeMs = lastCleanProbeAtMs <= 0L
+                ? Long.MAX_VALUE
+                : Math.max(0L, SystemClock.elapsedRealtime() - lastCleanProbeAtMs);
+        if (cleanAgeMs <= PRE_TAP_POPUP_CLEAN_TTL_MS) {
+            host.log("[弹窗V4.54] 复用刚确认的干净画面，跳过重复点击前OCR / stage="
+                    + stage + " / age=" + cleanAgeMs + "ms");
+            return false;
+        }
         ScreenOcr.Snapshot probe;
         try {
             probe = requireOcr(host, "水果V4.47/点击前弹窗闸门/" + stage);
@@ -1737,6 +1776,7 @@ final class FruitGameSolver {
         PostTapObservation lastStable = null;
         int consecutiveBaseline = 0;
         int expectedStableCount = 0;
+        boolean sawDifferentStableCount = false;
         try {
             for (int attempt = 1; attempt <= TRAY_OBSERVE_RETRIES && !host.aborted(); attempt++) {
                 GameFrame frame = captureFrame(context, suPath, host);
@@ -1775,6 +1815,16 @@ final class FruitGameSolver {
                         if (lastStable != null) safeRecycle(lastStable.frame.bitmap);
                         lastStable = new PostTapObservation(frame, tray, false);
                         frame = null;
+                        // A prior stable count proves that a real transition has already
+                        // crossed the tray. On slow screencap devices this expected frame
+                        // arrives ~2.5s later, so a third identical PNG adds latency without
+                        // adding useful evidence. If expected was the first frame, retain the
+                        // original two-frame confirmation.
+                        if (sawDifferentStableCount) {
+                            PostTapObservation result = lastStable;
+                            lastStable = null;
+                            return result;
+                        }
                         if (++expectedStableCount >= POST_TAP_SETTLED_CONFIRMATIONS) {
                             PostTapObservation result = lastStable;
                             lastStable = null;
@@ -1785,6 +1835,7 @@ final class FruitGameSolver {
                     }
 
                     expectedStableCount = 0;
+                    sawDifferentStableCount = true;
                     if (tray.count == baselineCount) {
                         consecutiveBaseline++;
                     } else {
@@ -2060,7 +2111,18 @@ final class FruitGameSolver {
             }
             if (bestMate == null) continue;
 
+            // The last free slot is never used for a fuzzy bridge. It is allowed only
+            // when the mate is already directly clickable and the pair passes the full
+            // strict thresholds used by ordinary A/B pairing.
+            Similarity lastSlotMate = similarity(fruit, bestMate);
+            boolean strictMate = lastSlotMate.rgbMad <= MAX_RGB_MAD
+                    && lastSlotMate.histCos >= MIN_HIST_COS
+                    && lastSlotMate.shapeIou >= MIN_SHAPE_IOU
+                    && lastSlotMate.score >= MIN_PAIR_SCORE;
+
             int cascadeFollowers = countPotentialCascadeFollowers(fruit, objects, drop);
+            if (!allowsLastSlotPush(
+                    trayCount, bestMateDroppable, strictMate, cascadeFollowers)) continue;
             int cascadePairs = countCascadeEliminationPairs(
                     fruit, objects, drop, tray == null ? null : tray.items);
             int projectedTrayCount = projectCascadeTrayCount(
@@ -2115,6 +2177,60 @@ final class FruitGameSolver {
         return best;
     }
 
+    static boolean allowsLastSlotPush(
+            int trayCount,
+            boolean mateDroppable,
+            boolean strictMate,
+            int cascadeFollowers
+    ) {
+        if (trayCount < 0 || trayCount >= TRAY_CAPACITY) return false;
+        if (trayCount < 2) return true;
+        return mateDroppable && strictMate && cascadeFollowers == 0;
+    }
+
+    /**
+     * V4.54: bounded exploration for a mostly empty tray.
+     *
+     * When only 0/1 slots are occupied, using one empty slot can expose the fruit that
+     * completes the next pair. The candidate must be genuinely droppable, must not start
+     * an unpredictable cascade, and is ranked by how much of the board it unlocks.
+     * This path is intentionally unavailable at 2/3 occupancy.
+     */
+    private static SafePushChoice chooseBestExplorationPush(
+            List<FruitObject> objects,
+            DropAnalysis drop,
+            int trayCount,
+            int frameWidth,
+            int frameHeight,
+            Set<String> blockedPositions
+    ) {
+        if (objects == null || objects.isEmpty() || drop == null
+                || drop.droppable.isEmpty() || trayCount < 0 || trayCount > 1) {
+            return null;
+        }
+
+        SafePushChoice best = null;
+        for (FruitObject fruit : drop.droppable) {
+            if (fruit == null || isBlockedPosition(blockedPositions, fruit)) continue;
+            if (!hasConservativeDropClearance(fruit, objects, frameWidth, frameHeight)) continue;
+
+            int cascadeFollowers = countPotentialCascadeFollowers(fruit, objects, drop);
+            if (cascadeFollowers != 0) continue;
+
+            int unlockGain = 0;
+            for (BlockingRelation relation : drop.blocked) {
+                if (relation != null && relation.blocker == fruit) unlockGain++;
+            }
+            double lower = clamp01(fruit.centerY / Math.max(1.0, frameHeight));
+            double rank = 0.72 * Math.min(1.0, unlockGain / 3.0) + 0.28 * lower;
+            SafePushChoice candidate = new SafePushChoice(
+                    fruit, 0.0, false, false, unlockGain, 0, rank,
+                    false, 0);
+            if (best == null || candidate.rank > best.rank) best = candidate;
+        }
+        return best;
+    }
+
     /**
      * V4.51：反向解阻链。
      *
@@ -2140,6 +2256,11 @@ final class FruitGameSolver {
                 || drop == null || drop.droppable.isEmpty()) {
             return null;
         }
+        // At 2/3 occupancy a blocker would itself consume the final slot. The real-device
+        // replay proved that a predicted multi-level cascade may not complete, leaving a
+        // permanent 3/3 deadlock. Last-slot play is handled only by a directly clickable
+        // strict A/B pair or direct tray match.
+        if (trayCount >= 2) return null;
 
         SafePushChoice best = null;
         double denomY = Math.max(1.0, frameHeight);
@@ -2261,7 +2382,7 @@ final class FruitGameSolver {
             Set<String> blockedPositions
     ) {
         if (objects == null || objects.isEmpty() || drop == null || tray == null) return null;
-        if (trayCount < 0 || trayCount > 2 || drop.droppable.isEmpty()) return null;
+        if (trayCount < 0 || trayCount > 1 || drop.droppable.isEmpty()) return null;
 
         SafePushChoice best = null;
 

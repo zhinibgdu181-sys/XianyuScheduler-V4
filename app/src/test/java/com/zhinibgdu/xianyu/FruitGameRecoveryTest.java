@@ -279,6 +279,24 @@ public class FruitGameRecoveryTest {
         assertEquals(0, host.taps);
     }
 
+    @Test public void observedTransitionAcceptsFirstExpectedTrayFrame() throws Exception {
+        frames.add(bitmap(SKY));          // stable baseline: 0/3
+        frames.add(bitmap(0xffff0000));   // transitioned expected state: 3/3
+        Object observation = observe(3, 0);
+        assertNotNull(observation);
+        assertEquals(2, captures);
+        assertEquals(0, host.taps);
+    }
+
+    @Test public void lastSlotRequiresStrictReadyMateAndNoCascade() {
+        assertTrue(FruitGameSolver.allowsLastSlotPush(1, false, false, 2));
+        assertTrue(FruitGameSolver.allowsLastSlotPush(2, true, true, 0));
+        assertFalse(FruitGameSolver.allowsLastSlotPush(2, false, true, 0));
+        assertFalse(FruitGameSolver.allowsLastSlotPush(2, true, false, 0));
+        assertFalse(FruitGameSolver.allowsLastSlotPush(2, true, true, 1));
+        assertFalse(FruitGameSolver.allowsLastSlotPush(3, true, true, 0));
+    }
+
     @Test public void bridgeSimilarityAllowsRotationButKeepsColorStrict() {
         assertTrue(FruitGameSolver.isBridgeMateSimilarity(0.94, 0.04, 0.995, 0.82));
         assertTrue(FruitGameSolver.isBridgeMateSimilarity(0.94, 0.04, 0.980, 0.82));
@@ -400,6 +418,14 @@ public class FruitGameRecoveryTest {
         assertEquals(1, host.countLogs("[快速验证V4.44.1]"));
     }
 
+    @Test public void ambiguousTrayResultCannotUseEstimatedRemaining() throws Exception {
+        host.ocr = reason -> snapshot("第1关 剩余 20 消除 打乱");
+        Object verification = verifyRemaining(1, true);
+        assertFalse(booleanField(verification, "confirmed"));
+        assertEquals(2, host.ocrCalls);
+        assertEquals(0, host.countLogs("[快速验证V4.44.1]"));
+    }
+
     @Test public void wrongRemainingValueAlsoGetsSecondChance() throws Exception {
         host.ocr = reason -> snapshot("剩余 " + (host.ocrCalls == 1 ? 19 : 18));
         assertTrue(booleanField(verifyRemaining(), "confirmed"));
@@ -441,6 +467,13 @@ public class FruitGameRecoveryTest {
                 FruitGameSolver.Host.class, int.class, int.class, String.class);
         method.setAccessible(true);
         return method.invoke(null, host, 20, actionIndex, "test");
+    }
+
+    private Object verifyRemaining(int actionIndex, boolean forceOcr) throws Exception {
+        Method method = FruitGameSolver.class.getDeclaredMethod("verifyPairRemaining",
+                FruitGameSolver.Host.class, int.class, int.class, String.class, boolean.class);
+        method.setAccessible(true);
+        return method.invoke(null, host, 20, actionIndex, "test", forceOcr);
     }
 
     private boolean booleanField(Object value, String name) throws Exception {
