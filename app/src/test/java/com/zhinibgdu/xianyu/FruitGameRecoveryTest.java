@@ -162,21 +162,37 @@ public class FruitGameRecoveryTest {
                 1000, 1500, 1440, 3120, "水果游戏-继续关闭道具弹窗"));
     }
 
-    @Test public void toolPopupTextIsRecognizedWithoutRelyingOnPanelColor() {
+    @Test public void toolPopupTextRequiresPopupOnlyEvidence() {
+        // 三种真实弹窗：都有明确的“使用”动作或“解锁所有槽位”正文。
         assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
                 "解锁 解锁所有槽位 使用 打乱 5%"));
         assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
                 "解锁所有檀位 [DJ使用 打乱 12%"));
         assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
-                "赚闲鱼币 剩余 182 消除 第送 解锁 打乱 12%"));
-        assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
                 "随机打乱 立即使用"));
         assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
+                "消除 消除一组水果 D使用"));
+        assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
                 "解锁 解锁所有糟位 D使用 打乱 12%"));
+
+        // 正常水果游戏页面本身就有“剩余/消除/解锁/打乱”，不能再误判成弹窗。
+        assertFalse(FruitGameSolver.looksLikeBlockingFunctionPopupText(
+                "赚闲鱼币 剩余 182 消除 第1关 解锁 打乱 12%"));
         assertFalse(FruitGameSolver.looksLikeBlockingFunctionPopupText(
                 "剩余 196 消除 第1关 解锁 打乱 5%"));
     }
 
+
+    @Test public void fruitSurfaceConfirmationPrecedesPopupHandling() {
+        // 真实设备的入口OCR可能同时包含水果主体和覆盖层文字；
+        // 水果主体必须先被确认，随后才进入弹窗关闭，而不是回到8秒入口等待。
+        host.ocr = reason -> snapshot(host.ocrCalls == 1
+                ? "赚闲鱼币 剩余 208 第1关 消除 打乱 解锁 解锁所有槽位 使用"
+                : "第1关 剩余 208 消除 打乱 解锁");
+        assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
+        assertTrue(host.countLogs("[游戏V4.48] ✅ 已确认水果游戏主体") >= 1);
+        assertTrue(host.countLogs("入口道具弹窗已连续关闭") >= 1);
+    }
     @Test public void missingRemainingBaselineRecoversBeforeDecisions() {
         host.ocr = reason -> snapshot(host.ocrCalls == 1 ? "第1关 消除 打乱" : GAME);
         assertEquals(FruitGameSolver.Result.SAFE_STOP_CLEAN, solve());
