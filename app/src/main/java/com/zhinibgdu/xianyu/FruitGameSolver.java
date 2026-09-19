@@ -737,8 +737,7 @@ final class FruitGameSolver {
                         + " / 原因=槽位未满且完整A/B均已锁定可直接下落");
 
                 if (handlePopupBeforeFruitTap(host, "配对A")) {
-                    safeRecycle(afterAObs.frame.bitmap);
-                    ownedAfterA = null;
+                    // A尚未点击，此时不存在afterAObs；弹窗处理后直接重新观察。
                     recovering = true;
                     noActionRetry = 0;
                     continue;
