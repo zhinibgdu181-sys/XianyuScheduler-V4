@@ -247,6 +247,26 @@ public class FruitGameRecoveryTest {
         assertFalse(FruitGameSolver.allowsBridgePush(3, true, true));
     }
 
+    @Test public void cascadeGuardProtectsNearlyFullTray() {
+        assertTrue(FruitGameSolver.allowsThirdSlotCascade(0, 3, false));
+        assertTrue(FruitGameSolver.allowsThirdSlotCascade(1, 1, false));
+        assertFalse(FruitGameSolver.allowsThirdSlotCascade(1, 2, false));
+        assertTrue(FruitGameSolver.allowsThirdSlotCascade(2, 0, false));
+        assertFalse(FruitGameSolver.allowsThirdSlotCascade(2, 1, false));
+        assertTrue(FruitGameSolver.allowsThirdSlotCascade(2, 1, true));
+        assertFalse(FruitGameSolver.allowsThirdSlotCascade(2, 2, true));
+        assertFalse(FruitGameSolver.allowsThirdSlotCascade(3, 0, false));
+    }
+
+    @Test public void expectedTrayCountRequiresTwoStableFrames() throws Exception {
+        frames.add(bitmap(0xffff0000));
+        frames.add(bitmap(0xffff0000));
+        Object observation = observe(3, 2);
+        assertNotNull(observation);
+        assertEquals(2, captures);
+        assertEquals(0, host.taps);
+    }
+
     @Test public void bridgeSimilarityAllowsRotationButKeepsColorStrict() {
         assertTrue(FruitGameSolver.isBridgeMateSimilarity(0.94, 0.04, 0.995, 0.82));
         assertTrue(FruitGameSolver.isBridgeMateSimilarity(0.94, 0.04, 0.980, 0.82));
