@@ -804,6 +804,12 @@ final class FruitGameSolver {
                         if (verify.confirmed) {
                             pairActions++;
                             remaining = verify.afterRemaining;
+                            recordStrategyOutcomeV463(
+                                    context,
+                                    FruitStrategyExperienceStore.STRATEGY_TRAY_MATCH,
+                                    beforeRemaining, beforeTrayCount,
+                                    objects.size(), drop.droppable.size(), drop.blocked.size(),
+                                    0, 0, true);
                             blockedPositions.clear();
                             blockedPositionTtl.clear();
                             host.log("[水果V4.50] ✅ 槽位二消闭环确认（允许自动落果补槽）：剩余 "
@@ -828,6 +834,12 @@ final class FruitGameSolver {
                         }
 
                         if (afterTrayCount == beforeTrayCount) {
+                            recordStrategyOutcomeV463(
+                                    context,
+                                    FruitStrategyExperienceStore.STRATEGY_TRAY_MATCH,
+                                    beforeRemaining, beforeTrayCount,
+                                    objects.size(), drop.droppable.size(), drop.blocked.size(),
+                                    0, 0, false);
                             markBlockedPosition(blockedPositions, blockedPositionTtl, target);
                             host.log("[槽位V4.50] 点击后槽位未消除且无补槽证据；位置加入本轮黑名单");
                             if (beforeTrayCount >= TRAY_CAPACITY) {
@@ -852,6 +864,11 @@ final class FruitGameSolver {
                 // ------------------------------------------------------------
                 if (safePush != null) {
                     FruitObject target = safePush.fruit;
+                    final String safePushStrategyV463 = strategyTypeV463(safePush, beforeTrayCount);
+                    if (beforeTrayCount == 2
+                            && FruitStrategyExperienceStore.STRATEGY_EXPLORATION.equals(safePushStrategyV463)) {
+                        twoSlotExplorationAttemptsV463++;
+                    }
                     int tx = mapX(frame, target.centerX);
                     int ty = mapY(frame, target.centerY);
                     safeRecycle(frame.bitmap);
@@ -897,6 +914,11 @@ final class FruitGameSolver {
                     if (afterTrayCount >= 0 && afterTrayCount <= TRAY_CAPACITY) {
                         if (afterTrayCount > beforeTrayCount) {
                             featureStore.record(target, true);
+                            recordStrategyOutcomeV463(
+                                    context, safePushStrategyV463,
+                                    beforeRemaining, beforeTrayCount,
+                                    objects.size(), drop.droppable.size(), drop.blocked.size(),
+                                    safePush.unlockGain, safePush.continuationPairs, true);
                             host.log("[栈模型V4.50] ✅ 压栈后真实槽位增加："
                                     + beforeTrayCount + "→" + afterTrayCount
                                     + "；允许级联落果完成后重新规划，不再假定一次点击只增加1槽");
@@ -914,6 +936,12 @@ final class FruitGameSolver {
                             if (verify.confirmed) {
                                 pairActions++;
                                 remaining = verify.afterRemaining;
+                                recordStrategyOutcomeV463(
+                                        context, safePushStrategyV463,
+                                        beforeRemaining, beforeTrayCount,
+                                        objects.size(), drop.droppable.size(), drop.blocked.size(),
+                                        safePush.unlockGain, safePush.continuationPairs, true);
+                                twoSlotExplorationAttemptsV463 = 0;
                                 blockedPositions.clear();
                                 blockedPositionTtl.clear();
                                 host.log("[栈模型V4.50] ✅ 压栈后发生级联二消：剩余 "
@@ -925,6 +953,11 @@ final class FruitGameSolver {
 
                         if (afterTrayCount == beforeTrayCount) {
                             featureStore.record(target, false);
+                            recordStrategyOutcomeV463(
+                                    context, safePushStrategyV463,
+                                    beforeRemaining, beforeTrayCount,
+                                    objects.size(), drop.droppable.size(), drop.blocked.size(),
+                                    safePush.unlockGain, safePush.continuationPairs, false);
                             markBlockedPosition(blockedPositions, blockedPositionTtl, target);
                             host.log("[栈模型V4.50] 压栈点击未形成有效状态变化；"
                                     + "坐标加入黑名单，重新规划");
@@ -1010,6 +1043,12 @@ final class FruitGameSolver {
                             safeRecycle(afterAObs.frame.bitmap);
                             pairActions++;
                             remaining = verify.afterRemaining;
+                            recordStrategyOutcomeV463(
+                                    context,
+                                    FruitStrategyExperienceStore.STRATEGY_PAIR,
+                                    beforeRemaining, beforeTrayCount,
+                                    objects.size(), drop.droppable.size(), drop.blocked.size(),
+                                    0, 0, true);
                             blockedPositions.clear();
                             blockedPositionTtl.clear();
                             host.log("[水果V4.50] ✅ A点击直接/级联二消确认；取消计划B：剩余 "
@@ -1020,6 +1059,12 @@ final class FruitGameSolver {
                     }
 
                     if (afterATrayCount == beforeTrayCount) {
+                        recordStrategyOutcomeV463(
+                                context,
+                                FruitStrategyExperienceStore.STRATEGY_PAIR,
+                                beforeRemaining, beforeTrayCount,
+                                objects.size(), drop.droppable.size(), drop.blocked.size(),
+                                0, 0, false);
                         markBlockedPosition(blockedPositions, blockedPositionTtl, pair.a);
                         safeRecycle(afterAObs.frame.bitmap);
                         host.log("[点击验证V4.50] A点击后槽位回到原数且无二消闭环；"
@@ -4411,6 +4456,23 @@ final class FruitGameSolver {
             }
         }
         return best;
+    }
+
+    private static void recordStrategyOutcomeV463(
+            Context context,
+            String strategy,
+            int remaining,
+            int trayCount,
+            int objectCount,
+            int droppable,
+            int blocked,
+            int unlockGain,
+            int continuationPairs,
+            boolean success
+    ) {
+        FruitStrategyExperienceStore.record(
+                context, strategy, remaining, trayCount, objectCount,
+                droppable, blocked, 0, unlockGain, continuationPairs, success);
     }
 
 
