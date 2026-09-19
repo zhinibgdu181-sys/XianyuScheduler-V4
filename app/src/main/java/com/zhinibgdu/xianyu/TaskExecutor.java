@@ -146,6 +146,8 @@ public final class TaskExecutor {
     // V4.64: the automation still stops immediately on real touch, but a passive
     // observer keeps learning from the human continuation instead of discarding it.
     private static volatile String currentExecutingTaskV464 = "";
+    // V4.80: keep the verification baseline after immediate human takeover.
+    private static volatile TaskVerificationSnapshotV411 lastTeachingBeforeV480;
     private static volatile boolean humanTeachingStartedV464 = false;
     private static volatile Thread humanTeachingThreadV464;
     private static volatile long humanTeachingGenerationV464 = 0L;
@@ -278,6 +280,7 @@ public final class TaskExecutor {
         lastTaskAbandonedV460 = false;
         lastTaskAbandonedReasonV460 = "";
         currentExecutingTaskV464 = "";
+        lastTeachingBeforeV480 = null;
         invalidateOcrCacheV411();
         lastTaskPanelOcrAtV415 = 0L;
         diagnostic("[数据路径] " + buildDataPathsLogV435(lastContext));
@@ -2049,6 +2052,7 @@ public final class TaskExecutor {
             if (!clickBounds(suPath, xml, target.bounds())) {
                 flow.move(TaskRunStateV411.FAILED, "click_failed");
                 TaskProfileStoreV48.recordFailure(target.name, "click_failed");
+                TeachingOutcomeStore.setTaskResult(lastContext, TeachingOutcomeStore.FAILURE, "click_failed");
                 captureFailureDiagnosticV411(suPath, target.name, "click_failed");
                 continue;
             }
@@ -2059,6 +2063,8 @@ public final class TaskExecutor {
             lastTaskAbandonedV460 = false;
             lastTaskAbandonedReasonV460 = "";
             currentExecutingTaskV464 = target.name;
+            lastTeachingBeforeV480 = before;
+            TeachingOutcomeStore.begin(lastContext, target.name, "TASK_PANEL");
 
             boolean executionReturned;
             if (target.isClaimReward) {
@@ -2111,6 +2117,8 @@ public final class TaskExecutor {
                 flow.move(TaskRunStateV411.VERIFIED, verification.reason);
                 completed++;
                 TaskProfileStoreV48.recordSuccess(target.name, elapsed);
+                TeachingOutcomeStore.setTaskResult(
+                        lastContext, TeachingOutcomeStore.SUCCESS, verification.reason);
                 sendStatus(
                         target.name,
                         "SUCCESS",
@@ -2120,6 +2128,8 @@ public final class TaskExecutor {
             } else if (!userAborted && executionReturned) {
                 flow.move(TaskRunStateV411.UNVERIFIED, verification.reason);
                 TaskProfileStoreV48.recordUnverifiedV411(target.name, verification.reason);
+                TeachingOutcomeStore.setTaskResult(
+                        lastContext, TeachingOutcomeStore.UNKNOWN, verification.reason);
                 if (TaskProfileStoreV48.shouldCaptureDiagnosticV415(target.name)) {
                     captureFailureDiagnosticV411(
                             suPath, target.name, "unverified_" + verification.reason);
@@ -2131,6 +2141,8 @@ public final class TaskExecutor {
             } else if (!userAborted) {
                 flow.move(TaskRunStateV411.FAILED, verification.reason);
                 TaskProfileStoreV48.recordFailure(target.name, verification.reason);
+                TeachingOutcomeStore.setTaskResult(
+                        lastContext, TeachingOutcomeStore.FAILURE, verification.reason);
                 if (TaskProfileStoreV48.shouldCaptureDiagnosticV415(target.name)) {
                     captureFailureDiagnosticV411(
                             suPath, target.name, "failed_" + verification.reason);
@@ -3280,17 +3292,25 @@ public final class TaskExecutor {
 
         diagnostic("[执行] " + taskName);
 
+        TeachingOutcomeStore.setScene(lastContext, "TASK_DETAIL");
+
         if (TaskCategory.classify(taskName) == TaskCategory.VIDEO) {
+            TeachingOutcomeStore.setScene(lastContext, "VIDEO_TASK");
             return executeVideoTaskPolling(suPath, taskName);
         }
-        if (ChannelGoodsTask.matches(taskName)) return executeChannelGoodsTask(suPath);
+        if (ChannelGoodsTask.matches(taskName)) {
+            TeachingOutcomeStore.setScene(lastContext, "CHANNEL_GOODS");
+            return executeChannelGoodsTask(suPath);
+        }
         GameDispatchV420 gameDispatch = resolveGameDispatchV420(suPath, taskName);
         if (gameDispatch == GameDispatchV420.FRUIT) {
+            TeachingOutcomeStore.setScene(lastContext, "FRUIT_PAIR_GAME");
             diagnostic("[页面分流V4.20] " + taskName + " → FRUIT_PAIR_GAME");
             return executeFruitPairGameV418(suPath, taskName);
         }
         if (gameDispatch == GameDispatchV420.MAHJONG) {
             diagnostic("[页面分流V4.20] " + taskName + " → MAHJONG_PAIR_GAME");
+            TeachingOutcomeStore.setScene(lastContext, "MAHJONG_PAIR_GAME");
             return executeMahjongPairGameV419(suPath, taskName);
         }
 
@@ -3610,12 +3630,16 @@ public final class TaskExecutor {
         if (result == FruitGameSolver.Result.ABORTED) return false;
 
         if (result == FruitGameSolver.Result.COMPLETED) {
+            TeachingOutcomeStore.setGameResult(
+                    lastContext, TeachingOutcomeStore.SUCCESS, "fruit_game_completed");
             diagnostic("[水果V4.36] ✅ 水果第1关完成，执行受控返回到任务面板");
             TaskProfileStoreV48.recordRecovery(taskName, "fruit_game_completed");
             return conditionalBackRecoveryV410(suPath, taskName, "水果游戏完成返回");
         }
 
         if (result == FruitGameSolver.Result.GAME_FAILED) {
+            TeachingOutcomeStore.setGameResult(
+                    lastContext, TeachingOutcomeStore.FAILURE, "fruit_game_failed");
             boolean returned = exitFailedFruitGameV460(suPath, taskName);
             if (returned) {
                 lastTaskAbandonedV460 = true;
@@ -3629,11 +3653,17 @@ public final class TaskExecutor {
             diagnostic("[水果V4.60] ❌ 失败页存在但无法确认返回主页，保留现场而不是盲退");
         }
 
-        if (userAborted || physicalTouchDetected) return false;
+        if (userAborted || physicalTouchDetected) {
+            TeachingOutcomeStore.setGameResult(
+                    lastContext, TeachingOutcomeStore.UNKNOWN, "physical_touch_or_abort");
+            return false;
+        }
         String stopReason = result == FruitGameSolver.Result.SAFE_STOP_DIRTY
                 ? "fruit_game_safe_stop_dirty"
                 : result == FruitGameSolver.Result.NOT_FRUIT_GAME
                 ? "fruit_game_not_detected" : "fruit_game_safe_stop_clean";
+        TeachingOutcomeStore.setGameResult(
+                lastContext, TeachingOutcomeStore.UNKNOWN, stopReason);
         TaskProfileStoreV48.recordUnverifiedV411(taskName, stopReason);
 
         if (finalPage == PageKindV411.FRUIT_PAIR_GAME
@@ -3831,12 +3861,16 @@ public final class TaskExecutor {
         if (result == MahjongGameSolver.Result.ABORTED) return false;
 
         if (result == MahjongGameSolver.Result.COMPLETED) {
+            TeachingOutcomeStore.setGameResult(
+                    lastContext, TeachingOutcomeStore.SUCCESS, "mahjong_game_completed");
             diagnostic("[麻将V4.26] ✅ 第1关完成，返回任务面板");
             TaskProfileStoreV48.recordRecovery(taskName, "mahjong_game_completed");
             return conditionalBackRecoveryV410(suPath, taskName, "麻将游戏完成返回");
         }
 
         if (result == MahjongGameSolver.Result.NOT_MAHJONG_GAME) {
+            TeachingOutcomeStore.setGameResult(
+                    lastContext, TeachingOutcomeStore.FAILURE, "mahjong_game_not_detected");
             diagnostic("[麻将V4.26] 点击任务后没有进入预期麻将页；不执行盲目返回");
             TaskProfileStoreV48.recordFailure(taskName, "mahjong_game_not_detected");
             return false;
@@ -5122,6 +5156,10 @@ public final class TaskExecutor {
     private static void markUserAbortV48(String reason) {
         if (!userAborted) {
             userAborted = true;
+            if (!TeachingOutcomeStore.hasSession()) {
+                TeachingOutcomeStore.begin(
+                        lastContext, currentExecutingTaskV464, "MANUAL_TAKEOVER");
+            }
             diagnostic("🛑 人工接管，立即停止：" + reason);
             TaskProfileStoreV48.recordFailure("__GLOBAL__", "manual_takeover:" + reason);
             // V4.67: all task categories enter the same passive human-operation
@@ -5171,13 +5209,56 @@ public final class TaskExecutor {
             } finally {
                 if (generation == humanOperationTeachingGenerationV467) {
                     humanOperationTeachingThreadV467 = null;
-                    diagnostic("[真人经验V4.67] 通用真人操作学习窗口结束");
+                    finalizeHumanTeachingOutcomeV480(context, suPath);
+                    diagnostic("[真人经验V4.67] 通用真人操作学习窗口结束；"
+                            + TeachingOutcomeStore.summary());
                 }
             }
         }, "XianyuHumanOperationTeaching-V467");
         thread.setDaemon(true);
         humanOperationTeachingThreadV467 = thread;
         thread.start();
+    }
+
+    /**
+     * V4.80: after the passive 90s window, verify the task row once more.
+     * The window ending itself never implies success.
+     */
+    private static void finalizeHumanTeachingOutcomeV480(
+            Context context,
+            String suPath
+    ) {
+        if (context == null || suPath == null || suPath.isEmpty()) return;
+        if (!TeachingOutcomeStore.hasSession()) return;
+
+        String task = TeachingOutcomeStore.currentTask();
+        TaskVerificationSnapshotV411 before = lastTeachingBeforeV480;
+        if (task == null || task.isEmpty() || before == null) {
+            TeachingOutcomeStore.setTaskResult(
+                    context, TeachingOutcomeStore.UNKNOWN, "teaching_baseline_missing");
+            diagnostic("[真人经验V4.80] 教学会话终局无法绑定：baseline missing；保持 UNKNOWN");
+            return;
+        }
+
+        try {
+            TaskVerificationResultV411 verification =
+                    verifyTaskCompletionV411(suPath, task, false, before, true);
+            if (verification.verified) {
+                TeachingOutcomeStore.setTaskResult(
+                        context, TeachingOutcomeStore.SUCCESS, verification.reason);
+                diagnostic("[真人经验V4.80] 教学会话任务终局=SUCCESS："
+                        + TeachingOutcomeStore.summary());
+            } else {
+                TeachingOutcomeStore.setTaskResult(
+                        context, TeachingOutcomeStore.UNKNOWN, verification.reason);
+                diagnostic("[真人经验V4.80] 教学会话无法确认任务完成，终局=UNKNOWN："
+                        + verification.reason);
+            }
+        } catch (Throwable t) {
+            TeachingOutcomeStore.setTaskResult(
+                    context, TeachingOutcomeStore.UNKNOWN, "verification_exception");
+            diagnostic("[真人经验V4.80] 教学会话终局验证异常，保持 UNKNOWN", t);
+        }
     }
 
     private static synchronized void stopHumanOperationTeachingV467() {
@@ -5249,7 +5330,8 @@ public final class TaskExecutor {
                                                     pendingBefore.blocked, pendingAfter.blocked,
                                                     pendingBefore.droppable, pendingAfter.droppable,
                                                     pendingBefore.directPairs, pendingAfter.directPairs);
-                                    if (FruitHumanExperienceStore.shouldReinforce(transition)) {
+                                    if (FruitHumanExperienceStore.shouldReinforce(
+                                            context, transition)) {
                                         FruitHumanExperienceStore.record(
                                                 context, task, pendingBefore, pendingAfter, transition);
                                         learned++;
@@ -5490,8 +5572,8 @@ public final class TaskExecutor {
                                 try {
                                     HumanOperationExperienceStore.recordWait(
                                             lastContext,
-                                            currentExecutingTaskV464,
-                                            activeCategory.label,
+                                            TeachingOutcomeStore.currentTask(),
+                                            TeachingOutcomeStore.currentScene(),
                                             pendingWaitMs);
                                     diagnostic("[真人经验V4.69] 已记录 WAIT：" + pendingWaitMs + "ms");
                                 } catch (Throwable t) {
@@ -5505,8 +5587,8 @@ public final class TaskExecutor {
                                 if (directDistance < 30.0 && duration < 450) {
                                     HumanOperationExperienceStore.recordRawTap(
                                             lastContext,
-                                            currentExecutingTaskV464,
-                                            activeCategory.label,
+                                            TeachingOutcomeStore.currentTask(),
+                                            TeachingOutcomeStore.currentScene(),
                                             endX, endY, screenW, screenH);
                                     diagnostic("[真人经验V4.68] 已记录 TAP：" + endX + "," + endY
                                             + " duration=" + duration + "ms");
@@ -5521,8 +5603,8 @@ public final class TaskExecutor {
                                             : effectivePath * 1000f / duration;
                                     HumanOperationExperienceStore.recordSwipe(
                                             lastContext,
-                                            currentExecutingTaskV464,
-                                            activeCategory.label,
+                                            TeachingOutcomeStore.currentTask(),
+                                            TeachingOutcomeStore.currentScene(),
                                             startX, startY, endX, endY,
                                             duration, effectivePath, (float) angle, speed,
                                             curve.curvatureRad, curve.maxDeviation,
