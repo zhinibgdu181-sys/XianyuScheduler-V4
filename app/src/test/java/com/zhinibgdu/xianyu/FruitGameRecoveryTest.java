@@ -155,6 +155,8 @@ public class FruitGameRecoveryTest {
         assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
                 "解锁 解锁所有槽位 使用 打乱 5%"));
         assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
+                "解锁所有檀位 [DJ使用 打乱 12%"));
+        assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
                 "随机打乱 立即使用"));
         assertTrue(FruitGameSolver.looksLikeBlockingFunctionPopupText(
                 "解锁 解锁所有糟位 D使用 打乱 12%"));
