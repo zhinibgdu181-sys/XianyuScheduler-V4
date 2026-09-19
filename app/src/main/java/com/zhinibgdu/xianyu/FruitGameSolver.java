@@ -719,7 +719,7 @@ final class FruitGameSolver {
                         // 甚至可能回到原数量或减少。剩余数下降2优先于槽位数量判断。
                         if (afterTrayCount <= beforeTrayCount) {
                             RemainingVerification verify = verifyPairRemaining(
-                                    host, beforeRemaining, pairActions + 1, "压栈后级联二消");
+                                    host, beforeRemaining, pairActions + 1, "压栈后级联二消", true);
                             if (verify.aborted) return Result.ABORTED;
                             if (verify.completed) return Result.COMPLETED;
                             if (verify.confirmed) {
@@ -809,7 +809,7 @@ final class FruitGameSolver {
                 if (afterATrayCount >= 0 && afterATrayCount <= TRAY_CAPACITY) {
                     if (afterATrayCount <= beforeTrayCount) {
                         RemainingVerification verify = verifyPairRemaining(
-                                host, beforeRemaining, pairActions + 1, "A点击后级联状态");
+                                host, beforeRemaining, pairActions + 1, "A点击后级联状态", true);
                         if (verify.aborted) return Result.ABORTED;
                         if (verify.completed) return Result.COMPLETED;
                         if (verify.confirmed) {
@@ -916,7 +916,8 @@ final class FruitGameSolver {
                     // B发生级联落果时，二消后最终槽位可能大于 beforeTrayCount。
                     // 所以先验证“剩余-2”这个游戏级事实，再看槽位数量。
                     RemainingVerification verify = verifyPairRemaining(
-                            host, beforeRemaining, pairActions + 1, "棋盘对子");
+                            host, beforeRemaining, pairActions + 1, "棋盘对子",
+                            afterBTrayCount != beforeTrayCount);
                     if (verify.aborted) return Result.ABORTED;
                     if (verify.completed) return Result.COMPLETED;
                     if (verify.confirmed) {
@@ -2184,7 +2185,22 @@ final class FruitGameSolver {
             int actionIndex,
             String stage
     ) {
-        if (actionIndex % REMAINING_OCR_INTERVAL != 0 && beforeRemaining > 6) {
+        return verifyPairRemaining(host, beforeRemaining, actionIndex, stage, false);
+    }
+
+    /**
+     * V4.50：对“级联落果导致槽位数量与常规预期不一致”的情况，
+     * 不能使用剩余数快速估算，因为这一步的槽位结果本身就是异常/级联证据。
+     * 必须用实际OCR确认剩余数确实减少2。
+     */
+    private static RemainingVerification verifyPairRemaining(
+            Host host,
+            int beforeRemaining,
+            int actionIndex,
+            String stage,
+            boolean forceOcr
+    ) {
+        if (!forceOcr && actionIndex % REMAINING_OCR_INTERVAL != 0 && beforeRemaining > 6) {
             int estimatedRemaining = Math.max(0, beforeRemaining - 2);
             host.log("[快速验证V4.44.1] " + stage + "已由稳定槽位闭环确认；"
                     + "剩余数按 " + beforeRemaining + "→" + estimatedRemaining
