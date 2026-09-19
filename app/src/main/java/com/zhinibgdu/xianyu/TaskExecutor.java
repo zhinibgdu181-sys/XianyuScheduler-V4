@@ -576,6 +576,20 @@ public final class TaskExecutor {
 
         if (page.kind == PageKindV411.FRUIT_PAIR_GAME
                 || page.kind == PageKindV411.MAHJONG_PAIR_GAME) {
+            // 用户单独启动“小游戏任务”时，闲鱼可能恢复到上次未完成的
+            // 游戏页。此时直接交回对应 Solver，而不是把游戏页当未知页面
+            // 连续返回。ALL/其他分类仍保持原保护，不擅自操作遗留游戏。
+            if (activeCategory == TaskCategory.GAME) {
+                diagnostic("[游戏恢复V4.43.9] 小游戏模块检测到遗留游戏页，直接恢复求解："
+                        + page.kind);
+                boolean resumed = page.kind == PageKindV411.FRUIT_PAIR_GAME
+                        ? executeFruitPairGameV418(suPath, "去消了还想消玩1关")
+                        : executeMahjongPairGameV419(suPath, "点点消不停");
+                if (!resumed || userAborted || gameIncompleteHoldV421) return false;
+                // Solver 完成并受控返回后重新识别当前页；此调用不再属于
+                // fresh launch，因此不会重复进入遗留页恢复分支。
+                return enterViaMineCoin(suPath, false);
+            }
             diagnostic("[游戏独占V4.26] 当前已经在小游戏页面，禁止导航流程把游戏当未知页退出");
             return false;
         }
@@ -1716,6 +1730,7 @@ public final class TaskExecutor {
             // is still visible, never feed it into generic task-page recovery.
             String scanTextV421 = combinedTextV45(null, taskOcr);
             if (FruitGameSolver.looksLikeFruitGame(scanTextV421)
+                    || FruitGameSolver.looksLikeFruitStartScreen(scanTextV421)
                     || MahjongGameSolver.looksLikeMahjongPairGame(scanTextV421)) {
                 diagnostic("[游戏守卫V4.29] 扫描阶段仍处于小游戏；停止普通扫描，禁止导航/返回乱操作"
                         + (gameIncompleteHoldV421 ? " / reason=solver_safe_stop" : ""));
@@ -2531,7 +2546,8 @@ public final class TaskExecutor {
             kind = PageKindV411.MINE;
         } else if (isHomePageV45(null, ocr)) {
             kind = PageKindV411.XIANYU_HOME;
-        } else if (FruitGameSolver.looksLikeFruitGame(text)) {
+        } else if (FruitGameSolver.looksLikeFruitGame(text)
+                || FruitGameSolver.looksLikeFruitStartScreen(text)) {
             kind = PageKindV411.FRUIT_PAIR_GAME;
         } else if (MahjongGameSolver.looksLikeMahjongPairGame(text)) {
             kind = PageKindV411.MAHJONG_PAIR_GAME;
