@@ -155,22 +155,43 @@ final class FruitGameSolver {
 
                 firstText = normalize(firstOcr == null ? "" : firstOcr.fullText);
 
+                /*
+                 * V4.48：先确认水果游戏主体已经进入，再处理覆盖在其上的道具弹窗。
+                 * 真实设备上弹窗会盖住已经运行的第1关；不能因为OCR同时看到
+                 * “解锁/消除/打乱”就把整个页面判成“尚未进入游戏”。
+                 */
+                boolean fruitSurface = looksLikeFruitGame(firstText)
+                        || (!looksLikeTaskPanel(firstText) && isRoundCompleted(firstText));
+                if (fruitSurface) {
+                    entryRecoveryCount = 0;
+                    confirmed = true;
+
+                    if (looksLikeBlockingFunctionPopupText(firstText)) {
+                        PopupDismissResult popup = dismissBlockingFunctionPopupFromOcr(
+                                host, firstOcr, "已进入水果游戏/入口弹窗");
+                        if (popup == PopupDismissResult.ABORTED) return Result.ABORTED;
+                        if (popup != PopupDismissResult.DISMISSED) {
+                            throw new RecoverableObservationException("水果游戏已进入但道具弹窗关闭失败");
+                        }
+                        firstText = "";
+                        host.log("[游戏V4.48] ✅ 已确认水果游戏主体；入口道具弹窗已连续关闭，立即进入求解");
+                    } else {
+                        host.log("[游戏V4.48] ✅ 已确认水果游戏主体，无入口道具弹窗，立即进入求解");
+                    }
+                    break;
+                }
+
                 if (looksLikeBlockingFunctionPopupText(firstText)) {
+                    // 尚未确认水果主体时，弹窗才属于入口恢复事件。
+                    // 已确认水果主体后，弹窗只是覆盖层，不再阻塞进入游戏状态机。
                     PopupDismissResult popup = dismissBlockingFunctionPopupFromOcr(
-                            host, firstOcr, "进入确认");
+                            host, firstOcr, "入口等待/覆盖弹窗");
                     if (popup == PopupDismissResult.ABORTED) return Result.ABORTED;
                     if (popup != PopupDismissResult.DISMISSED) {
-                        throw new RecoverableObservationException("OCR识别到道具弹窗但关闭失败");
+                        throw new RecoverableObservationException("入口道具弹窗关闭失败");
                     }
                     firstText = "";
                     continue;
-                }
-
-                if (looksLikeFruitGame(firstText)
-                        || (!looksLikeTaskPanel(firstText) && isRoundCompleted(firstText))) {
-                    entryRecoveryCount = 0;
-                    confirmed = true;
-                    break;
                 }
 
                 if (looksLikeFruitStartScreen(firstText)) {
@@ -1944,20 +1965,20 @@ final class FruitGameSolver {
         // 只交给 dismissBlockingFunctionPopup* 点击固定右上角 X。
         // OCR 经常只识别到“解锁 + 打乱”，漏掉“所有槽位/使用”等面板文字。
         // 正常水果页的“打乱”本身不会和“解锁”同时出现；因此这组组合也必须视为弹窗。
-        boolean unlockSlotPopup = (t.contains("解锁所有槽位")
+        boolean unlockSlotPopup = t.contains("解锁所有槽位")
                 || t.contains("解锁所有糟位")
-                || t.contains("解锁所有檀位"));
+                || t.contains("解锁所有檀位");
         if (unlockSlotPopup) return true;
 
-        boolean useAction = t.contains("使用") || t.contains("立即使用") || t.contains("确认使用");
-        boolean toolName = t.contains("解锁") || t.contains("消除") || t.contains("打乱");
-        if (useAction && toolName) return true;
-
-        // 实机 OCR 可能把“使用”整段漏掉，例如：
-        // “赚闲鱼币 ... 消除 第送 解锁 打乱 12%”。
-        // “赚闲鱼币”与“解锁+打乱”同时出现时是道具推广层的强特征，
-        // 而普通游戏控制条不会包含“赚闲鱼币”。
-        return t.contains("赚闲鱼币") && t.contains("解锁") && t.contains("打乱");
+        boolean useAction = t.contains("使用")
+                || t.contains("立即使用")
+                || t.contains("确认使用");
+        boolean toolName = t.contains("解锁")
+                || t.contains("消除")
+                || t.contains("打乱");
+        // 正常水果页也固定显示“解锁/消除/打乱/剩余”，所以不能仅凭这些词判定弹窗。
+        // 你提供的三种真实弹窗都包含“使用”按钮，或者包含“解锁所有槽位”正文。
+        return useAction && toolName;
     }
 
     /**
