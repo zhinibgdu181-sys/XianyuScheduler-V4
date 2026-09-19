@@ -477,29 +477,9 @@ final class FruitGameSolver {
                 SafePushChoice safePush = null;
                 double hitThreshold = MIN_PAIR_SCORE;
 
-                // V4.51：直接槽位匹配被挡住时，先沿阻挡链反向找真正可点击的根节点。
-                // 这条路径对1/2/3槽都有效；3槽也允许，因为最终目标本身会与槽内同类二消。
-                if (trayChoice == null && tray.count > 0) {
-                    SafePushChoice unblockPush = chooseBestTrayUnblockPush(
-                            tray, objects, drop, tray.count,
-                            frame.bitmap.getWidth(), frame.bitmap.getHeight(),
-                            blockedPositions);
-                    if (unblockPush != null) {
-                        safePush = unblockPush;
-                        host.log("[规划V4.51] 找到槽位同类反向解阻链：槽="
-                                + unblockPush.dependencySlot
-                                + " / chainDepth=" + unblockPush.dependencyDepth
-                                + " / match=" + format(unblockPush.mateScore)
-                                + " / rootCascade=" + unblockPush.cascadeFollowers);
-                    }
-                }
-
-                // 栈模型：
-                // 1) 优先处理“棋盘水果 + 任意已占槽水果”的直接二消；
-                // 2) 没有直接二消/解阻链时，0/1/2槽才可启动已经证明有后手的安全压栈；
-                // 3) 没有严格A+A时允许“可证明有后手”的过桥压栈；
-                // 4) 3槽已满时禁止引入任何新类型，只允许与TOP/MID/BOTTOM任一槽位直配。
-                if (trayChoice == null && safePush == null && tray.count < TRAY_CAPACITY) {
+                // V4.63：完整A+A对子仍然是确定性动作，先独立计算，不让历史经验
+                // 把确定的二消降级成探索。
+                if (trayChoice == null && tray.count < TRAY_CAPACITY) {
                     for (double t : FALLBACK_THRESHOLDS_V436) {
                         pair = chooseBestPairWithThreshold(
                                 objects, frame.bitmap.getWidth(), frame.bitmap.getHeight(),
@@ -509,51 +489,61 @@ final class FruitGameSolver {
                             break;
                         }
                     }
-                    if (pair == null && tray.count <= 2) {
-                        safePush = chooseBestSafePushV441(
-                                objects, drop, tray,
-                                frame.bitmap.getWidth(), frame.bitmap.getHeight(), blockedPositions);
+                }
 
-                        // V4.46：单纯“找同类后手”仍然会漏掉真正需要解锁的局面。
-                        // 例如：A 与槽内/另一颗水果高度相似，但 A 被 B 压住；B 本身可安全下落。
-                        // 这时正确动作不是随便压一个“看起来有后手”的水果，而是先点 B，
-                        // 释放 A，再让 A 完成下一步二消。这里把这种依赖链作为独立候选参与竞争。
-                        SafePushChoice dependencyPush = chooseBestDependencyPushV446(
-                                objects, drop, tray, tray.count,
-                                frame.bitmap.getWidth(), frame.bitmap.getHeight(),
-                                blockedPositions);
-                        if (dependencyPush != null
-                                && (safePush == null || dependencyPush.rank > safePush.rank)) {
-                            safePush = dependencyPush;
-                            host.log("[规划V4.46] 选择依赖链压栈：先解除阻挡，再执行后手二消");
-                        }
+                // V4.63：没有直接对子后，把所有已通过当前安全门的策略放入同一候选池。
+                // 特征库只改变候选排序，不改变候选资格，也不绕过当前点击安全策略。
+                if (trayChoice == null && pair == null && tray.count <= 2) {
+                    SafePushChoice standardPush = chooseBestSafePushV441(
+                            objects, drop, tray,
+                            frame.bitmap.getWidth(), frame.bitmap.getHeight(), blockedPositions);
 
-                        // 0/1槽时不能因为暂时看不到完整对子就停几十秒。允许只占用
-                        // 一个空槽的探索点击，优先选择能释放最多上层水果的底层目标。
-                        // 2槽不走此路径：最后一槽必须已经有可直接点击的同类后手。
-                        if (safePush == null && tray.count <= 1) {
-                            safePush = chooseBestExplorationPush(
+                    SafePushChoice dependencyPush = chooseBestDependencyPushV446(
+                            objects, drop, tray, tray.count,
+                            frame.bitmap.getWidth(), frame.bitmap.getHeight(),
+                            blockedPositions);
+
+                    SafePushChoice unblockPush = tray.count > 0
+                            ? chooseBestTrayUnblockPush(
+                                    tray, objects, drop, tray.count,
+                                    frame.bitmap.getWidth(), frame.bitmap.getHeight(),
+                                    blockedPositions)
+                            : null;
+
+                    SafePushChoice explorationPush = tray.count <= 1
+                            ? chooseBestExplorationPush(
                                     objects, drop, tray.count,
                                     frame.bitmap.getWidth(), frame.bitmap.getHeight(), featureStore,
-                                    blockedPositions);
-                            if (safePush != null) {
-                                host.log("[规划V4.54] 当前仅" + tray.count
-                                        + "槽占用，使用一个空槽探索解阻；第三槽仍保留给确定二消");
-                            }
-                        }
-                        // 录像中的本局正是2/3槽、6颗水果已无遮挡，却因“第三槽
-                        // 必须已有直接二消”而完全不动。最后一槽允许作为一次受控
-                        // 解阻：只点明确可下落、不会级联、且能释放水果或存在高置信
-                        // 后手的目标；点后必须观察真实槽位，失败即黑名单/重开。
-                        if (safePush == null && tray.count == 2) {
-                            safePush = chooseBestLastSlotRecoveryPush(
+                                    blockedPositions)
+                            : null;
+
+                    SafePushChoice lastSlotPush = tray.count == 2
+                            ? chooseBestLastSlotRecoveryPush(
                                     objects, drop, frame.bitmap.getWidth(), frame.bitmap.getHeight(),
-                                    featureStore, blockedPositions);
-                            if (safePush != null) {
-                                host.log("[规划V4.56] 2/3槽无直配，使用受控第三槽解阻，"
-                                        + "不再原地OCR空转");
-                            }
-                        }
+                                    featureStore, blockedPositions)
+                            : null;
+
+                    SafePushChoice twoSlotExplorationPush =
+                            tray.count == 2
+                                    && twoSlotExplorationAttemptsV463
+                                    < MAX_TWO_SLOT_EXPLORATION_ATTEMPTS_V463
+                            ? chooseBestTwoSlotExplorationPush(
+                                    objects, drop, frame.bitmap.getWidth(), frame.bitmap.getHeight(),
+                                    blockedPositions)
+                            : null;
+
+                    safePush = chooseBestStrategyCandidateV463(
+                            context, remaining, tray, objects, drop, 0,
+                            standardPush, dependencyPush, unblockPush,
+                            explorationPush, lastSlotPush, twoSlotExplorationPush);
+
+                    if (safePush != null) {
+                        String strategy = strategyTypeV463(safePush, tray.count);
+                        host.log("[经验V4.63] 选择策略=" + strategy
+                                + " / baseRank=" + format(safePush.rank)
+                                + " / mate=" + format(safePush.mateScore)
+                                + " / continuation=" + safePush.continuationPairs
+                                + " / unlock=" + safePush.unlockGain);
                     }
                 }
 
@@ -686,8 +676,8 @@ final class FruitGameSolver {
                         host.log("[槽位保护V4.38.0] 三槽已满且没有可直接二消的同类水果；"
                                 + "禁止点击任何新类型，CLEAN安全停止");
                     } else if (tray.count == 2) {
-                        host.log("[槽位保护V4.38.0] 当前2槽占用，但既没有槽位直配，"
-                                + "也没有可锁定的完整棋盘对子；不做单水果冒险，CLEAN安全停止");
+                        host.log("[槽位保护V4.63] 当前2槽占用，安全策略池已耗尽或受"
+                                + "本局探索次数上限约束；进入受控死局恢复，不再无限原地OCR");
                     } else {
                         host.log("[游戏V4.38.0] 当前没有‘可直接下落 + 高置信同类’安全对子，CLEAN安全停止");
                     }
@@ -2361,6 +2351,52 @@ final class FruitGameSolver {
             double lower = clamp01(fruit.centerY / Math.max(1.0, frameHeight));
             double rank = 0.66 * Math.min(1.0, unlockGain / 3.0)
                     + 0.34 * lower;
+            SafePushChoice candidate = new SafePushChoice(
+                    fruit, 0.0, false, false, unlockGain, 0, rank,
+                    false, 0);
+            if (best == null || candidate.rank > best.rank) best = candidate;
+        }
+        return best;
+    }
+
+    /**
+     * V4.63：2/3槽的低优先级受控探索。
+     *
+     * 只接受无遮挡、下落通道安全、无预测级联且确实能释放至少一个上层水果的候选。
+     * 它允许“先占第三槽、再重新观察”的人类式试探，但每局最多三次；失败位置仍进入
+     * 当前局黑名单，下一帧必须重新建模。
+     */
+    private static SafePushChoice chooseBestTwoSlotExplorationPush(
+            List<FruitObject> objects,
+            DropAnalysis drop,
+            int frameWidth,
+            int frameHeight,
+            Set<String> blockedPositions
+    ) {
+        if (objects == null || objects.isEmpty() || drop == null
+                || drop.droppable.isEmpty()) {
+            return null;
+        }
+
+        SafePushChoice best = null;
+        for (FruitObject fruit : drop.droppable) {
+            if (fruit == null || isBlockedPosition(blockedPositions, fruit)) continue;
+            if (!hasConservativeDropClearance(fruit, objects, frameWidth, frameHeight)) continue;
+
+            int cascadeFollowers = countPotentialCascadeFollowers(fruit, objects, drop);
+            if (cascadeFollowers != 0) continue;
+
+            int unlockGain = 0;
+            for (BlockingRelation relation : drop.blocked) {
+                if (relation != null && relation.blocker == fruit) unlockGain++;
+            }
+            if (unlockGain <= 0) continue;
+
+            double lower = clamp01(fruit.centerY / Math.max(1.0, frameHeight));
+            // 明显低于已有后手策略的基础分：只有其它安全策略不存在时才会进入执行。
+            double rank = 0.28 * Math.min(1.0, unlockGain / 3.0)
+                    + 0.18 * lower;
+
             SafePushChoice candidate = new SafePushChoice(
                     fruit, 0.0, false, false, unlockGain, 0, rank,
                     false, 0);
