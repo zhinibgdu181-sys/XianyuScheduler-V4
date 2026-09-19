@@ -442,33 +442,57 @@ final class FruitGameSolver {
                     } else {
                         host.log("[游戏V4.38.0] 当前没有‘可直接下落 + 高置信同类’安全对子，CLEAN安全停止");
                     }
-                    // 道具推荐弹窗有时会在“无动作”OCR完成后才淡入。旧逻辑在这里
-                    // 立即返回，随后外层最终页面探针虽然能读到“解锁所有槽位/使用”，
-                    // 却已经失去关闭并继续求解的机会。退出前再给弹窗一个短暂出现窗口；
-                    // 仅在明确识别到弹窗时点击固定X，关闭后回到本轮重新建模。
-                    if (fruitTapAttempted) {
-                        if (!host.sleep(260L, 420L)) return Result.ABORTED;
+                    /*
+                     * V4.45：这里是之前真正漏弹窗的地方。
+                     *
+                     * 道具弹窗不是一定在“无动作”那一帧出现。实机日志已经证明：
+                     * 无动作复核时还是干净页面，约2秒后的“安全停止#1”OCR才出现
+                     * “解锁所有檀位 / 使用 / 打乱”。如果此处直接 return，弹窗就被
+                     * 外层页面探针看见了，但已经没有水果求解器来负责点击X。
+                     *
+                     * 因此安全停止前必须做一个短暂的弹窗监听窗口，而且无论本轮是否
+                     * 发生过水果点击都要执行。只要OCR确认道具弹窗，就进入统一的
+                     * 连续关闭链：第1个、第2个、第3个……直到连续两次干净。
+                     */
+                    if (!host.sleep(260L, 420L)) return Result.ABORTED;
+
+                    boolean popupHandled = false;
+                    for (int popupWatch = 0; popupWatch < 3; popupWatch++) {
                         ScreenOcr.Snapshot lateCheckpoint;
                         try {
-                            lateCheckpoint = requireOcr(host, "水果V4.44.3/安全停止前弹窗复核");
+                            lateCheckpoint = requireOcr(
+                                    host, "水果V4.45/安全停止前弹窗监听#" + (popupWatch + 1));
                         } catch (RuntimeException e) {
                             lateCheckpoint = null;
-                            host.log("[弹窗V4.44.3] 安全停止前复核异常："
+                            host.log("[弹窗V4.45] 监听OCR异常："
                                     + e.getClass().getSimpleName());
                         }
-                        if (looksLikeBlockingFunctionPopupText(
-                                lateCheckpoint == null ? "" : lateCheckpoint.fullText)) {
+
+                        String lateText = lateCheckpoint == null ? "" : lateCheckpoint.fullText;
+                        if (looksLikeBlockingFunctionPopupText(lateText)) {
                             PopupDismissResult popup = dismissBlockingFunctionPopupFromOcr(
-                                    host, lateCheckpoint, "安全停止前最终复核");
+                                    host, lateCheckpoint,
+                                    "安全停止前弹窗监听#" + (popupWatch + 1));
                             if (popup == PopupDismissResult.ABORTED) return Result.ABORTED;
                             if (popup == PopupDismissResult.DISMISSED) {
+                                popupHandled = true;
                                 noActionRetry = 0;
-                                host.log("[弹窗V4.44.3] 晚到道具弹窗已关闭，继续重建棋盘");
-                                continue;
+                                host.log("[弹窗V4.45] ✅ 晚到道具弹窗已完整关闭，重新建模");
+                                break;
                             }
                             return Result.SAFE_STOP_DIRTY;
                         }
+
+                        // 第一次干净不代表后面不会淡入；继续观察下一帧。
+                        if (popupWatch < 2 && !host.sleep(420L, 620L)) {
+                            return Result.ABORTED;
+                        }
                     }
+
+                    if (popupHandled) {
+                        continue;
+                    }
+
                     host.log("[水果V4.44-step4] 连续无动作达到阈值，准备安全停止前最后复核");
                     return fruitTapAttempted ? Result.SAFE_STOP_DIRTY : Result.SAFE_STOP_CLEAN;
                 }
