@@ -145,6 +145,15 @@ final class FruitHumanExperienceStore {
                 && FruitStrategyExperienceStore.isKnownStrategy(transition.strategy);
     }
 
+    /**
+     * V4.80: structural progress is not enough to promote a human demonstration.
+     * The task result must be independently verified as SUCCESS.
+     */
+    static boolean shouldReinforce(Context context, Transition transition) {
+        return shouldReinforce(transition)
+                && TeachingOutcomeStore.taskReplayEligible();
+    }
+
     static void record(
             Context context,
             String taskName,
