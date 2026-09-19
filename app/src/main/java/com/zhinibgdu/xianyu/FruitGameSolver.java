@@ -246,7 +246,11 @@ final class FruitGameSolver {
         int noActionRetry = 0;
         boolean recovering = false;
         boolean fruitTapAttempted = false;
-        // V4.45.1：道具推广弹窗可能在长时间无操作后异步随机出现。\n        // 不能只在“准备安全停止”时检查；游戏运行期间也要周期性用OCR探测。\n        long lastIdlePopupProbeAt = 0L;\n        final long IDLE_POPUP_PROBE_INTERVAL_MS = 850L;\n
+        // V4.45.1：道具推广弹窗可能在长时间无操作后异步随机出现。
+        // 不能只在“准备安全停止”时检查；游戏运行期间也要周期性用OCR探测。
+        long lastIdlePopupProbeAt = 0L;
+        final long IDLE_POPUP_PROBE_INTERVAL_MS = 850L;
+
         // 槽位计数表示“已占用槽”，不是“已解锁槽”。
         // 不允许把底部“解锁”按钮误判成当前棋盘的容量上限；
         // 只要当前局面存在安全压栈/二消解法，就优先按棋盘解法执行。
@@ -1935,7 +1939,8 @@ final class FruitGameSolver {
     private static String normalize(String s) {
         if (s == null) return "";
         return s.replace('\r', ' ')
-                .replace('\n', ' ')
+                .replace('
+', ' ')
                 .replaceAll("\\s+", " ")
                 .trim();
     }
