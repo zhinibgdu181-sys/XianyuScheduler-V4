@@ -3635,12 +3635,19 @@ public final class TaskExecutor {
                         + "/15000ms；继续等待，禁止提前判定完成");
             }
 
-            // Every fourth OCR poll, allow one XML fallback for hard pages.
+            // 视频任务必须满足“至少观看15秒 + 真实任务面板确认”两个条件。
+            // 旧逻辑的 XML 兜底没有检查15秒，导致刚进入任务面板就可能被提前判定完成。
             if (loop % 4 == 0) {
                 String xml = dumpUi(suPath);
-                if (isTaskPageV45(xml, ocr)) {
-                    diagnostic("[视频] ✅ XML确认已在任务面板，停止继续返回");
+                long elapsed = SystemClock.elapsedRealtime() - start;
+                if (elapsed >= 15000L && isTaskPageV45(xml, ocr)) {
+                    taskPanelSeenAfterWatchV420 = true;
+                    diagnostic("[视频] ✅ XML确认已观看至少15秒并回到真实任务面板，停止继续返回");
                     return true;
+                }
+                if (isTaskPageV45(xml, ocr)) {
+                    diagnostic("[视频] XML确认已回任务面板，但观看时间不足："
+                            + elapsed + "/15000ms；禁止提前判定完成");
                 }
             }
 
@@ -3661,6 +3668,9 @@ public final class TaskExecutor {
                     suPath, taskName, "视频最终恢复快速双滑");
         }
         if (doubleSwipeDone) {
+            // fastDoubleRightBackV420() 只有在连续两次右滑后再次确认真实任务面板
+            // 才返回 true，因此这里可以把它作为视频返回完成条件。
+            taskPanelSeenAfterWatchV420 = true;
             return true;
         }
 
