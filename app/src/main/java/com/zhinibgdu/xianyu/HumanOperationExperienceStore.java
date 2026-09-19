@@ -123,6 +123,46 @@ final class HumanOperationExperienceStore {
         return records == null ? 0 : records.size();
     }
 
+    /**
+     * V4.80: close the current teaching session. Only TASK_RESULT=SUCCESS
+     * becomes replay-eligible. FAILURE and UNKNOWN remain audit data only.
+     */
+    static synchronized void finalizeCurrentSessionOutcome(Context context) {
+        if (context == null) return;
+        String session = TeachingOutcomeStore.currentSessionId();
+        if (session == null || session.isEmpty()) return;
+        String outcome = TeachingOutcomeStore.currentTaskResult();
+        if (!TeachingOutcomeStore.SUCCESS.equals(outcome)
+                && !TeachingOutcomeStore.FAILURE.equals(outcome)
+                && !TeachingOutcomeStore.UNKNOWN.equals(outcome)) {
+            outcome = TeachingOutcomeStore.UNKNOWN;
+        }
+
+        List<String> records = load(context);
+        if (records == null || records.isEmpty()) return;
+        String token = "|SESSION=" + safe(session) + "|OUTCOME=PENDING|";
+        String replacement = "|SESSION=" + safe(session)
+                + "|OUTCOME=" + safe(outcome) + "|";
+        ArrayList<String> next = new ArrayList<>(records.size());
+        for (String row : records) {
+            if (row != null && row.contains(token)) {
+                next.add(row.replace(token, replacement));
+            } else {
+                next.add(row);
+            }
+        }
+        save(context, next);
+    }
+
+    /**
+     * Replay consumers must reject legacy rows and every non-success outcome.
+     */
+    static boolean replayEligible(String record) {
+        return record != null
+                && record.contains("|SESSION=")
+                && record.contains("|OUTCOME=SUCCESS|");
+    }
+
     static synchronized void compact(Context context) {
         List<String> records = load(context);
         if (records == null || records.isEmpty()) return;
@@ -143,7 +183,15 @@ final class HumanOperationExperienceStore {
         if (prefs == null) return;
         List<String> records = load(context);
         if (records == null) records = new ArrayList<>();
-        records.add(System.currentTimeMillis() + "|" + payload);
+        String session = TeachingOutcomeStore.currentSessionId();
+        String taskOutcome = TeachingOutcomeStore.currentTaskResult();
+        // New samples are always PENDING until the session receives a verified
+        // task result. This prevents an in-progress/old sample from becoming a
+        // replay candidate merely because it contains a gesture.
+        records.add(System.currentTimeMillis()
+                + "|SESSION=" + safe(session)
+                + "|OUTCOME=PENDING|TASK_RESULT=" + safe(taskOutcome)
+                + "|" + payload);
 
         long now = System.currentTimeMillis();
         ArrayList<String> kept = new ArrayList<>();
