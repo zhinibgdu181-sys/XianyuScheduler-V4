@@ -560,6 +560,13 @@ final class FruitGameSolver {
                             + " / hist=" + format(trayChoice.histCos)
                             + " / 槽位=" + beforeTrayCount + "→期望" + Math.max(0, beforeTrayCount - 1));
 
+                    if (handlePopupBeforeFruitTap(host, "槽位匹配")) {
+                        safeRecycle(frame.bitmap);
+                        frame = null;
+                        recovering = true;
+                        noActionRetry = 0;
+                        continue;
+                    }
                     fruitTapAttempted = true;
 
                     if (!host.tap(tx, ty, "水果游戏-槽位匹配")) {
@@ -640,6 +647,13 @@ final class FruitGameSolver {
                             + " / continuationPairs=" + safePush.continuationPairs
                             + " / unlock=" + safePush.unlockGain);
 
+                    if (handlePopupBeforeFruitTap(host, "安全压栈")) {
+                        safeRecycle(frame.bitmap);
+                        frame = null;
+                        recovering = true;
+                        noActionRetry = 0;
+                        continue;
+                    }
                     fruitTapAttempted = true;
 
                     if (!host.tap(tx, ty, "水果游戏-安全压栈")) {
@@ -662,6 +676,18 @@ final class FruitGameSolver {
                     if (afterTrayCount == beforeTrayCount + 1) {
                         host.log("[栈模型V4.41.0] ✅ 压栈确认：depth "
                                 + beforeTrayCount + "→" + afterTrayCount + "；重新截图规划TOP");
+                        continue;
+                    }
+
+                    // 单次点击最多新增一个未匹配槽位。若检测从1直接跳到3，
+                    // 说明点击前后画面/槽位检测不同步（常见于弹窗覆盖或动画切换），
+                    // 绝不能把它当成真实游戏状态继续规划。
+                    if (afterTrayCount > beforeTrayCount + 1) {
+                        host.log("[栈模型V4.47] 槽位一次跳增 " + beforeTrayCount
+                                + "→" + afterTrayCount
+                                + "，判定为视觉/弹窗状态污染；禁止继续点水果，重新OCR+截图");
+                        recovering = true;
+                        noActionRetry = 0;
                         continue;
                     }
 
@@ -711,6 +737,13 @@ final class FruitGameSolver {
                         + " / 槽位=" + beforeTrayCount
                         + " / 原因=槽位未满且完整A/B均已锁定可直接下落");
 
+                if (handlePopupBeforeFruitTap(host, "配对A")) {
+                    safeRecycle(afterAObs.frame.bitmap);
+                    ownedAfterA = null;
+                    recovering = true;
+                    noActionRetry = 0;
+                    continue;
+                }
                 fruitTapAttempted = true;
 
                 if (!host.tap(ax, ay, "水果游戏-配对A")) {
@@ -809,6 +842,11 @@ final class FruitGameSolver {
                         + " hist=" + format(reacquired.similarity.histCos)
                         + " shape=" + format(reacquired.similarity.shapeIou));
 
+                if (handlePopupBeforeFruitTap(host, "配对B")) {
+                    recovering = true;
+                    noActionRetry = 0;
+                    continue;
+                }
                 fruitTapAttempted = true;
 
                 if (!host.tap(bx, by, "水果游戏-配对B")) {
@@ -922,6 +960,37 @@ final class FruitGameSolver {
             blockedPositions.remove(key);
             blockedPositionTtl.remove(key);
         }
+    }
+
+    /**
+     * 最终点击闸门：在真正发送水果点击前，再做一次OCR确认。
+     * 异步道具弹窗可能恰好出现在“规划完成”与input tap之间；
+     * 任何规划坐标都不能绕过这个闸门。返回true表示本次点击被弹窗处理打断，
+     * 调用方必须丢弃旧棋盘并重新规划。
+     */
+    private static boolean handlePopupBeforeFruitTap(Host host, String stage) {
+        if (host == null || host.aborted()) return false;
+        ScreenOcr.Snapshot probe;
+        try {
+            probe = requireOcr(host, "水果V4.47/点击前弹窗闸门/" + stage);
+        } catch (RuntimeException e) {
+            // OCR失败不能因为“看不见弹窗”就放行危险点击。
+            host.log("[弹窗V4.47] 点击前OCR失败，禁止本次水果点击："
+                    + e.getClass().getSimpleName());
+            throw new RecoverableObservationException("点击前弹窗闸门OCR失败");
+        }
+        String text = normalize(probe == null ? "" : probe.fullText);
+        if (!looksLikeBlockingFunctionPopupText(text)) return false;
+
+        host.log("[弹窗V4.47] 点击前闸门发现道具弹窗，先关闭再重新规划");
+        PopupDismissResult popup = dismissBlockingFunctionPopupFromOcr(
+                host, probe, "点击前闸门/" + stage);
+        if (popup == PopupDismissResult.ABORTED) return false;
+        if (popup != PopupDismissResult.DISMISSED) {
+            throw new RecoverableObservationException("点击前道具弹窗关闭失败");
+        }
+        host.log("[弹窗V4.47] 点击前弹窗已关闭；禁止使用旧水果坐标");
+        return true;
     }
 
     private static void markBlockedPosition(Set<String> blockedPositions,
@@ -1874,12 +1943,15 @@ final class FruitGameSolver {
         // “[DJ使用/□使用”等带噪声文本。只要同时出现“解锁槽位”语义和
         // 工具动作词，就认为是阻塞型道具弹窗；绝不点击弹窗里的功能按钮，
         // 只交给 dismissBlockingFunctionPopup* 点击固定右上角 X。
+        // OCR 经常只识别到“解锁 + 打乱”，漏掉“所有槽位/使用”等面板文字。
+        // 正常水果页的“打乱”本身不会和“解锁”同时出现；因此这组组合也必须视为弹窗。
         boolean unlockSlotPopup = (t.contains("解锁所有槽位")
                 || t.contains("解锁所有糟位")
                 || t.contains("解锁所有檀位")
-                || t.contains("解锁") && (t.contains("槽位")
-                || t.contains("糟位")
-                || t.contains("檀位")));
+                || (t.contains("解锁") && t.contains("槽位"))
+                || (t.contains("解锁") && t.contains("糟位"))
+                || (t.contains("解锁") && t.contains("檀位"))
+                || (t.contains("解锁") && t.contains("打乱")));
         if (unlockSlotPopup) return true;
 
         boolean useAction = t.contains("使用") || t.contains("立即使用") || t.contains("确认使用");
@@ -1993,7 +2065,10 @@ final class FruitGameSolver {
 
         if (samples <= 0) return false;
         double ratio = warmBright / (double) samples;
-        return ratio >= 0.46;
+        // 弹窗面板实际占比可能因设备分辨率/动画而低于旧版0.46门槛。
+        // 正常棋盘中央以蓝色为主，暖白/米黄占比通常远低于此值，因此降低门槛
+        // 可以覆盖“小弹窗/淡入动画”，同时不会把普通棋盘误判为弹窗。
+        return ratio >= 0.22;
     }
 
     static boolean looksLikeFruitGame(String text) {
