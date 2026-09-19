@@ -59,7 +59,10 @@ final class FruitGameSolver {
     private static final int MAX_PAIR_ACTIONS = 130;
     private static final int MAX_RECOVERY_RETRY = 3;
     private static final int MAX_NO_ACTION_RETRY = 5;
-    private static final long BLOCKED_POSITION_TTL_MS = 12_000L;
+    // A failed fruit tap must stay blocked until a confirmed elimination changes the board.
+    // The old 12s TTL expired while the eight-frame verification was still running, which
+    // allowed the same covered fruit to be selected again immediately afterwards.
+    private static final long BLOCKED_POSITION_TTL_MS = MAX_ROUND_MS;
 
     // V4.38.0：三槽二消模型。槽位在中央竖井中从下往上堆叠。
     // 这些比例来自用户提供的 709x1536 连续实机截图，并按屏幕尺寸归一化。
@@ -77,6 +80,7 @@ final class FruitGameSolver {
     // 因此不能沿用完整sprite的shape IoU门槛。实机回放同类通常 >0.99。
     private static final double TRAY_HIST_MATCH_MIN = 0.985;
     private static final int TRAY_OBSERVE_RETRIES = 4;
+    private static final int UNCHANGED_TRAY_CONFIRMATIONS = 2;
 
     // V4.37.0：截图回放中底部同类受采样/压缩影响约0.978~0.982。
     // 总分与更严格的RGB、直方图、形状三个门槛共同判断；不逐轮降低阈值。
@@ -331,7 +335,8 @@ final class FruitGameSolver {
                     }
                     if (pair == null && tray.count <= 1) {
                         safePush = chooseBestSafePushV441(
-                                objects, drop, tray.count, frame.bitmap.getHeight(), blockedPositions);
+                                objects, drop, tray.count,
+                                frame.bitmap.getWidth(), frame.bitmap.getHeight(), blockedPositions);
                     }
                 }
 
@@ -424,10 +429,11 @@ final class FruitGameSolver {
                         if (host.aborted()) return Result.ABORTED;
                         throw new RecoverableObservationException("水果点击发送失败，重新观察真实槽位");
                     }
-                    if (!host.sleep(850L, 1050L)) return Result.ABORTED;
+                    if (!host.sleep(650L, 800L)) return Result.ABORTED;
 
                     PostTapObservation after = observeTrayAfterTap(
-                            context, suPath, host, Math.max(0, beforeTrayCount - 1), "槽位匹配后");
+                            context, suPath, host, Math.max(0, beforeTrayCount - 1),
+                            beforeTrayCount, "槽位匹配后");
                     if (after == null) {
                         return host.aborted() ? Result.ABORTED : Result.SAFE_STOP_DIRTY;
                     }
@@ -499,10 +505,11 @@ final class FruitGameSolver {
                         if (host.aborted()) return Result.ABORTED;
                         throw new RecoverableObservationException("水果点击发送失败，重新观察真实槽位");
                     }
-                    if (!host.sleep(850L, 1050L)) return Result.ABORTED;
+                    if (!host.sleep(650L, 800L)) return Result.ABORTED;
 
                     PostTapObservation afterPush = observeTrayAfterTap(
-                            context, suPath, host, beforeTrayCount + 1, "安全压栈后");
+                            context, suPath, host, beforeTrayCount + 1,
+                            beforeTrayCount, "安全压栈后");
                     if (afterPush == null) {
                         host.log("[栈模型V4.41.0] 压栈后无法稳定观察槽位，DIRTY安全停止");
                         return host.aborted() ? Result.ABORTED : Result.SAFE_STOP_DIRTY;
@@ -569,10 +576,11 @@ final class FruitGameSolver {
                     if (host.aborted()) return Result.ABORTED;
                     throw new RecoverableObservationException("水果点击发送失败，重新观察真实槽位");
                 }
-                if (!host.sleep(850L, 1050L)) return Result.ABORTED;
+                if (!host.sleep(650L, 800L)) return Result.ABORTED;
 
                 PostTapObservation afterAObs = observeTrayAfterTap(
-                        context, suPath, host, beforeTrayCount + 1, "A点击后");
+                        context, suPath, host, beforeTrayCount + 1,
+                        beforeTrayCount, "A点击后");
                 if (afterAObs == null) {
                     host.log("[槽位V4.38.0] A后无法稳定观察槽位，DIRTY安全停止");
                     return host.aborted() ? Result.ABORTED : Result.SAFE_STOP_DIRTY;
@@ -653,10 +661,11 @@ final class FruitGameSolver {
                     if (host.aborted()) return Result.ABORTED;
                     throw new RecoverableObservationException("水果点击发送失败，重新观察真实槽位");
                 }
-                if (!host.sleep(900L, 1150L)) return Result.ABORTED;
+                if (!host.sleep(700L, 850L)) return Result.ABORTED;
 
                 PostTapObservation afterBObs = observeTrayAfterTap(
-                        context, suPath, host, beforeTrayCount, "B点击后");
+                        context, suPath, host, beforeTrayCount,
+                        afterATrayCount, "B点击后");
                 if (afterBObs == null) {
                     return host.aborted() ? Result.ABORTED : Result.SAFE_STOP_DIRTY;
                 }
@@ -950,8 +959,7 @@ final class FruitGameSolver {
 
         for (FruitObject fruit : objects) {
             if (fruit == null) continue;
-            if (blockedPositions != null
-                    && blockedPositions.contains(positionKeyV4361(fruit))) continue;
+            if (isBlockedPosition(blockedPositions, fruit)) continue;
             if (findNearestBlockingFruit(fruit, objects, frameWidth, frameHeight) != null) continue;
 
             double hist = histogramCos(topItem.hist, fruit.hist);
@@ -998,7 +1006,7 @@ final class FruitGameSolver {
                     + " / TOP=" + top.slotName
                     + " / hist=" + String.format(Locale.US, "%.6f", hist)
                     + " / 颜色门槛=" + (hist >= TRAY_HIST_MATCH_MIN ? "通过" : "未通过")
-                    + " / 位置黑名单=" + blockedPositions.contains(positionKeyV4361(fruit))
+                    + " / 位置黑名单=" + isBlockedPosition(blockedPositions, fruit)
                     + " / 下落=" + (blocker == null ? "畅通"
                     : "受阻于(" + mapX(frame, blocker.centerX) + ","
                             + mapY(frame, blocker.centerY) + ")"));
@@ -1024,13 +1032,15 @@ final class FruitGameSolver {
      * 也返回真实状态，让上层决定“继续建模”还是“DIRTY停止”，不再凭原位水果猜测。
      */
     private static PostTapObservation observeTrayAfterTap(
-            Context context, String suPath, Host host, int expectedCount, String stage
+            Context context, String suPath, Host host,
+            int expectedCount, int baselineCount, String stage
     ) {
         // 两轮验证只重新观察，绝不重放 tap；第一轮已包含稳定动画等待。
         for (int verification = 1; verification <= 2; verification++) {
             PostTapObservation observation = null;
             try {
-                observation = observeTrayAfterTapOnce(context, suPath, host, expectedCount, stage);
+                observation = observeTrayAfterTapOnce(
+                        context, suPath, host, expectedCount, baselineCount, stage);
             } catch (RuntimeException e) {
                 host.log("[验证V4.42] " + stage + " 观察异常: " + e.getClass().getSimpleName());
             }
@@ -1039,6 +1049,12 @@ final class FruitGameSolver {
                 return null;
             }
             if (observation != null && observation.tray.count == expectedCount) return observation;
+            if (observation != null && observation.settledUnchanged) {
+                host.log("[验证V4.44.0] " + stage
+                        + " 连续" + UNCHANGED_TRAY_CONFIRMATIONS
+                        + "帧保持原槽位，立即返回重新规划");
+                return observation;
+            }
             if (verification == 2) return observation;
             if (observation != null) safeRecycle(observation.frame.bitmap);
             host.log("[验证V4.42] " + stage + " 首次未确认，等待动画后进行第二次验证");
@@ -1048,9 +1064,11 @@ final class FruitGameSolver {
     }
 
     private static PostTapObservation observeTrayAfterTapOnce(
-            Context context, String suPath, Host host, int expectedCount, String stage
+            Context context, String suPath, Host host,
+            int expectedCount, int baselineCount, String stage
     ) {
         PostTapObservation lastStable = null;
+        int consecutiveBaseline = 0;
         try {
             for (int attempt = 1; attempt <= TRAY_OBSERVE_RETRIES && !host.aborted(); attempt++) {
                 GameFrame frame = captureFrame(context, suPath, host);
@@ -1074,19 +1092,31 @@ final class FruitGameSolver {
                     host.log("[槽位观察V4.42] " + stage + " #" + attempt
                             + " / expected=" + expectedCount + " / " + traySummary(tray));
                     if (!tray.stable) {
+                        consecutiveBaseline = 0;
                         if (lastStable != null) safeRecycle(lastStable.frame.bitmap);
                         lastStable = null;
                         if (!host.sleep(220L, 360L)) return null;
                         continue;
                     }
                     if (tray.count == expectedCount) {
-                        PostTapObservation result = new PostTapObservation(frame, tray);
+                        PostTapObservation result = new PostTapObservation(frame, tray, false);
                         frame = null; // ownership transferred to caller
                         return result;
                     }
+                    if (tray.count == baselineCount) {
+                        consecutiveBaseline++;
+                    } else {
+                        consecutiveBaseline = 0;
+                    }
                     if (lastStable != null) safeRecycle(lastStable.frame.bitmap);
-                    lastStable = new PostTapObservation(frame, tray);
+                    lastStable = new PostTapObservation(
+                            frame, tray, consecutiveBaseline >= UNCHANGED_TRAY_CONFIRMATIONS);
                     frame = null;
+                    if (lastStable.settledUnchanged) {
+                        PostTapObservation result = lastStable;
+                        lastStable = null;
+                        return result;
+                    }
                     if (attempt < TRAY_OBSERVE_RETRIES && !host.sleep(260L, 420L)) return null;
                 } finally {
                     if (frame != null) safeRecycle(frame.bitmap);
@@ -1113,6 +1143,7 @@ final class FruitGameSolver {
             List<FruitObject> objects,
             DropAnalysis drop,
             int trayCount,
+            int frameWidth,
             int frameHeight,
             Set<String> blockedPositions
     ) {
@@ -1126,8 +1157,11 @@ final class FruitGameSolver {
 
         for (FruitObject fruit : drop.droppable) {
             if (fruit == null) continue;
-            if (blockedPositions != null
-                    && blockedPositions.contains(positionKeyV4361(fruit))) continue;
+            if (isBlockedPosition(blockedPositions, fruit)) continue;
+            // Safe-push is optional, so use a wider physical corridor than ordinary pair
+            // matching. This rejects edge-supported/partly covered fruit instead of
+            // gambling a tray slot on it.
+            if (!hasConservativeDropClearance(fruit, objects, frameWidth, frameHeight)) continue;
 
             double mateScore = 0.0;
             FruitObject bestMate = null;
@@ -1185,8 +1219,7 @@ final class FruitGameSolver {
         double denomY = Math.max(1.0, frameHeight);
         for (FruitObject candidate : objects) {
             if (candidate == null) continue;
-            if (blockedPositions != null
-                    && blockedPositions.contains(positionKeyV4361(candidate))) continue;
+            if (isBlockedPosition(blockedPositions, candidate)) continue;
             if (findNearestBlockingFruit(candidate, objects, frameWidth, frameHeight) != null) continue;
 
             Similarity sim = similarity(expected, candidate);
@@ -1773,6 +1806,28 @@ final class FruitGameSolver {
         return nearest;
     }
 
+    private static boolean hasConservativeDropClearance(
+            FruitObject fruit,
+            List<FruitObject> objects,
+            int frameWidth,
+            int frameHeight
+    ) {
+        if (fruit == null || objects == null || frameWidth <= 0 || frameHeight <= 0) return false;
+        final double dropEndY = funnelContactY(fruit.centerX, frameWidth, frameHeight);
+        final double fruitRadiusX = effectiveCollisionHalfWidth(fruit);
+        for (FruitObject other : objects) {
+            if (other == null || other == fruit) continue;
+            double minVerticalSeparation = Math.max(3.0,
+                    Math.min(fruit.height(), other.height()) * 0.10);
+            if (other.centerY <= fruit.centerY + minVerticalSeparation) continue;
+            double otherTopCore = other.centerY - Math.max(2.0, other.height() * 0.40);
+            if (otherTopCore >= dropEndY) continue;
+            double collisionLimit = (fruitRadiusX + effectiveCollisionHalfWidth(other)) * 1.08;
+            if (Math.abs(other.centerX - fruit.centerX) < collisionLimit) return false;
+        }
+        return true;
+    }
+
     /**
      * 根据 x 计算水果自由落体阶段的终点。
      * 左右两条斜坡按实机截图做线性近似；中央开口没有斜坡，直接进入坑洞。
@@ -1891,8 +1946,8 @@ final class FruitGameSolver {
                 FruitObject b = objects.get(j);
 
                 if (blockedPositions != null && !blockedPositions.isEmpty()) {
-                    if (blockedPositions.contains(positionKeyV4361(a))
-                            || blockedPositions.contains(positionKeyV4361(b))) {
+                    if (isBlockedPosition(blockedPositions, a)
+                            || isBlockedPosition(blockedPositions, b)) {
                         continue;
                     }
                 }
@@ -2024,6 +2079,24 @@ final class FruitGameSolver {
         int qx = Math.round(f.centerX / 12f);
         int qy = Math.round(f.centerY / 12f);
         return qx + "," + qy;
+    }
+
+    private static boolean isBlockedPosition(Set<String> blockedPositions, FruitObject fruit) {
+        return fruit != null && isBlockedPosition(blockedPositions, fruit.centerX, fruit.centerY);
+    }
+
+    static boolean isBlockedPosition(Set<String> blockedPositions, float centerX, float centerY) {
+        if (blockedPositions == null || blockedPositions.isEmpty()) return false;
+        int qx = Math.round(centerX / 12f);
+        int qy = Math.round(centerY / 12f);
+        // Detection centers can move by a few pixels between screenshots. Check adjacent
+        // buckets so the same covered fruit cannot escape the blacklist at a boundary.
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                if (blockedPositions.contains((qx + dx) + "," + (qy + dy))) return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -2390,10 +2463,12 @@ final class FruitGameSolver {
     private static final class PostTapObservation {
         final GameFrame frame;
         final TrayState tray;
+        final boolean settledUnchanged;
 
-        PostTapObservation(GameFrame frame, TrayState tray) {
+        PostTapObservation(GameFrame frame, TrayState tray, boolean settledUnchanged) {
             this.frame = frame;
             this.tray = tray;
+            this.settledUnchanged = settledUnchanged;
         }
     }
 
