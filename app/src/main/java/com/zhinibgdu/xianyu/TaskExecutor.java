@@ -427,6 +427,8 @@ public final class TaskExecutor {
 
         int completed = 0;
         boolean allEnabledCategoriesFinished = true;
+        // 每次新的自动任务运行都重新计算分类完成状态。
+        lastCategoryExhaustedV438 = false;
         TaskCategory requested = activeCategory;
         TaskCategory[] categories = requested == TaskCategory.ALL
                 ? new TaskCategory[]{TaskCategory.LOCAL, TaskCategory.VIDEO, TaskCategory.GAME, TaskCategory.JUMP}
@@ -434,6 +436,7 @@ public final class TaskExecutor {
         for (int i = 0; i < categories.length; i++) {
             if (userAborted || gameIncompleteHoldV421) break;
             if (requested == TaskCategory.ALL && !isCategoryEnabled(ctx, categories[i])) continue;
+            lastCategoryExhaustedV438 = false;
             activeCategory = categories[i];
             diagnostic("[任务分类] 开始：" + activeCategory.label);
             notifyTask(ctx, activeCategory.label, "正在扫描任务");
@@ -3568,6 +3571,7 @@ public final class TaskExecutor {
         boolean sawAd = false;
         boolean attemptedReturn = false;
         boolean doubleSwipeDone = false;
+        boolean taskPanelSeenAfterWatchV420 = false;
         int loop = 0;
 
         while (SystemClock.elapsedRealtime() - start < videoTimeout) {
@@ -3586,19 +3590,15 @@ public final class TaskExecutor {
                 diagnostic("[视频] 当前离开闲鱼：" + printableFg(fg));
                 long elapsed = SystemClock.elapsedRealtime() - start;
 
-                if (elapsed >= 12000L) {
+                if (elapsed >= 15000L) {
                     TaskProfileStoreV48.recordRecovery(taskName, "video_external:" + printableFg(fg));
-                    // V4.10：先用真实的侧边返回手势退出外部/广告层；
-                    // 只有手势恢复失败时才调用旧的导航恢复兜底。
                     attemptedReturn = true;
-                    if (elapsed >= 15000L
-                            && fastDoubleRightBackV420(suPath, taskName, "视频完成后的外部页快速退出")) {
-                        doubleSwipeDone = true;
-                        return true;
+                    if (!doubleSwipeDone) {
+                        doubleSwipeDone = fastDoubleRightBackV420(
+                                suPath, taskName, "视频完成后的外部页快速退出");
                     }
-                    if (recoverToXianyuTaskPanelV47(suPath, "视频外部跳转兜底恢复")) {
-                        return true;
-                    }
+                    if (doubleSwipeDone) return true;
+                    if (recoverToXianyuTaskPanelV47(suPath, "视频外部跳转兜底恢复")) return true;
                 }
                 continue;
             }
@@ -3612,21 +3612,27 @@ public final class TaskExecutor {
                 long elapsed = SystemClock.elapsedRealtime() - start;
                 diagnostic("[视频] 检测到广告/试玩页，elapsed=" + elapsed + "ms");
 
-                if (elapsed >= 12000L && !attemptedReturn) {
-                    // V4.42.2: 广告/试玩页不是任务失败，而是外部恢复流程。
-                    // 第一次只退出广告层，不增加失败计数。
+                if (elapsed >= 15000L && !doubleSwipeDone) {
                     attemptedReturn = true;
-                    TaskProfileStoreV48.recordRecovery(taskName, "video_ad_detected_wait_for_completion");
-                    diagnostic("[视频广告恢复V4.42.2] 检测到广告/试玩页，但未满15秒，继续等待视频完成");
-                    // 视频最低要求未达到时不返回，避免过早退出导致任务失败。
+                    TaskProfileStoreV48.recordRecovery(taskName, "video_ad_fast_double_back");
+                    diagnostic("[视频广告恢复V4.42.3] 已达到15秒，立即快速连续双右滑返回");
+                    doubleSwipeDone = fastDoubleRightBackV420(
+                            suPath, taskName, "视频广告页达到最低观看时间后的快速双滑");
+                    if (doubleSwipeDone) return true;
+                    diagnostic("[视频广告恢复V4.42.3] 双滑未确认任务面板，交给后续受控恢复");
                 }
                 continue;
             }
 
             if (isTaskPageV45(null, ocr)) {
-                // 已经到任务面板就绝不再执行第二次返回，避免退过头。
-                diagnostic("[视频] ✅ 已回到真实任务面板，停止继续返回");
-                return true;
+                long elapsed = SystemClock.elapsedRealtime() - start;
+                if (elapsed >= 15000L) {
+                    taskPanelSeenAfterWatchV420 = true;
+                    diagnostic("[视频] ✅ 已观看至少15秒并回到真实任务面板，停止继续返回");
+                    return true;
+                }
+                diagnostic("[视频] 已回任务面板但观看时间不足：" + elapsed
+                        + "/15000ms；继续等待，禁止提前判定完成");
             }
 
             // Every fourth OCR poll, allow one XML fallback for hard pages.
@@ -3640,19 +3646,17 @@ public final class TaskExecutor {
 
             if (sawAd
                     && SystemClock.elapsedRealtime() - start >= 24000L
-                    && !attemptedReturn) {
-                if (recoverToXianyuTaskPanelV47(suPath, "视频超时恢复")) {
-                    attemptedReturn = true;
-                    if (!doubleSwipeDone) {
-                        doubleSwipeDone = fastDoubleRightBackV420(
-                                suPath, taskName, "视频超时恢复快速双滑");
-                    }
-                    return doubleSwipeDone; 
-                }
+                    && !doubleSwipeDone
+                    && !taskPanelSeenAfterWatchV420) {
+                attemptedReturn = true;
+                doubleSwipeDone = fastDoubleRightBackV420(
+                        suPath, taskName, "视频广告超时快速双滑");
+                if (doubleSwipeDone) return true;
+                if (recoverToXianyuTaskPanelV47(suPath, "视频广告超时导航兜底")) return true;
             }
         }
 
-        if (!doubleSwipeDone) {
+        if (!taskPanelSeenAfterWatchV420 && !doubleSwipeDone) {
             doubleSwipeDone = fastDoubleRightBackV420(
                     suPath, taskName, "视频最终恢复快速双滑");
         }
